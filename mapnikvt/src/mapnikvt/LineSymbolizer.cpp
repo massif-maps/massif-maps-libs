@@ -39,8 +39,8 @@ namespace carto { namespace mvt {
                     try {
                         strokeDashArray.push_back(std::stof(boost::trim_copy(dash)));
                     }
-                    catch (const boost::bad_lexical_cast&) {
-                        _logger->write(Logger::Severity::ERROR, "Illegal dash value");
+                    catch (const boost::bad_lexical_cast& ex) {
+                        _logger->write(Logger::Severity::ERROR, "Illegal dash value: " + dash + ", ex: " +  ex.what() );
                     }
                 }
                 strokePattern = createDashBitmapPattern(strokeDashArray, height, strokeLinecap);
