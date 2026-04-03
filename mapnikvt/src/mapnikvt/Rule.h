@@ -18,6 +18,7 @@
 namespace carto::mvt {
     class Filter;
     class Symbolizer;
+    class ClusterSymbolizer;
     
     class Rule final {
     public:
@@ -31,6 +32,9 @@ namespace carto::mvt {
 
         const std::set<std::string>& getReferencedFilterFields() const { calculateReferencedFields(); return _referencedFilterFields; }
         const std::set<std::string>& getReferencedSymbolizerFields() const { calculateReferencedFields(); return _referencedSymbolizerFields; }
+
+        bool hasClusterSymbolizer() const;
+        std::shared_ptr<const ClusterSymbolizer> getClusterSymbolizer() const;
 
     private:
         void calculateReferencedFields() const;

@@ -749,6 +749,7 @@ namespace carto::css {
         { "cluster-file", "cluster-file" },
         { "cluster-dx", "cluster-dx" },
         { "cluster-dy", "cluster-dy" },
+        { "cluster-distance", "cluster-distance" },
         { "cluster-unlock-image", "unlock-image" },
         { "cluster-placement", "placement" },
         { "cluster-size", "size" },

@@ -5,6 +5,7 @@
 #include "PredicateUtils.h"
 #include "Rule.h"
 #include "Symbolizer.h"
+#include "ClusterSymbolizer.h"
 
 #include <algorithm>
 
@@ -51,5 +52,23 @@ namespace carto::mvt {
         }
 
         _referencedFieldsCalculated = true;
+    }
+
+    bool Rule::hasClusterSymbolizer() const {
+        for (const auto& symbolizer : _symbolizers) {
+            if (dynamic_cast<const ClusterSymbolizer*>(symbolizer.get())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    std::shared_ptr<const ClusterSymbolizer> Rule::getClusterSymbolizer() const {
+        for (const auto& symbolizer : _symbolizers) {
+            if (auto clusterSymbolizer = std::dynamic_pointer_cast<const ClusterSymbolizer>(symbolizer)) {
+                return clusterSymbolizer;
+            }
+        }
+        return nullptr;
     }
 }

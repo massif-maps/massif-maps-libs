@@ -16,6 +16,7 @@ namespace carto::mvt {
             bindProperty("cluster-file", &_clusterFile);
             bindProperty("cluster-dx", &_clusterDx);
             bindProperty("cluster-dy", &_clusterDy);
+            bindProperty("cluster-distance", &_clusterDistance);
             bindProperty("unlock-image", &_unlockImage);
             bindProperty("marker-cluster-enabled", &_markerClusterEnabled);
         }
@@ -29,6 +30,7 @@ namespace carto::mvt {
         BoolProperty _unlockImage = BoolProperty(false);
         FloatProperty _clusterDx = FloatProperty(0.0f);
         FloatProperty _clusterDy = FloatProperty(0.0f);
+        FloatProperty _clusterDistance = FloatProperty(0.0f);
         BoolProperty _markerClusterEnabled = BoolProperty(true);
     };
 }
