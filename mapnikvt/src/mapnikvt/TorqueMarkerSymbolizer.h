@@ -25,7 +25,7 @@ namespace carto::mvt {
             bindProperty("stroke-width", &_strokeWidth);
         }
 
-        virtual FeatureProcessor createFeatureProcessor(const ExpressionContext& exprContext, const SymbolizerContext& symbolizerContext) const override;
+        virtual FeatureProcessor createFeatureProcessor(const ExpressionContext& exprContext, const SymbolizerContext& symbolizerContext, const std::shared_ptr<const Rule>& rule = nullptr) const override;
 
     protected:
         static constexpr int DEFAULT_MARKER_SIZE = 10;

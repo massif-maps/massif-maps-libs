@@ -39,7 +39,7 @@ namespace carto::mvt {
             bindProperty("cluster-distance", &_clusterDistance);
         }
 
-        virtual FeatureProcessor createFeatureProcessor(const ExpressionContext& exprContext, const SymbolizerContext& symbolizerContext) const override;
+        virtual FeatureProcessor createFeatureProcessor(const ExpressionContext& exprContext, const SymbolizerContext& symbolizerContext, const std::shared_ptr<const Rule>& rule = nullptr) const override;
 
     protected:
         static constexpr int DEFAULT_CIRCLE_SIZE = 10;

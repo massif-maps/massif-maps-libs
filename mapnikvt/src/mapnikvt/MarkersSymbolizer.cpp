@@ -1,9 +1,11 @@
 #include "MarkersSymbolizer.h"
 #include "ParserUtils.h"
+#include "Rule.h"
+#include "ClusterSymbolizer.h"
 #include "vt/BitmapCanvas.h"
 
 namespace carto::mvt {
-    MarkersSymbolizer::FeatureProcessor MarkersSymbolizer::createFeatureProcessor(const ExpressionContext& exprContext, const SymbolizerContext& symbolizerContext) const {
+    MarkersSymbolizer::FeatureProcessor MarkersSymbolizer::createFeatureProcessor(const ExpressionContext& exprContext, const SymbolizerContext& symbolizerContext, const std::shared_ptr<const Rule>& rule) const {
         vt::FloatFunction opacityFunc = _opacity.getFunction(exprContext);
         vt::ColorFunction colorFunc = _color.getFunction(exprContext);
         if (opacityFunc == vt::FloatFunction(0) || colorFunc == vt::ColorFunction(vt::Color())) {
@@ -29,8 +31,17 @@ namespace carto::mvt {
         vt::LabelOrientation orientation = placement;
         bool allowOverlapSameFeatureId = _allowOverlapSameFeatureId.getValue(exprContext);
         bool sameFeatureIdDependent = _sameFeatureIdDependent.getValue(exprContext);
-        bool clusterEnabled = _clusterEnabled.getValue(exprContext);
-        float clusterDistance = _clusterDistance.getValue(exprContext);
+        
+        // Check if rule has ClusterSymbolizer - if so, enable clustering with its distance
+        bool clusterEnabled = false;
+        float clusterDistance = 0.0f;
+        if (rule && rule->hasClusterSymbolizer()) {
+            if (auto clusterSymbolizer = rule->getClusterSymbolizer()) {
+                clusterEnabled = true;
+                clusterDistance = clusterSymbolizer->_clusterDistance.getValue(exprContext);
+            }
+        }
+        
         if (transform) { // if rotation transform is explicitly defined, use point orientation
             if ((*transform).matrix2()(0, 1) != 0 || (*transform).matrix2()(1, 0) != 0) {
                 orientation = vt::LabelOrientation::POINT;

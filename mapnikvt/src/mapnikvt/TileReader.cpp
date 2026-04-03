@@ -99,7 +99,7 @@ namespace carto::mvt {
 
         FeatureCollection batchFeatureCollection;
         std::shared_ptr<Symbolizer::FeatureProcessor> batchFeatureProcessor;
-        std::unordered_map<std::shared_ptr<const FeatureData>, std::vector<std::shared_ptr<const Symbolizer>>> featureDataSymbolizerMap;
+        std::unordered_map<std::shared_ptr<const FeatureData>, std::vector<SymbolizerInfo>> featureDataSymbolizerMap;
         std::unordered_map<std::shared_ptr<const Symbolizer>, std::unordered_map<std::shared_ptr<const FeatureData>, std::shared_ptr<Symbolizer::FeatureProcessor>>> symbolizerFeatureDataProcessorMap;
 
         // Create feature iterator based on the required fields
@@ -110,8 +110,8 @@ namespace carto::mvt {
                 auto symbolizersIt = featureDataSymbolizerMap.find(filterFeatureData);
                 if (symbolizersIt == featureDataSymbolizerMap.end()) {
                     exprContext.setFeatureData(filterFeatureData);
-                    std::vector<std::shared_ptr<const Symbolizer>> symbolizers = findFeatureSymbolizers(style, rules, exprContext);
-                    symbolizersIt = featureDataSymbolizerMap.emplace(filterFeatureData, std::move(symbolizers)).first;
+                    std::vector<SymbolizerInfo> symbolizerInfos = findFeatureSymbolizers(style, rules, exprContext);
+                    symbolizersIt = featureDataSymbolizerMap.emplace(filterFeatureData, std::move(symbolizerInfos)).first;
                 }
                 if (symbolizersIt->second.empty()) {
                     continue;
@@ -127,7 +127,9 @@ namespace carto::mvt {
 
                 // Process symbolizers
                 std::shared_ptr<const FeatureData> symbolizerFeatureData = featureIt->getFeatureData(explicitSymbolizerFeatureId, symbolizerFieldsPtr);
-                for (const std::shared_ptr<const Symbolizer>& symbolizer : symbolizersIt->second) {
+                for (const SymbolizerInfo& symbolizerInfo : symbolizersIt->second) {
+                    const std::shared_ptr<const Symbolizer>& symbolizer = symbolizerInfo.symbolizer;
+                    const std::shared_ptr<const Rule>& rule = symbolizerInfo.rule;
                     std::unordered_map<std::shared_ptr<const FeatureData>, std::shared_ptr<Symbolizer::FeatureProcessor>>& featureDataProcessorMap = symbolizerFeatureDataProcessorMap[symbolizer];
 
                     // Create and cache processor for each feature data object
@@ -136,7 +138,7 @@ namespace carto::mvt {
                         exprContext.setFeatureData(symbolizerFeatureData);
                         Symbolizer::FeatureProcessor featureProcessor;
                         try {
-                            featureProcessor = symbolizer->createFeatureProcessor(exprContext, _symbolizerContext);
+                            featureProcessor = symbolizer->createFeatureProcessor(exprContext, _symbolizerContext, rule);
                         } catch (const std::exception& ex) {
                             _logger->write(Logger::Severity::ERROR, "Failed to create feature processor: " + std::string(ex.what()));
                         }

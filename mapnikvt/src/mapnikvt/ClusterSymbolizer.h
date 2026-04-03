@@ -21,7 +21,7 @@ namespace carto::mvt {
             bindProperty("marker-cluster-enabled", &_markerClusterEnabled);
         }
 
-        virtual FeatureProcessor createFeatureProcessor(const ExpressionContext& exprContext, const SymbolizerContext& symbolizerContext) const override;
+        virtual FeatureProcessor createFeatureProcessor(const ExpressionContext& exprContext, const SymbolizerContext& symbolizerContext, const std::shared_ptr<const Rule>& rule = nullptr) const override;
 
     protected:
         static constexpr float IMAGE_UPSAMPLING_SCALE = 2.5f;

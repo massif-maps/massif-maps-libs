@@ -21,6 +21,8 @@
 #include <set>
 
 namespace carto::mvt {
+    class Rule;
+    
     class Symbolizer {
     public:
         using FeatureProcessor = std::function<void(const FeatureCollection& featureCollection, vt::TileLayerBuilder& layerBuilder)>;
@@ -32,7 +34,7 @@ namespace carto::mvt {
         const Property* getProperty(const std::string& name) const;
         const bool hasProperties() const;
 
-        virtual FeatureProcessor createFeatureProcessor(const ExpressionContext& exprContext, const SymbolizerContext& symbolizerContext) const = 0;
+        virtual FeatureProcessor createFeatureProcessor(const ExpressionContext& exprContext, const SymbolizerContext& symbolizerContext, const std::shared_ptr<const Rule>& rule = nullptr) const = 0;
 
     protected:
         explicit Symbolizer(std::shared_ptr<Logger> logger) : _logger(std::move(logger)) {

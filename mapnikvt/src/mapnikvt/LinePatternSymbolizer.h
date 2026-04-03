@@ -20,7 +20,7 @@ namespace carto::mvt {
             bindProperty("offset", &_offset);
         }
 
-        virtual FeatureProcessor createFeatureProcessor(const ExpressionContext& exprContext, const SymbolizerContext& symbolizerContext) const override;
+        virtual FeatureProcessor createFeatureProcessor(const ExpressionContext& exprContext, const SymbolizerContext& symbolizerContext, const std::shared_ptr<const Rule>& rule = nullptr) const override;
         
     protected:
         static constexpr float PATTERN_SCALE = 0.75f;

@@ -22,7 +22,7 @@ namespace carto::mvt {
             bindProperty("transform", &_transform);
         }
 
-        virtual FeatureProcessor createFeatureProcessor(const ExpressionContext& exprContext, const SymbolizerContext& symbolizerContext) const override;
+        virtual FeatureProcessor createFeatureProcessor(const ExpressionContext& exprContext, const SymbolizerContext& symbolizerContext, const std::shared_ptr<const Rule>& rule = nullptr) const override;
 
     protected:
         static constexpr int RECTANGLE_SIZE = 4;

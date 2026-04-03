@@ -24,7 +24,7 @@ namespace carto::mvt {
             bindProperty("offset", &_offset);
         }
 
-        virtual FeatureProcessor createFeatureProcessor(const ExpressionContext& exprContext, const SymbolizerContext& symbolizerContext) const override;
+        virtual FeatureProcessor createFeatureProcessor(const ExpressionContext& exprContext, const SymbolizerContext& symbolizerContext, const std::shared_ptr<const Rule>& rule = nullptr) const override;
 
     protected:
         static constexpr int DASH_SUPERSAMPLING_FACTOR = 2;

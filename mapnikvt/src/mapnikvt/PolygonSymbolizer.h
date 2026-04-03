@@ -18,7 +18,7 @@ namespace carto::mvt {
             bindProperty("fill-opacity", &_fillOpacity);
         }
 
-        virtual FeatureProcessor createFeatureProcessor(const ExpressionContext& exprContext, const SymbolizerContext& symbolizerContext) const override;
+        virtual FeatureProcessor createFeatureProcessor(const ExpressionContext& exprContext, const SymbolizerContext& symbolizerContext, const std::shared_ptr<const Rule>& rule = nullptr) const override;
 
     protected:
         ColorFunctionProperty _fill = ColorFunctionProperty("#808080");

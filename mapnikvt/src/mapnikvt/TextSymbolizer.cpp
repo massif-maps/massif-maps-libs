@@ -3,6 +3,8 @@
 #include "FontSet.h"
 #include "Expression.h"
 #include "StringUtils.h"
+#include "Rule.h"
+#include "ClusterSymbolizer.h"
 #include "vt/FontManager.h"
 
 #include <vector>
@@ -11,7 +13,7 @@
 #include <boost/math/constants/constants.hpp>
 
 namespace carto::mvt {
-    TextSymbolizer::FeatureProcessor TextSymbolizer::createFeatureProcessor(const ExpressionContext& exprContext, const SymbolizerContext& symbolizerContext) const {
+    TextSymbolizer::FeatureProcessor TextSymbolizer::createFeatureProcessor(const ExpressionContext& exprContext, const SymbolizerContext& symbolizerContext, const std::shared_ptr<const Rule>& rule) const {
         vt::FloatFunction baseSizeFunc = _size.getFunction(exprContext);
         if (baseSizeFunc == vt::FloatFunction(0)) {
             return FeatureProcessor();
@@ -29,8 +31,16 @@ namespace carto::mvt {
         bool allowOverlapSameFeatureId = _allowOverlapSameFeatureId.getValue(exprContext);
         bool sameFeatureIdDependent = _sameFeatureIdDependent.getValue(exprContext);
         bool clip = _clip.isDefined() ? _clip.getValue(exprContext) : allowOverlap;
-        bool clusterEnabled = _clusterEnabled.getValue(exprContext);
-        float clusterDistance = _clusterDistance.getValue(exprContext);
+        
+        // Check if rule has ClusterSymbolizer - if so, enable clustering with its distance
+        bool clusterEnabled = false;
+        float clusterDistance = 0.0f;
+        if (rule && rule->hasClusterSymbolizer()) {
+            if (auto clusterSymbolizer = rule->getClusterSymbolizer()) {
+                clusterEnabled = true;
+                clusterDistance = clusterSymbolizer->_clusterDistance.getValue(exprContext);
+            }
+        }
 
         float tileSize = symbolizerContext.getSettings().getTileSize();
         float fontScale = symbolizerContext.getSettings().getFontScale();
