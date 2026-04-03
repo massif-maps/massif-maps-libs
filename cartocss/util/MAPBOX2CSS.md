@@ -125,7 +125,7 @@ The converter translates Mapbox GL filters to CartoCSS predicates:
 | `["<", "field", 100]` | `[field < 100]` | Less than |
 | `["<=", "field", 100]` | `[field <= 100]` | Less or equal |
 | `["all", filter1, filter2]` | Combined predicates | AND logic |
-| `["in", "field", ...]` | Multiple predicates | Partial support |
+| `["in", "field", ...]` | - | Not supported |
 | `["has", "field"]` | - | Not supported |
 | `["any", ...]` | - | Not supported |
 | `["none", ...]` | - | Not supported |
@@ -172,10 +172,9 @@ The following Mapbox GL features are **not supported** in the conversion:
 
 ### Partial Support
 
-1. **"in" filters** - Converted to multiple predicates (may not work perfectly)
-2. **"all" filters** - Combined but may need manual adjustment
-3. **Font arrays** - Only first font is used
-4. **Icon transforms** - Need manual conversion to point-transform
+1. **"all" filters** - Combined but may need manual adjustment
+2. **Font arrays** - Only first font is used
+3. **Icon transforms** - Need manual conversion to point-transform
 
 ## Example Conversion
 

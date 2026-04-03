@@ -13,7 +13,7 @@
 
 class MapboxToCartoCSS {
 public:
-    explicit MapboxToCartoCSS() { }
+    MapboxToCartoCSS() = default;
 
     std::string convert(const std::string& mapboxStyleJson) {
         picojson::value styleValue;
@@ -402,18 +402,10 @@ private:
         }
         else if (op == "in") {
             // ["in", "field", "value1", "value2", ...]
-            // Convert to multiple [field = value] predicates
-            if (filterArray.size() >= 3 && filterArray[1].is<std::string>()) {
-                std::string key = filterArray[1].get<std::string>();
-                std::ostringstream oss;
-                for (size_t i = 2; i < filterArray.size(); i++) {
-                    if (i > 2) oss << ","; // Multiple values not directly supported in single predicate
-                    oss << "[" + key + " = " + valueToString(filterArray[i]) + "]";
-                }
-                // Note: This creates multiple predicates which may not work correctly
-                // Proper handling would require CartoCSS when() expressions
-                return oss.str();
-            }
+            // NOTE: 'in' filters are not directly supported in CartoCSS predicates.
+            // Would require multiple rule definitions or when() expressions.
+            // Skipping for now - users need to handle manually.
+            return "";
         }
         else if (op == "has") {
             if (filterArray.size() >= 2 && filterArray[1].is<std::string>()) {
@@ -532,6 +524,6 @@ int main(int argc, char* argv[]) {
     }
     catch (const std::exception& ex) {
         std::cerr << "Error: " << ex.what() << std::endl;
-        return -1;
+        return 1;
     }
 }
