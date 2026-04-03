@@ -30,6 +30,11 @@ namespace carto::mvt {
 
     class TileReader {
     public:
+        struct SymbolizerInfo {
+            std::shared_ptr<const Symbolizer> symbolizer;
+            std::shared_ptr<const Rule> rule;
+        };
+
         virtual ~TileReader() = default;
 
         virtual std::shared_ptr<vt::Tile> readTile(const vt::TileId& tileId) const;
@@ -40,7 +45,7 @@ namespace carto::mvt {
         void processLayer(const std::shared_ptr<const Layer>& layer, const std::shared_ptr<const Style>& style, ExpressionContext& exprContext, vt::TileLayerBuilder& layerBuilder) const;
 
         std::vector<std::shared_ptr<const Rule>> preFilterStyleRules(const std::shared_ptr<const Style>& style, ExpressionContext& exprContext) const;
-        std::vector<std::shared_ptr<const Symbolizer>> findFeatureSymbolizers(const std::shared_ptr<const Style>& style, const std::vector<std::shared_ptr<const Rule>>& rules, ExpressionContext& exprContext) const;
+        std::vector<SymbolizerInfo> findFeatureSymbolizers(const std::shared_ptr<const Style>& style, const std::vector<std::shared_ptr<const Rule>>& rules, ExpressionContext& exprContext) const;
 
         virtual std::shared_ptr<vt::TileBackground> createTileBackground(const vt::TileId& tileId, const ExpressionContext& exprContext) const = 0;
 

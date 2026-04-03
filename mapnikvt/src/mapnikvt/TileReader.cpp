@@ -191,10 +191,10 @@ namespace carto::mvt {
         return rules;
     }
 
-    std::vector<std::shared_ptr<const Symbolizer>> TileReader::findFeatureSymbolizers(const std::shared_ptr<const Style>& style, const std::vector<std::shared_ptr<const Rule>>& rules, ExpressionContext& exprContext) const {
+    std::vector<TileReader::SymbolizerInfo> TileReader::findFeatureSymbolizers(const std::shared_ptr<const Style>& style, const std::vector<std::shared_ptr<const Rule>>& rules, ExpressionContext& exprContext) const {
         PredicateEvaluator predEvaluator(exprContext, nullptr);
         bool anyMatch = false;
-        std::vector<std::shared_ptr<const Symbolizer>> symbolizers;
+        std::vector<SymbolizerInfo> symbolizers;
         for (const std::shared_ptr<const Rule>& rule : rules) {
             std::shared_ptr<const Filter> filter = rule->getFilter();
             if (!filter) {
@@ -230,9 +230,11 @@ namespace carto::mvt {
                 break;
             }
 
-            // If match, add all rule symbolizers to the symbolizer list
+            // If match, add all rule symbolizers to the symbolizer list with rule info
             if (match) {
-                symbolizers.insert(symbolizers.end(), rule->getSymbolizers().begin(), rule->getSymbolizers().end());
+                for (const auto& symbolizer : rule->getSymbolizers()) {
+                    symbolizers.push_back({symbolizer, rule});
+                }
             }
         }
         return symbolizers;
