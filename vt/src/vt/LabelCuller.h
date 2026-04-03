@@ -34,6 +34,7 @@ namespace carto::vt {
         static constexpr int GRID_RESOLUTION_X = 16;
         static constexpr int GRID_RESOLUTION_Y = 32;
         static constexpr float EXTRA_LABEL_BUFFER = 1.0f; // extra buffer for the label
+        static constexpr unsigned int HIERARCHICAL_CLUSTER_THRESHOLD = 100;
 
 
         struct CullRecord {
@@ -53,6 +54,16 @@ namespace carto::vt {
             float opacity;
             std::shared_ptr<Label> label;
             CullRecord cullRecord;
+            cglib::vec2<float> screenPos;  // screen position for clustering
+        };
+
+        struct ClusterNode {
+            std::vector<std::size_t> labelIndices;  // indices into validLabelList
+            cglib::vec2<float> center;  // cluster center in screen coordinates
+            int count;  // number of labels in cluster
+            float maxDistance;  // maximum distance within cluster
+            
+            ClusterNode() : count(0), maxDistance(0.0f) {}
         };
 
         cglib::vec2<int> getGridIndex(const cglib::vec2<float>& pos) const;
@@ -60,6 +71,11 @@ namespace carto::vt {
         void addGridRecord(const LabelInfo& cullRecord);
         bool testGridOverlap(const LabelInfo& cullRecord) const;
         bool calculateScreenEnvelope(const std::shared_ptr<Label>& label, std::array<cglib::vec2<float>, 4>& envelope) const;
+        
+        // Clustering methods
+        void performClustering(std::vector<LabelInfo>& validLabelList, std::mutex& labelMutex);
+        std::vector<ClusterNode> buildClusters(const std::vector<std::size_t>& clusterableIndices, const std::vector<LabelInfo>& validLabelList);
+        int mergeClusters(std::vector<ClusterNode>& clusters, float minDistance);
 
         cglib::mat4x4<float> _localCameraProjMatrix;
         ViewState _viewState;

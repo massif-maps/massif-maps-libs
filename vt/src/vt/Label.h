@@ -45,6 +45,11 @@ namespace carto::vt {
         float getMinimumGroupDistance() const { return _minimumGroupDistance; }
         bool allowOverlapSameFeatureId() const { return _allowOverlapSameFeatureId; }
         bool sameFeatureIdDependent() const { return _sameFeatureIdDependent; }
+        bool isClusterEnabled() const { return _clusterEnabled; }
+        float getClusterDistance() const { return _clusterDistance; }
+        
+        int getClusterCount() const { return _clusterCount; }
+        void setClusterCount(int count) { _clusterCount = count; }
 
         bool isValid() const { return (bool) _placement; }
 
@@ -198,6 +203,8 @@ namespace carto::vt {
         const float _minimumGroupDistance;
         const bool _allowOverlapSameFeatureId;
         const bool _sameFeatureIdDependent;
+        const bool _clusterEnabled;
+        const float _clusterDistance;
 
         cglib::bbox2<float> _glyphBBox;
         std::list<TilePoint> _tilePoints;
@@ -206,6 +213,7 @@ namespace carto::vt {
         float _opacity = 0.0f;
         bool _visible = false;
         bool _active = false;
+        int _clusterCount = 1;
 
         std::shared_ptr<const Placement> _placement;
         mutable std::shared_ptr<const Placement> _cachedFlippedPlacement;

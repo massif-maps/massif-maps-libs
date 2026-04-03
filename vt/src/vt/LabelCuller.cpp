@@ -120,9 +120,16 @@ namespace carto::vt {
                 CullRecord cullRecord;
                 bool valid = calculateScreenEnvelope(label, cullRecord.envelope);
                 cullRecord.bounds = cglib::bbox2<float>::make_union(cullRecord.envelope.begin(), cullRecord.envelope.end());
-                validLabelList.push_back({ valid, label->getPriority(), label->getLayerIndex(), label->getStyle()->sizeFunc(_viewState), label->getOpacity(), label, cullRecord });
+                
+                // Calculate screen center position for clustering
+                cglib::vec2<float> screenPos = (cullRecord.envelope[0] + cullRecord.envelope[1] + cullRecord.envelope[2] + cullRecord.envelope[3]) * 0.25f;
+                
+                validLabelList.push_back({ valid, label->getPriority(), label->getLayerIndex(), label->getStyle()->sizeFunc(_viewState), label->getOpacity(), label, cullRecord, screenPos });
             }
         }
+
+        // Perform clustering before standard culling
+        performClustering(validLabelList, labelMutex);
 
         // Sort active labels by priority/size/opacity
         std::stable_sort(validLabelList.begin(), validLabelList.end(), [&](const LabelInfo& labelInfo1, const LabelInfo& labelInfo2) {
@@ -238,5 +245,165 @@ namespace carto::vt {
             envelope[i] = cglib::vec2<float>((p(0) * 0.5f + 0.5f) * _viewState.resolution * _viewState.aspect, (p(1) * 0.5f + 0.5f) * _viewState.resolution);
         }
         return true;
+    }
+
+    void LabelCuller::performClustering(std::vector<LabelInfo>& validLabelList, std::mutex& labelMutex) {
+        if (validLabelList.empty()) {
+            return;
+        }
+
+        // Group labels by clustering configuration (clusterEnabled and clusterDistance)
+        std::unordered_map<std::string, std::vector<std::size_t>> clusterGroups;
+        
+        for (std::size_t i = 0; i < validLabelList.size(); i++) {
+            const std::shared_ptr<Label>& label = validLabelList[i].label;
+            if (label->isClusterEnabled() && label->getClusterDistance() > 0) {
+                // Group by layer index and cluster distance to cluster similar labels together
+                std::string key = std::to_string(validLabelList[i].layerIndex) + "_" + std::to_string(label->getClusterDistance());
+                clusterGroups[key].push_back(i);
+            }
+        }
+
+        // Process each cluster group independently
+        for (auto& entry : clusterGroups) {
+            const std::vector<std::size_t>& clusterableIndices = entry.second;
+            
+            if (clusterableIndices.size() < 2) {
+                continue; // Need at least 2 labels to cluster
+            }
+
+            // Build clusters using proximity-based grouping
+            std::vector<ClusterNode> clusters = buildClusters(clusterableIndices, validLabelList);
+
+            // Process clusters - hide clustered labels and set count on representatives
+            for (const ClusterNode& cluster : clusters) {
+                if (cluster.count > 1) {
+                    // Find the label with highest priority in this cluster to be representative
+                    std::size_t representativeIdx = cluster.labelIndices[0];
+                    float maxPriority = validLabelList[representativeIdx].priority;
+                    
+                    for (std::size_t idx : cluster.labelIndices) {
+                        if (validLabelList[idx].priority > maxPriority) {
+                            maxPriority = validLabelList[idx].priority;
+                            representativeIdx = idx;
+                        }
+                    }
+
+                    // Set cluster count on representative label
+                    {
+                        std::lock_guard<std::mutex> labelLock(labelMutex);
+                        validLabelList[representativeIdx].label->setClusterCount(cluster.count);
+                    }
+
+                    // Hide other labels in the cluster by marking them as invalid
+                    for (std::size_t idx : cluster.labelIndices) {
+                        if (idx != representativeIdx) {
+                            validLabelList[idx].valid = false;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    std::vector<LabelCuller::ClusterNode> LabelCuller::buildClusters(const std::vector<std::size_t>& clusterableIndices, const std::vector<LabelInfo>& validLabelList) {
+        // Create initial singleton clusters
+        std::vector<ClusterNode> clusters;
+        clusters.reserve(clusterableIndices.size());
+        
+        for (std::size_t idx : clusterableIndices) {
+            ClusterNode node;
+            node.labelIndices.push_back(idx);
+            node.center = validLabelList[idx].screenPos;
+            node.count = 1;
+            node.maxDistance = 0.0f;
+            clusters.push_back(node);
+        }
+
+        if (clusters.empty()) {
+            return clusters;
+        }
+
+        // Get cluster distance from first label (all in group have same distance)
+        float clusterDistancePx = validLabelList[clusterableIndices[0]].label->getClusterDistance();
+
+        // Merge clusters iteratively until no more merging is possible
+        bool merged = true;
+        while (merged && clusters.size() > 1) {
+            merged = (mergeClusters(clusters, clusterDistancePx) > 0);
+        }
+
+        return clusters;
+    }
+
+    int LabelCuller::mergeClusters(std::vector<ClusterNode>& clusters, float minDistance) {
+        int mergeCount = 0;
+        
+        // Find pairs of clusters that are close enough to merge
+        std::vector<std::pair<std::size_t, std::size_t>> mergePairs;
+        
+        for (std::size_t i = 0; i < clusters.size(); i++) {
+            for (std::size_t j = i + 1; j < clusters.size(); j++) {
+                cglib::vec2<float> delta = clusters[i].center - clusters[j].center;
+                float distance = std::sqrt(delta(0) * delta(0) + delta(1) * delta(1));
+                
+                if (distance <= minDistance) {
+                    mergePairs.push_back({i, j});
+                }
+            }
+        }
+
+        if (mergePairs.empty()) {
+            return 0;
+        }
+
+        // Merge clusters (process from back to front to maintain indices)
+        std::vector<bool> merged(clusters.size(), false);
+        std::vector<ClusterNode> newClusters;
+        
+        for (auto& pair : mergePairs) {
+            std::size_t i = pair.first;
+            std::size_t j = pair.second;
+            
+            if (merged[i] || merged[j]) {
+                continue;
+            }
+
+            // Merge cluster j into cluster i
+            ClusterNode& cluster1 = clusters[i];
+            const ClusterNode& cluster2 = clusters[j];
+            
+            // Combine label indices
+            cluster1.labelIndices.insert(cluster1.labelIndices.end(), 
+                                        cluster2.labelIndices.begin(), 
+                                        cluster2.labelIndices.end());
+            
+            // Update center (weighted average)
+            cluster1.center = (cluster1.center * static_cast<float>(cluster1.count) + 
+                              cluster2.center * static_cast<float>(cluster2.count)) / 
+                             static_cast<float>(cluster1.count + cluster2.count);
+            
+            // Update count
+            cluster1.count += cluster2.count;
+            
+            // Update max distance
+            cluster1.maxDistance = std::max(cluster1.maxDistance, cluster2.maxDistance);
+            cglib::vec2<float> delta = cluster1.center - cluster2.center;
+            cluster1.maxDistance = std::max(cluster1.maxDistance, std::sqrt(delta(0) * delta(0) + delta(1) * delta(1)));
+            
+            merged[j] = true;
+            mergeCount++;
+        }
+
+        // Keep only non-merged clusters
+        newClusters.clear();
+        for (std::size_t i = 0; i < clusters.size(); i++) {
+            if (!merged[i]) {
+                newClusters.push_back(clusters[i]);
+            }
+        }
+        
+        clusters = std::move(newClusters);
+        return mergeCount;
     }
 }
