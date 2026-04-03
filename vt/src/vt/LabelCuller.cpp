@@ -344,12 +344,14 @@ namespace carto::vt {
         // Find pairs of clusters that are close enough to merge
         std::vector<std::pair<std::size_t, std::size_t>> mergePairs;
         
+        float minDistanceSquared = minDistance * minDistance;
+        
         for (std::size_t i = 0; i < clusters.size(); i++) {
             for (std::size_t j = i + 1; j < clusters.size(); j++) {
                 cglib::vec2<float> delta = clusters[i].center - clusters[j].center;
-                float distance = std::sqrt(delta(0) * delta(0) + delta(1) * delta(1));
+                float distanceSquared = delta(0) * delta(0) + delta(1) * delta(1);
                 
-                if (distance <= minDistance) {
+                if (distanceSquared <= minDistanceSquared) {
                     mergePairs.push_back({i, j});
                 }
             }
@@ -363,9 +365,9 @@ namespace carto::vt {
         std::vector<bool> merged(clusters.size(), false);
         std::vector<ClusterNode> newClusters;
         
-        for (auto& pair : mergePairs) {
-            std::size_t i = pair.first;
-            std::size_t j = pair.second;
+        for (const auto& mergePair : mergePairs) {
+            std::size_t i = mergePair.first;
+            std::size_t j = mergePair.second;
             
             if (merged[i] || merged[j]) {
                 continue;
@@ -391,7 +393,8 @@ namespace carto::vt {
             // Update max distance
             cluster1.maxDistance = std::max(cluster1.maxDistance, cluster2.maxDistance);
             cglib::vec2<float> delta = cluster1.center - cluster2.center;
-            cluster1.maxDistance = std::max(cluster1.maxDistance, std::sqrt(delta(0) * delta(0) + delta(1) * delta(1)));
+            float distance = std::sqrt(delta(0) * delta(0) + delta(1) * delta(1));
+            cluster1.maxDistance = std::max(cluster1.maxDistance, distance);
             
             merged[j] = true;
             mergeCount++;

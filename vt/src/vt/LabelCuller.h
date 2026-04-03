@@ -34,7 +34,6 @@ namespace carto::vt {
         static constexpr int GRID_RESOLUTION_X = 16;
         static constexpr int GRID_RESOLUTION_Y = 32;
         static constexpr float EXTRA_LABEL_BUFFER = 1.0f; // extra buffer for the label
-        static constexpr unsigned int HIERARCHICAL_CLUSTER_THRESHOLD = 100;
 
 
         struct CullRecord {
