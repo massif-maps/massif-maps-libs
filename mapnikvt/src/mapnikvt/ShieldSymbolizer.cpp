@@ -1,10 +1,12 @@
 #include "ShieldSymbolizer.h"
+#include "Rule.h"
+#include "ClusterSymbolizer.h"
 
 #include <vector>
 #include <tuple>
 
 namespace carto::mvt {
-    ShieldSymbolizer::FeatureProcessor ShieldSymbolizer::createFeatureProcessor(const ExpressionContext& exprContext, const SymbolizerContext& symbolizerContext) const {
+    ShieldSymbolizer::FeatureProcessor ShieldSymbolizer::createFeatureProcessor(const ExpressionContext& exprContext, const SymbolizerContext& symbolizerContext, const std::shared_ptr<const Rule>& rule) const {
         std::shared_ptr<const vt::Font> font = getFont(symbolizerContext, exprContext);
         if (!font) {
             std::string faceName = _faceName.getValue(exprContext);
@@ -27,8 +29,17 @@ namespace carto::mvt {
         bool clip = _clip.isDefined() ? _clip.getValue(exprContext) : allowOverlap;
         bool allowOverlapSameFeatureId = _allowOverlapSameFeatureId.getValue(exprContext);
         bool sameFeatureIdDependent = _sameFeatureIdDependent.getValue(exprContext);
-        bool clusterEnabled = _clusterEnabled.getValue(exprContext);
-        float clusterDistance = _clusterDistance.getValue(exprContext);
+        
+        // Check if rule has ClusterSymbolizer - if so, enable clustering with its distance
+        bool clusterEnabled = false;
+        float clusterDistance = 0.0f;
+        if (rule && rule->hasClusterSymbolizer()) {
+            if (auto clusterSymbolizer = rule->getClusterSymbolizer()) {
+                clusterEnabled = true;
+                clusterDistance = clusterSymbolizer->_clusterDistance.getValue(exprContext);
+            }
+        }
+        
         float shieldDx = _shieldDx.getValue(exprContext);
         float shieldDy = _shieldDy.getValue(exprContext);
 
