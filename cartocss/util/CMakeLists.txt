@@ -84,5 +84,7 @@ add_subdirectory("${LIBS_DIR}/zlib" zlib)
 
 add_executable(css2xml css2xml.cpp)
 add_executable(mvt2xml mvt2xml.cpp)
+add_executable(mapbox2css mapbox2css.cpp)
 target_link_libraries(css2xml cartocss mapnikvt vt pugixml tess2 brotli miniz zlib freetype harfbuzz bidi)
 target_link_libraries(mvt2xml cartocss mapnikvt vt pugixml tess2 brotli miniz zlib freetype harfbuzz bidi)
+target_link_libraries(mapbox2css cartocss mapnikvt vt pugixml tess2 brotli miniz zlib freetype harfbuzz bidi)
