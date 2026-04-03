@@ -5,6 +5,8 @@
 #include <list>
 #include <unordered_map>
 #include <memory>
+#include <string>
+#include <cmath>
 
 #include <cglib/vec.h>
 #include <cglib/mat.h>
