@@ -9,6 +9,7 @@
 #include "MarkersSymbolizer.h"
 #include "TextSymbolizer.h"
 #include "ShieldSymbolizer.h"
+#include "ClusterSymbolizer.h"
 #include "ParserUtils.h"
 #include "Logger.h"
 
@@ -63,7 +64,7 @@ namespace carto::mvt {
         else if (type == "MarkersSymbolizer") {
             symbolizer = std::make_shared<MarkersSymbolizer>(_logger);
         }
-        else if (type == "ShieldSymbolizer" || type == "TextSymbolizer") {
+        else if (type == "ShieldSymbolizer" || type == "TextSymbolizer" || type == "ClusterSymbolizer") {
             Expression text = Value(std::string());
             if (!node.text().empty()) {
                 text = parseExpression(node.text().as_string(), true);
@@ -73,6 +74,9 @@ namespace carto::mvt {
             }
             else if (type == "TextSymbolizer") {
                 symbolizer = std::make_shared<TextSymbolizer>(text, map->getFontSets(), _logger);
+            }
+            else if (type == "ClusterSymbolizer") {
+                symbolizer = std::make_shared<ClusterSymbolizer>(text, map->getFontSets(), _logger);
             }
         }
         else {

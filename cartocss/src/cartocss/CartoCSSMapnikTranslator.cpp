@@ -18,6 +18,7 @@
 #include "mapnikvt/TextSymbolizer.h"
 #include "mapnikvt/MarkersSymbolizer.h"
 #include "mapnikvt/ShieldSymbolizer.h"
+#include "mapnikvt/ClusterSymbolizer.h"
 #include "mapnikvt/BuildingSymbolizer.h"
 #include "mapnikvt/GeneratorUtils.h"
 
@@ -436,8 +437,8 @@ namespace carto::css {
         else if (symbolizerType == "marker") {
             mapnikSymbolizer = std::make_shared<mvt::MarkersSymbolizer>(_logger);
         }
-        else if (symbolizerType == "text" || symbolizerType == "shield") {
-            // Extact text expression and font name or font set name
+        else if (symbolizerType == "text" || symbolizerType == "shield" || symbolizerType == "cluster") {
+            // Extract text expression and font name or font set name
             mvt::Expression mapnikTextExpr = mvt::Value(std::string());
             std::pair<std::string, mvt::Expression> fontSetFaceName;
             for (const std::shared_ptr<const Property>& prop : properties) {
@@ -483,6 +484,9 @@ namespace carto::css {
                 }
                 else if (symbolizerType == "shield") {
                     mapnikSymbolizer = std::make_shared<mvt::ShieldSymbolizer>(mapnikTextExpr, map->getFontSets(), _logger);
+                }
+                else if (symbolizerType == "cluster") {
+                    mapnikSymbolizer = std::make_shared<mvt::ClusterSymbolizer>(mapnikTextExpr, map->getFontSets(), _logger);
                 }
                 if (mapnikSymbolizer && !fontSetFaceName.first.empty()) {
                     try {
@@ -630,6 +634,7 @@ namespace carto::css {
         "text",
         "marker",
         "shield",
+        "cluster",
         "building"
     };
 
@@ -737,6 +742,41 @@ namespace carto::css {
         { "shield-placement-priority", "placement-priority" },
         { "shield-comp-op", "comp-op" },
         { "shield-clip", "clip" },
+
+        { "cluster-name", "" },
+        { "cluster-feature-id", "feature-id" },
+        { "cluster-face-name", "" },
+        { "cluster-file", "cluster-file" },
+        { "cluster-dx", "cluster-dx" },
+        { "cluster-dy", "cluster-dy" },
+        { "cluster-unlock-image", "unlock-image" },
+        { "cluster-placement", "placement" },
+        { "cluster-size", "size" },
+        { "cluster-spacing", "spacing" },
+        { "cluster-fill", "fill" },
+        { "cluster-text-opacity", "opacity" },
+        { "cluster-halo-fill", "halo-fill" },
+        { "cluster-halo-opacity", "halo-opacity" },
+        { "cluster-halo-radius", "halo-radius" },
+        { "cluster-halo-rasterizer", "halo-rasterizer" },
+        { "cluster-allow-overlap", "allow-overlap" },
+        { "cluster-min-distance", "minimum-distance" },
+        { "cluster-text-transform", "text-transform" },
+        { "cluster-orientation", "orientation" },
+        { "cluster-text-dx", "dx" },
+        { "cluster-text-dy", "dy" },
+        { "cluster-avoid-edges", "avoid-edges" },
+        { "cluster-wrap-character", "wrap-character" },
+        { "cluster-wrap-width", "wrap-width" },
+        { "cluster-wrap-before", "wrap-before" },
+        { "cluster-character-spacing", "character-spacing" },
+        { "cluster-line-spacing", "line-spacing" },
+        { "cluster-horizontal-alignment", "horizontal-alignment" },
+        { "cluster-vertical-alignment", "vertical-alignment" },
+        { "cluster-placement-priority", "placement-priority" },
+        { "cluster-comp-op", "comp-op" },
+        { "cluster-clip", "clip" },
+        { "marker-cluster-enabled", "marker-cluster-enabled" },
 
         { "marker-file", "file" },
         { "marker-placement", "placement" },
