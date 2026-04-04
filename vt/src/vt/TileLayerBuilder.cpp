@@ -407,7 +407,7 @@ namespace carto::vt {
             _labelStyle = std::make_shared<TileLabel::Style>(style.orientation, style.colorFunc, style.sizeFunc, ColorFunction(), FloatFunction(), style.autoflip, scale, 0.0f, 0.0f, transform, glyphMap);
         }
 
-        return [bitmapGlyphs, this](long long id, long long labelId, long long groupId, const std::variant<Vertex, Vertices>& position, float priority, float minimumGroupDistance, bool allowOverlapSameFeatureId, bool sameFeatureIdDependent, int geoPointIndex, bool allowClustering, float clusterDistance) {
+        return [bitmapGlyphs, this](long long id, long long labelId, long long groupId, const std::variant<Vertex, Vertices>& position, float priority, float minimumGroupDistance, bool allowOverlapSameFeatureId, bool sameFeatureIdDependent, int geoPointIndex, bool allowClustering, float clusterDistance, long long clusterGroupId) {
             std::optional<cglib::vec2<float>> labelPosition;
             std::vector<cglib::vec2<float>> labelVertices;
             if (auto pos = std::get_if<Vertex>(&position)) {
@@ -419,7 +419,7 @@ namespace carto::vt {
                 labelVertices.assign(tesselatedVertices.begin(), tesselatedVertices.end());
             }
 
-            TileLabel::PlacementInfo placementInfo(priority, minimumGroupDistance, allowOverlapSameFeatureId, sameFeatureIdDependent, clusterEnabled, clusterDistance);
+            TileLabel::PlacementInfo placementInfo(priority, minimumGroupDistance, allowOverlapSameFeatureId, sameFeatureIdDependent, allowClustering, clusterDistance, clusterGroupId);
             long long globalId = (labelId ^ (static_cast<long long>(_layerIdx) << 32)) * 3 + 0;
             auto pointLabel = std::make_shared<TileLabel>(id, globalId, groupId, bitmapGlyphs, std::move(labelPosition), std::move(labelVertices), _labelStyle, placementInfo, geoPointIndex);
             _labelList.push_back(std::move(pointLabel));
@@ -444,7 +444,7 @@ namespace carto::vt {
             _labelStyle = std::make_shared<TileLabel::Style>(style.orientation, style.colorFunc, style.sizeFunc, style.haloColorFunc, style.haloRadiusFunc, style.autoflip, scale, metrics.ascent, metrics.descent, transform, font->getGlyphMap());
         }
 
-        return [style, font, formatter, this](long long id, long long labelId, long long groupId, const std::optional<Vertex>& position, const Vertices& vertices, const std::string& text, float priority, float minimumGroupDistance, bool allowOverlapSameFeatureId, bool sameFeatureIdDependent, int geoPointIndex, bool allowClustering, float clusterDistance) {
+        return [style, font, formatter, this](long long id, long long labelId, long long groupId, const std::optional<Vertex>& position, const Vertices& vertices, const std::string& text, float priority, float minimumGroupDistance, bool allowOverlapSameFeatureId, bool sameFeatureIdDependent, int geoPointIndex, bool allowClustering, float clusterDistance, long long clusterGroupId) {
             if (!text.empty() || style.backgroundImage) {
                 std::vector<Font::Glyph> glyphs;
                 if (!text.empty()) {
@@ -469,7 +469,7 @@ namespace carto::vt {
                     labelVertices.assign(tesselatedVertices.begin(), tesselatedVertices.end());
                 }
 
-                TileLabel::PlacementInfo placementInfo(priority, minimumGroupDistance, allowOverlapSameFeatureId, sameFeatureIdDependent, allowClustering, clusterDistance);
+                TileLabel::PlacementInfo placementInfo(priority, minimumGroupDistance, allowOverlapSameFeatureId, sameFeatureIdDependent, allowClustering, clusterDistance, clusterGroupId);
                 long long globalId = (labelId ^ (static_cast<long long>(_layerIdx) << 32)) * 3 + (style.backgroundImage ? 2 : 1);
                 auto textLabel = std::make_shared<TileLabel>(id, globalId, groupId, std::move(glyphs), std::move(labelPosition), std::move(labelVertices), _labelStyle, placementInfo, geoPointIndex);
                 _labelList.push_back(std::move(textLabel));

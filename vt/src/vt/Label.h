@@ -47,6 +47,7 @@ namespace carto::vt {
         bool sameFeatureIdDependent() const { return _sameFeatureIdDependent; }
         bool allowClustering() const { return _allowClustering; }
         float getClusterDistance() const { return _clusterDistance; }
+        long long getClusterGroupId() const { return _clusterGroupId; }
         
         int getClusterCount() const { return _clusterCount; }
         void setClusterCount(int count) { _clusterCount = count; }
@@ -205,6 +206,7 @@ namespace carto::vt {
         const bool _sameFeatureIdDependent;
         const bool _allowClustering;
         const float _clusterDistance;
+        const long long _clusterGroupId;
 
         cglib::bbox2<float> _glyphBBox;
         std::list<TilePoint> _tilePoints;
