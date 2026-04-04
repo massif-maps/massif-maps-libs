@@ -32,12 +32,13 @@ namespace carto::mvt {
         bool allowOverlapSameFeatureId = _allowOverlapSameFeatureId.getValue(exprContext);
         bool sameFeatureIdDependent = _sameFeatureIdDependent.getValue(exprContext);
         
-        // Check if rule has ClusterSymbolizer - if so, enable clustering with its distance
-        bool clusterEnabled = false;
+        // Get allow-clustering from this marker
+        bool allowClustering = _allowClustering.getValue(exprContext);
+        
+        // Get cluster-distance from ClusterSymbolizer if present in rule
         float clusterDistance = 0.0f;
         if (rule && rule->hasClusterSymbolizer()) {
             if (auto clusterSymbolizer = rule->getClusterSymbolizer()) {
-                clusterEnabled = true;
                 clusterDistance = clusterSymbolizer->_clusterDistance.getValue(exprContext);
             }
         }
@@ -211,7 +212,7 @@ namespace carto::mvt {
             };
         }
 
-        return [compOp, fillFunc, normalizedSizeFunc, bitmapImage, transform, orientation, placement, placementPriority, spacing, bitmapSize, tileId, tileSize, glyphMap, groupId, labelIdOverride, allowOverlapSameFeatureId, sameFeatureIdDependent, clusterEnabled, clusterDistance, hash, this](const FeatureCollection& featureCollection, vt::TileLayerBuilder& layerBuilder) {
+        return [compOp, fillFunc, normalizedSizeFunc, bitmapImage, transform, orientation, placement, placementPriority, spacing, bitmapSize, tileId, tileSize, glyphMap, groupId, labelIdOverride, allowOverlapSameFeatureId, sameFeatureIdDependent, allowClustering, clusterDistance, hash, this](const FeatureCollection& featureCollection, vt::TileLayerBuilder& layerBuilder) {
             vt::PointLabelStyle style(orientation, fillFunc, normalizedSizeFunc, false, bitmapImage, transform);
             vt::TileLayerBuilder::PointLabelProcessor pointProcessor;
             for (std::size_t featureIndex = 0; featureIndex < featureCollection.size(); featureIndex++) {
@@ -236,7 +237,7 @@ namespace carto::mvt {
                     int index = 0;
                     for (const auto& vertices : verticesList) {
                         for (const auto &vertex: vertices) {
-                            pointProcessor(localId, 10 * labelId + index, groupId, vertex, placementPriority, 0, allowOverlapSameFeatureId, sameFeatureIdDependent, index, clusterEnabled, clusterDistance);
+                            pointProcessor(localId, 10 * labelId + index, groupId, vertex, placementPriority, 0, allowOverlapSameFeatureId, sameFeatureIdDependent, index, allowClustering, clusterDistance);
                         }
                         index++;
                     }
@@ -244,12 +245,12 @@ namespace carto::mvt {
                 else if (placement != vt::LabelOrientation::LINE) {
                     if (auto lineGeometry = std::get_if<LineGeometry>(featureCollection.getGeometry(featureIndex).get())) {
                         for (const auto& vertices : lineGeometry->getVerticesList()) {
-                            pointProcessor(localId, labelId, groupId, vertices, placementPriority, 0, allowOverlapSameFeatureId, sameFeatureIdDependent, 0, clusterEnabled, clusterDistance);
+                            pointProcessor(localId, labelId, groupId, vertices, placementPriority, 0, allowOverlapSameFeatureId, sameFeatureIdDependent, 0, allowClustering, clusterDistance);
                         }
                     }
                     else if (auto polygonGeometry = std::get_if<PolygonGeometry>(featureCollection.getGeometry(featureIndex).get())) {
                         for (const auto& vertex : polygonGeometry->getSurfacePoints()) {
-                            pointProcessor(localId, labelId, groupId, vertex, placementPriority, 0, allowOverlapSameFeatureId, sameFeatureIdDependent, 0, clusterEnabled, clusterDistance);
+                            pointProcessor(localId, labelId, groupId, vertex, placementPriority, 0, allowOverlapSameFeatureId, sameFeatureIdDependent, 0, allowClustering, clusterDistance);
                         }
                     }
                 }
@@ -264,7 +265,7 @@ namespace carto::mvt {
 
                     for (const auto& vertices : verticesList) {
                         if (spacing <= 0) {
-                            pointProcessor(localId, labelId, groupId, vertices, placementPriority, 0, allowOverlapSameFeatureId, sameFeatureIdDependent, 0, clusterEnabled, clusterDistance);
+                            pointProcessor(localId, labelId, groupId, vertices, placementPriority, 0, allowOverlapSameFeatureId, sameFeatureIdDependent, 0, allowClustering, clusterDistance);
                             continue;
                         }
                         
