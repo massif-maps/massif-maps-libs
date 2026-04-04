@@ -254,13 +254,27 @@ namespace carto::vt {
             return;
         }
 
-        // Group labels by clustering configuration (clusterEnabled and clusterDistance)
+        // Early exit: Check if any labels have clustering enabled
+        bool hasClusteringEnabled = false;
+        for (const auto& labelInfo : validLabelList) {
+            if (labelInfo.label->allowClustering() && labelInfo.label->getClusterDistance() > 0) {
+                hasClusteringEnabled = true;
+                break;
+            }
+        }
+        
+        if (!hasClusteringEnabled) {
+            return; // No clustering needed - zero performance impact
+        }
+
+        // Group labels by clustering configuration (layer + cluster distance)
+        // Labels from the same rule will have the same clusterDistance
         std::unordered_map<std::string, std::vector<std::size_t>> clusterGroups;
         
         for (std::size_t i = 0; i < validLabelList.size(); i++) {
             const std::shared_ptr<Label>& label = validLabelList[i].label;
-            if (label->isClusterEnabled() && label->getClusterDistance() > 0) {
-                // Group by layer index and cluster distance to cluster similar labels together
+            if (label->allowClustering() && label->getClusterDistance() > 0) {
+                // Group by layer index and cluster distance to cluster labels from same rule together
                 std::string key = std::to_string(validLabelList[i].layerIndex) + "_" + std::to_string(label->getClusterDistance());
                 clusterGroups[key].push_back(i);
             }
