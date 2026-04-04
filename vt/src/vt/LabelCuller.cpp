@@ -318,46 +318,69 @@ namespace carto::vt {
         // Process each cluster group in order (smallest distance first)
         for (auto& entry : sortedGroups) {
             const std::vector<std::size_t>& clusterableIndices = entry.second;
+            const ClusterGroupKey& groupKey = entry.first;
             
             if (clusterableIndices.size() < 2) {
                 continue; // Need at least 2 labels to cluster
             }
 
-            // Build clusters using proximity-based grouping
+            // Build clusters using grid-based proximity grouping
             std::vector<ClusterNode> clusters = buildClusters(clusterableIndices, validLabelList);
 
-            // Process clusters - hide clustered labels and set count on representatives
+            // Find ClusterSymbolizer labels for this group (they have allowClustering=false and same clusterGroupId)
+            // These are the labels that should display the cluster count
+            std::vector<std::size_t> clusterSymbolizerIndices;
+            for (std::size_t i = 0; i < validLabelList.size(); i++) {
+                const std::shared_ptr<Label>& label = validLabelList[i].label;
+                // ClusterSymbolizer labels: same clusterGroupId, allowClustering=false, clusterDistance > 0
+                if (label->getClusterGroupId() == groupKey.clusterGroupId && 
+                    !label->allowClustering() && 
+                    label->getClusterDistance() > 0 &&
+                    validLabelList[i].layerIndex == groupKey.layerIndex) {
+                    clusterSymbolizerIndices.push_back(i);
+                }
+            }
+
+            // Process clusters - hide item labels and activate ClusterSymbolizer labels
             for (const ClusterNode& cluster : clusters) {
                 if (cluster.count > 1) {
-                    // Find the label with highest priority in this cluster to be representative
-                    std::size_t representativeIdx = cluster.labelIndices[0];
-                    float maxPriority = validLabelList[representativeIdx].priority;
+                    // Calculate cluster center for matching with ClusterSymbolizer label
+                    cglib::vec2<float> clusterCenter = cluster.center;
                     
-                    for (std::size_t idx : cluster.labelIndices) {
-                        if (validLabelList[idx].priority > maxPriority) {
-                            maxPriority = validLabelList[idx].priority;
-                            representativeIdx = idx;
-                        }
-                    }
-
-                    // Accumulate cluster counts: when clustering already-clustered labels,
-                    // sum their cluster counts instead of treating each as 1
+                    // Calculate total cluster count (sum of all labels in this cluster)
                     int totalCount = 0;
                     for (std::size_t idx : cluster.labelIndices) {
                         std::lock_guard<std::mutex> labelLock(labelMutex);
-                        totalCount += validLabelList[idx].label->getClusterCount();
+                        int labelCount = validLabelList[idx].label->getClusterCount();
+                        totalCount += (labelCount > 0 ? labelCount : 1);
                     }
 
-                    // Set accumulated cluster count on representative label
-                    {
-                        std::lock_guard<std::mutex> labelLock(labelMutex);
-                        validLabelList[representativeIdx].label->setClusterCount(totalCount);
-                    }
-
-                    // Hide other labels in the cluster by marking them as invalid
+                    // Hide ALL item labels in this cluster (they should not be shown)
                     for (std::size_t idx : cluster.labelIndices) {
-                        if (idx != representativeIdx) {
-                            validLabelList[idx].valid = false;
+                        validLabelList[idx].valid = false;
+                    }
+
+                    // Find the closest ClusterSymbolizer label to this cluster center
+                    // and set the cluster count on it
+                    if (!clusterSymbolizerIndices.empty()) {
+                        std::size_t closestClusterLabelIdx = clusterSymbolizerIndices[0];
+                        float minDistance = std::numeric_limits<float>::max();
+                        
+                        for (std::size_t csIdx : clusterSymbolizerIndices) {
+                            cglib::vec2<float> csPos = validLabelList[csIdx].screenPos;
+                            cglib::vec2<float> delta = clusterCenter - csPos;
+                            float distSquared = delta(0) * delta(0) + delta(1) * delta(1);
+                            
+                            if (distSquared < minDistance) {
+                                minDistance = distSquared;
+                                closestClusterLabelIdx = csIdx;
+                            }
+                        }
+                        
+                        // Set cluster count on the ClusterSymbolizer label
+                        {
+                            std::lock_guard<std::mutex> labelLock(labelMutex);
+                            validLabelList[closestClusterLabelIdx].label->setClusterCount(totalCount);
                         }
                     }
                 }
@@ -374,10 +397,10 @@ namespace carto::vt {
         float clusterDistancePx = validLabelList[clusterableIndices[0]].label->getClusterDistance();
 
         // Grid-based clustering for stability during map panning
-        // Group labels by grid cells based on their world position
+        // Use world/tile coordinates for grid assignment (not screen coordinates)
         struct GridCell {
-            int x;
-            int y;
+            long long x;
+            long long y;
             
             bool operator==(const GridCell& other) const {
                 return x == other.x && y == other.y;
@@ -386,35 +409,31 @@ namespace carto::vt {
         
         struct GridCellHash {
             std::size_t operator()(const GridCell& cell) const {
-                // Simple hash combination
-                return std::hash<int>()(cell.x) ^ (std::hash<int>()(cell.y) << 1);
+                // Robust hash for large coordinates
+                std::size_t h1 = std::hash<long long>()(cell.x);
+                std::size_t h2 = std::hash<long long>()(cell.y);
+                return h1 ^ (h2 << 1);
             }
         };
         
         // Map from grid cell to label indices
         std::unordered_map<GridCell, std::vector<std::size_t>, GridCellHash> gridCells;
         
-        // Estimate world-space grid cell size from cluster distance
-        // We need to convert pixel-based cluster distance to world space for stable grid assignment
-        // This is approximate but provides stability - labels won't change grid cells when panning
-        
         // Assign labels to grid cells based on their world position
+        // Grid cell size in world coordinates is approximately clusterDistancePx * scale
+        // We use a fixed grid size that doesn't depend on current screen transform
+        const double gridSizeWorld = clusterDistancePx * 0.01; // Approximate conversion from pixels to world units
+        
         for (std::size_t idx : clusterableIndices) {
             const std::shared_ptr<Label>& label = validLabelList[idx].label;
             
-            // Get world position of the label
+            // Get world position of the label (stable across viewport changes)
             cglib::vec3<double> worldPos;
             if (label->calculateCenter(worldPos)) {
-                // Use world coordinates for grid cell assignment to ensure stability during panning
-                // Grid cell size in world space is approximated from cluster distance in pixels
-                // This ensures labels remain in the same grid cell regardless of viewport position
-                
-                // Use a fixed world-space grid size derived from cluster distance
-                // The scale factor converts from pixels to world coordinates (approximate)
-                double worldGridSize = clusterDistancePx * 0.01; // Approximate scale conversion
-                
-                int gridX = static_cast<int>(std::floor(worldPos(0) / worldGridSize));
-                int gridY = static_cast<int>(std::floor(worldPos(1) / worldGridSize));
+                // Calculate grid cell coordinates in world space
+                // This ensures labels at the same world position always map to same grid cell
+                long long gridX = static_cast<long long>(std::floor(worldPos(0) / gridSizeWorld));
+                long long gridY = static_cast<long long>(std::floor(worldPos(1) / gridSizeWorld));
                 
                 GridCell cell{gridX, gridY};
                 gridCells[cell].push_back(idx);
@@ -450,7 +469,7 @@ namespace carto::vt {
                     cellClusters.push_back(node);
                 }
                 
-                // Merge clusters within the cell based on proximity
+                // Merge clusters within the cell based on proximity in screen space
                 bool merged = true;
                 while (merged && cellClusters.size() > 1) {
                     merged = (mergeClusters(cellClusters, clusterDistancePx) > 0);
