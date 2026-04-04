@@ -1,7 +1,7 @@
 #include "LinePatternSymbolizer.h"
 
 namespace carto::mvt {
-    LinePatternSymbolizer::FeatureProcessor LinePatternSymbolizer::createFeatureProcessor(const ExpressionContext& exprContext, const SymbolizerContext& symbolizerContext) const {
+    LinePatternSymbolizer::FeatureProcessor LinePatternSymbolizer::createFeatureProcessor(const ExpressionContext& exprContext, const SymbolizerContext& symbolizerContext, const std::shared_ptr<const Rule>& rule) const {
         vt::FloatFunction opacityFunc = _opacity.getFunction(exprContext);
         vt::ColorFunction colorFunc = _fill.getFunction(exprContext);
         if (opacityFunc == vt::FloatFunction(0) || colorFunc == vt::ColorFunction(vt::Color())) {

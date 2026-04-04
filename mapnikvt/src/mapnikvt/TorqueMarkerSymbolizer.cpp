@@ -3,7 +3,7 @@
 #include "vt/BitmapCanvas.h"
 
 namespace carto::mvt {
-    TorqueMarkerSymbolizer::FeatureProcessor TorqueMarkerSymbolizer::createFeatureProcessor(const ExpressionContext& exprContext, const SymbolizerContext& symbolizerContext) const {
+    TorqueMarkerSymbolizer::FeatureProcessor TorqueMarkerSymbolizer::createFeatureProcessor(const ExpressionContext& exprContext, const SymbolizerContext& symbolizerContext, const std::shared_ptr<const Rule>& rule) const {
         float width = _width.getValue(exprContext);
         if (width <= 0) {
             width = DEFAULT_MARKER_SIZE;

@@ -39,7 +39,7 @@ namespace carto::mvt {
         float clusterDistance = 0.0f;
         if (rule && rule->hasClusterSymbolizer()) {
             if (auto clusterSymbolizer = rule->getClusterSymbolizer()) {
-                clusterDistance = clusterSymbolizer->_clusterDistance.getValue(exprContext);
+                clusterDistance = clusterSymbolizer->getClusterDistance().getValue(exprContext);
             }
         }
         

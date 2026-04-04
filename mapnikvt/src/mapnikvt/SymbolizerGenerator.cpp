@@ -8,6 +8,7 @@
 #include "MarkersSymbolizer.h"
 #include "TextSymbolizer.h"
 #include "ShieldSymbolizer.h"
+#include "ClusterSymbolizer.h"
 #include "GeneratorUtils.h"
 #include "Logger.h"
 
@@ -38,7 +39,10 @@ namespace carto::mvt {
         else if (auto textSymbolizer = dynamic_cast<const TextSymbolizer*>(&symbolizer)) {
             if (dynamic_cast<const ShieldSymbolizer*>(&symbolizer)) {
                 type = "ShieldSymbolizer";
+            } else if (dynamic_cast<const ClusterSymbolizer*>(&symbolizer)) {
+                type = "ClusterSymbolizer";
             }
+
             else {
                 type = "TextSymbolizer";
             }

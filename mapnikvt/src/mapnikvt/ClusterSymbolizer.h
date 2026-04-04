@@ -18,8 +18,9 @@ namespace carto::mvt {
             bindProperty("cluster-dy", &_clusterDy);
             bindProperty("cluster-distance", &_clusterDistance);
             bindProperty("unlock-image", &_unlockImage);
-            bindProperty("cluster-allow-clustering", &_allowClustering);
+            bindProperty("allow-clustering", &_allowClustering);
         }
+        const FloatProperty& getClusterDistance() const { return _clusterDistance; }
 
         virtual FeatureProcessor createFeatureProcessor(const ExpressionContext& exprContext, const SymbolizerContext& symbolizerContext, const std::shared_ptr<const Rule>& rule = nullptr) const override;
 

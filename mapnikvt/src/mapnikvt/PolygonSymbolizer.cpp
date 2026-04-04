@@ -2,7 +2,7 @@
 #include "ParserUtils.h"
 
 namespace carto::mvt {
-    PolygonSymbolizer::FeatureProcessor PolygonSymbolizer::createFeatureProcessor(const ExpressionContext& exprContext, const SymbolizerContext& symbolizerContext) const {
+    PolygonSymbolizer::FeatureProcessor PolygonSymbolizer::createFeatureProcessor(const ExpressionContext& exprContext, const SymbolizerContext& symbolizerContext, const std::shared_ptr<const Rule>& rule) const {
         vt::ColorFunction fillColorFunc = _fill.getFunction(exprContext);
         vt::FloatFunction fillOpacityFunc = _fillOpacity.getFunction(exprContext);
         if (fillOpacityFunc == vt::FloatFunction(0) || fillColorFunc == vt::ColorFunction(vt::Color())) {

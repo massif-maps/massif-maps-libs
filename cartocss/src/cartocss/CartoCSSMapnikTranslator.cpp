@@ -675,6 +675,7 @@ namespace carto::css {
         { "point-placement-priority", "placement-priority" },
         { "point-transform", "transform" },
         { "point-comp-op", "comp-op" },
+        { "point-allow-clustering", "allow-clustering" },
 
         { "text-name", "" },
         { "text-feature-id", "feature-id" },
@@ -708,6 +709,7 @@ namespace carto::css {
         { "text-placement-priority", "placement-priority" },
         { "text-comp-op", "comp-op" },
         { "text-clip", "clip" },
+        { "text-allow-clustering", "allow-clustering" },
 
         { "shield-name", "" },
         { "shield-feature-id", "feature-id" },
@@ -742,6 +744,7 @@ namespace carto::css {
         { "shield-placement-priority", "placement-priority" },
         { "shield-comp-op", "comp-op" },
         { "shield-clip", "clip" },
+        { "shield-allow-clustering", "allow-clustering" },
 
         { "cluster-name", "" },
         { "cluster-feature-id", "feature-id" },
@@ -777,7 +780,7 @@ namespace carto::css {
         { "cluster-placement-priority", "placement-priority" },
         { "cluster-comp-op", "comp-op" },
         { "cluster-clip", "clip" },
-        { "marker-cluster-enabled", "marker-cluster-enabled" },
+        { "cluster-allow-clustering", "allow-clustering" },
 
         { "marker-file", "file" },
         { "marker-placement", "placement" },
@@ -801,6 +804,7 @@ namespace carto::css {
         { "marker-transform", "transform" },
         { "marker-comp-op", "comp-op" },
         { "marker-clip", "clip" },
+        { "marker-allow-clustering", "allow-clustering" },
 
         { "building-fill", "fill" },
         { "building-fill-opacity", "fill-opacity" },

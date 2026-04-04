@@ -8,7 +8,7 @@
 #include <boost/algorithm/string.hpp>
 
 namespace carto::mvt {
-    LineSymbolizer::FeatureProcessor LineSymbolizer::createFeatureProcessor(const ExpressionContext& exprContext, const SymbolizerContext& symbolizerContext) const {
+    LineSymbolizer::FeatureProcessor LineSymbolizer::createFeatureProcessor(const ExpressionContext& exprContext, const SymbolizerContext& symbolizerContext, const std::shared_ptr<const Rule>& rule) const {
         vt::FloatFunction strokeWidthFunc = _strokeWidth.getFunction(exprContext);
         vt::FloatFunction strokeOpacityFunc = _strokeOpacity.getFunction(exprContext);
         vt::ColorFunction strokeColorFunc = _stroke.getFunction(exprContext);

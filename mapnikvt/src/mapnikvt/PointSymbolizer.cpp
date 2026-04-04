@@ -3,7 +3,7 @@
 #include "vt/BitmapCanvas.h"
 
 namespace carto::mvt {
-    PointSymbolizer::FeatureProcessor PointSymbolizer::createFeatureProcessor(const ExpressionContext& exprContext, const SymbolizerContext& symbolizerContext) const {
+    PointSymbolizer::FeatureProcessor PointSymbolizer::createFeatureProcessor(const ExpressionContext& exprContext, const SymbolizerContext& symbolizerContext, const std::shared_ptr<const Rule>& rule) const {
         vt::FloatFunction opacityFunc = _opacity.getFunction(exprContext);
         if (opacityFunc == vt::FloatFunction(0)) {
             return FeatureProcessor();

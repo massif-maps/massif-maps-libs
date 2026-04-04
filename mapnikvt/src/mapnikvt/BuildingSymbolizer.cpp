@@ -4,7 +4,7 @@
 #include <cmath>
 
 namespace carto::mvt {
-    BuildingSymbolizer::FeatureProcessor BuildingSymbolizer::createFeatureProcessor(const ExpressionContext& exprContext, const SymbolizerContext& symbolizerContext) const {
+    BuildingSymbolizer::FeatureProcessor BuildingSymbolizer::createFeatureProcessor(const ExpressionContext& exprContext, const SymbolizerContext& symbolizerContext, const std::shared_ptr<const Rule>& rule) const {
         vt::FloatFunction fillOpacityFunc = _fillOpacity.getFunction(exprContext);
         vt::ColorFunction fillColorFunc = _fill.getFunction(exprContext);
         if (fillOpacityFunc == vt::FloatFunction(0) || fillColorFunc == vt::ColorFunction(vt::Color())) {
