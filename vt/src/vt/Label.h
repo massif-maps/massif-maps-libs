@@ -45,7 +45,7 @@ namespace carto::vt {
         float getMinimumGroupDistance() const { return _minimumGroupDistance; }
         bool allowOverlapSameFeatureId() const { return _allowOverlapSameFeatureId; }
         bool sameFeatureIdDependent() const { return _sameFeatureIdDependent; }
-        bool isClusterEnabled() const { return _clusterEnabled; }
+        bool allowClustering() const { return _allowClustering; }
         float getClusterDistance() const { return _clusterDistance; }
         
         int getClusterCount() const { return _clusterCount; }
@@ -203,7 +203,7 @@ namespace carto::vt {
         const float _minimumGroupDistance;
         const bool _allowOverlapSameFeatureId;
         const bool _sameFeatureIdDependent;
-        const bool _clusterEnabled;
+        const bool _allowClustering;
         const float _clusterDistance;
 
         cglib::bbox2<float> _glyphBBox;

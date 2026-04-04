@@ -35,8 +35,7 @@ namespace carto::mvt {
             bindProperty("clip", &_clip);
             bindProperty("ignore-placement", &_ignorePlacement);
             bindProperty("transform", &_transform);
-            bindProperty("cluster-enabled", &_clusterEnabled);
-            bindProperty("cluster-distance", &_clusterDistance);
+            bindProperty("allow-clustering", &_allowClustering);
         }
 
         virtual FeatureProcessor createFeatureProcessor(const ExpressionContext& exprContext, const SymbolizerContext& symbolizerContext, const std::shared_ptr<const Rule>& rule = nullptr) const override;
@@ -74,8 +73,7 @@ namespace carto::mvt {
         BoolProperty _allowOverlapSameFeatureId = BoolProperty(false);
         BoolProperty _sameFeatureIdDependent = BoolProperty(false);
         BoolProperty _ignorePlacement = BoolProperty(false);
-        BoolProperty _clusterEnabled = BoolProperty(false);
-        FloatProperty _clusterDistance = FloatProperty(0.0f);
+        BoolProperty _allowClustering = BoolProperty(false);
         TransformProperty _transform;
 
         FloatFunctionBuilder _sizeFuncBuilder;

@@ -50,8 +50,7 @@ namespace carto::mvt {
             bindProperty("line-spacing", &_lineSpacing);
             bindProperty("horizontal-alignment", &_horizontalAlignment);
             bindProperty("vertical-alignment", &_verticalAlignment);
-            bindProperty("cluster-enabled", &_clusterEnabled);
-            bindProperty("cluster-distance", &_clusterDistance);
+            bindProperty("allow-clustering", &_allowClustering);
             bindProperty("avoid-edges", nullptr);
             bindProperty("halo-rasterizer", nullptr);
         }
@@ -97,8 +96,7 @@ namespace carto::mvt {
         BoolProperty _clip = BoolProperty(false);
         BoolProperty _allowOverlapSameFeatureId = BoolProperty(false);
         BoolProperty _sameFeatureIdDependent = BoolProperty(false);
-        BoolProperty _clusterEnabled = BoolProperty(false);
-        FloatProperty _clusterDistance = FloatProperty(0.0f);
+        BoolProperty _allowClustering = BoolProperty(false);
         StringProperty _wrapCharacter = StringProperty("");
         FloatProperty _wrapWidth = FloatProperty(0.0f);
         BoolProperty _wrapBefore = BoolProperty(false);
