@@ -283,9 +283,12 @@ namespace carto::vt {
         
         struct ClusterGroupKeyHash {
             std::size_t operator()(const ClusterGroupKey& key) const {
-                return std::hash<long long>()(key.clusterGroupId) ^ 
-                       std::hash<float>()(key.clusterDistance) ^ 
-                       std::hash<int>()(key.layerIndex);
+                // Use a more robust hash combining method
+                std::size_t seed = 0;
+                seed ^= std::hash<long long>()(key.clusterGroupId) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+                seed ^= std::hash<float>()(key.clusterDistance) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+                seed ^= std::hash<int>()(key.layerIndex) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+                return seed;
             }
         };
         

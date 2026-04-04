@@ -43,11 +43,21 @@ namespace carto::mvt {
             }
         }
         
-        // Create unique cluster group ID combining rule and symbolizer
+        // Create unique cluster group ID using stable hash of rule name and symbolizer index
         // This ensures labels from different rules are clustered separately
         long long clusterGroupId = 0;
-        if (clusterDistance > 0) {
-            clusterGroupId = (reinterpret_cast<long long>(rule.get()) ^ reinterpret_cast<long long>(this));
+        if (clusterDistance > 0 && rule) {
+            // Find index of this symbolizer in the rule
+            int symbolizerIndex = 0;
+            for (const auto& sym : rule->getSymbolizers()) {
+                if (sym.get() == this) {
+                    break;
+                }
+                symbolizerIndex++;
+            }
+            // Combine rule name hash with symbolizer index for stable, unique ID
+            std::size_t ruleHash = std::hash<std::string>()(rule->getName());
+            clusterGroupId = static_cast<long long>(ruleHash) ^ static_cast<long long>(symbolizerIndex);
         }
 
         float tileSize = symbolizerContext.getSettings().getTileSize();
