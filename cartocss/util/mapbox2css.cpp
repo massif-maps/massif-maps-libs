@@ -33,11 +33,29 @@ public:
         // Write header comment
         css << "/* CartoCSS generated from Mapbox GL style */\n\n";
 
-        // Process layers
+        // Process background layer if present and convert to Map properties
         auto layersIt = styleObj.find("layers");
         if (layersIt != styleObj.end() && layersIt->second.is<picojson::array>()) {
             const picojson::array& layers = layersIt->second.get<picojson::array>();
             
+            // First pass: look for background layer
+            for (const auto& layerValue : layers) {
+                if (!layerValue.is<picojson::object>()) {
+                    continue;
+                }
+                
+                const picojson::object& layer = layerValue.get<picojson::object>();
+                std::string type = getStringProperty(layer, "type", "");
+                
+                if (type == "background") {
+                    std::string backgroundCSS = convertBackgroundLayer(layer);
+                    if (!backgroundCSS.empty()) {
+                        css << backgroundCSS << "\n";
+                    }
+                }
+            }
+            
+            // Second pass: process all other layers
             for (const auto& layerValue : layers) {
                 if (!layerValue.is<picojson::object>()) {
                     continue;
@@ -55,13 +73,45 @@ public:
     }
 
 private:
+    std::string convertBackgroundLayer(const picojson::object& layer) {
+        std::ostringstream css;
+        css << "Map {\n";
+        
+        // Get paint properties
+        auto paintIt = layer.find("paint");
+        if (paintIt != layer.end() && paintIt->second.is<picojson::object>()) {
+            const picojson::object& paint = paintIt->second.get<picojson::object>();
+            
+            // Convert background-color
+            auto bgColorIt = paint.find("background-color");
+            if (bgColorIt != paint.end()) {
+                std::string cssValue = convertPropertyValue(bgColorIt->second, "background-color", "background");
+                if (!cssValue.empty()) {
+                    css << "  background-color: " << cssValue << ";\n";
+                }
+            }
+            
+            // Convert background-opacity if present
+            auto bgOpacityIt = paint.find("background-opacity");
+            if (bgOpacityIt != paint.end()) {
+                std::string cssValue = convertPropertyValue(bgOpacityIt->second, "background-opacity", "background");
+                if (!cssValue.empty()) {
+                    css << "  background-opacity: " << cssValue << ";\n";
+                }
+            }
+        }
+        
+        css << "}\n";
+        return css.str();
+    }
+
     std::string convertLayer(const picojson::object& layer) {
         // Get layer properties
         std::string id = getStringProperty(layer, "id", "");
         std::string type = getStringProperty(layer, "type", "");
         std::string sourceLayer = getStringProperty(layer, "source-layer", "");
         
-        // Skip background and raster layers
+        // Skip background (handled separately) and raster layers
         if (type == "background" || type == "raster") {
             return "";
         }
@@ -83,7 +133,55 @@ private:
             filterPredicate = convertFilter(filterIt->second);
         }
         
-        // Get minzoom and maxzoom
+        // Check if filter contains OR logic (multiple rules needed)
+        if (filterPredicate.find("|OR|") != std::string::npos) {
+            // Split by OR marker and generate multiple rules
+            std::ostringstream allRules;
+            size_t start = 0;
+            size_t end = filterPredicate.find("|OR|");
+            
+            while (end != std::string::npos || start < filterPredicate.length()) {
+                std::string singlePredicate;
+                if (end != std::string::npos) {
+                    singlePredicate = filterPredicate.substr(start, end - start);
+                    start = end + 4; // Length of "|OR|"
+                    end = filterPredicate.find("|OR|", start);
+                } else {
+                    singlePredicate = filterPredicate.substr(start);
+                    start = filterPredicate.length();
+                }
+                
+                // Build selector with this single predicate
+                std::string singleSelector = selector + singlePredicate + zoomPredicate;
+                allRules << singleSelector << " {\n";
+                
+                // Convert layout properties
+                auto layoutIt = layer.find("layout");
+                if (layoutIt != layer.end() && layoutIt->second.is<picojson::object>()) {
+                    const picojson::object& layout = layoutIt->second.get<picojson::object>();
+                    std::string layoutCSS = convertProperties(layout, type, true);
+                    if (!layoutCSS.empty()) {
+                        allRules << layoutCSS;
+                    }
+                }
+                
+                // Convert paint properties
+                auto paintIt = layer.find("paint");
+                if (paintIt != layer.end() && paintIt->second.is<picojson::object>()) {
+                    const picojson::object& paint = paintIt->second.get<picojson::object>();
+                    std::string paintCSS = convertProperties(paint, type, false);
+                    if (!paintCSS.empty()) {
+                        allRules << paintCSS;
+                    }
+                }
+                
+                allRules << "}\n\n";
+            }
+            
+            return allRules.str();
+        }
+        
+        // Build complete selector
         double minzoom = getNumberProperty(layer, "minzoom", -1);
         double maxzoom = getNumberProperty(layer, "maxzoom", -1);
         
@@ -128,9 +226,47 @@ private:
     std::string convertProperties(const picojson::object& props, const std::string& layerType, bool isLayout) {
         std::ostringstream css;
         
+        // Check if we have both pattern and opacity for fill/line layers
+        bool hasPattern = false;
+        bool hasOpacity = false;
+        std::string patternPropName = "";
+        std::string opacityPropName = "";
+        
+        if (layerType == "fill") {
+            hasPattern = props.find("fill-pattern") != props.end();
+            hasOpacity = props.find("fill-opacity") != props.end();
+            if (hasPattern) {
+                patternPropName = "fill-pattern";
+                opacityPropName = "fill-opacity";
+            }
+        } else if (layerType == "line") {
+            hasPattern = props.find("line-pattern") != props.end();
+            hasOpacity = props.find("line-opacity") != props.end();
+            if (hasPattern) {
+                patternPropName = "line-pattern";
+                opacityPropName = "line-opacity";
+            }
+        }
+        
         for (const auto& prop : props) {
             std::string propName = prop.first;
             const picojson::value& propValue = prop.second;
+            
+            // Special handling for opacity when pattern is present
+            if (hasPattern && hasOpacity && propName == opacityPropName) {
+                // Convert to pattern-opacity instead
+                std::string cssProperty = layerType == "fill" ? "polygon-pattern-opacity" : "line-pattern-opacity";
+                std::string cssValue = convertPropertyValue(propValue, propName, layerType);
+                if (!cssValue.empty()) {
+                    css << "  " << cssProperty << ": " << cssValue << ";\n";
+                }
+                continue;
+            }
+            
+            // Skip regular opacity/fill properties when pattern is present
+            if (hasPattern && (propName == "fill-color" || propName == "fill-opacity" && layerType == "fill")) {
+                if (propName == "fill-color") continue; // Skip fill-color when using pattern
+            }
             
             // Map Mapbox property to CartoCSS property
             std::string cssProperty = mapPropertyName(propName, layerType, isLayout);
@@ -178,6 +314,10 @@ private:
             if (mapboxProp == "fill-translate") return ""; // Not directly supported
         }
         else if (layerType == "symbol") {
+            // Symbol placement properties
+            if (mapboxProp == "symbol-placement") return "text-placement";
+            if (mapboxProp == "symbol-spacing") return "text-spacing";
+            
             // Text/symbol layer properties
             if (mapboxProp == "text-field") return "text-name";
             if (mapboxProp == "text-font") return "text-face-name";
@@ -286,6 +426,11 @@ private:
                 return strValue; // round, butt, square / round, bevel, miter
             }
             
+            // Handle symbol-placement
+            if (propName == "symbol-placement") {
+                return strValue; // point, line, line-center
+            }
+            
             return "\"" + strValue + "\"";
         }
         else if (value.is<double>()) {
@@ -327,17 +472,169 @@ private:
                 return "\"" + arr[0].get<std::string>() + "\"";
             }
             
+            // Check if this is a Mapbox expression (starts with operator string)
+            if (!arr.empty() && arr[0].is<std::string>()) {
+                std::string op = arr[0].get<std::string>();
+                
+                // Handle interpolate expressions (stops)
+                if (op == "interpolate") {
+                    return convertInterpolateExpression(arr, propName);
+                }
+                
+                // Handle step expressions
+                if (op == "step") {
+                    return convertStepExpression(arr, propName);
+                }
+                
+                // Handle match expressions
+                if (op == "match") {
+                    return convertMatchExpression(arr, propName);
+                }
+                
+                // Handle get expressions
+                if (op == "get") {
+                    if (arr.size() >= 2 && arr[1].is<std::string>()) {
+                        return "[" + arr[1].get<std::string>() + "]";
+                    }
+                }
+            }
+            
             // Handle expressions and other arrays (not fully supported yet)
             // For now, just skip complex expressions
             return "";
         }
         else if (value.is<picojson::object>()) {
-            // Handle stops, expressions, etc. (not fully supported yet)
-            // This would require more complex conversion
+            const picojson::object& obj = value.get<picojson::object>();
+            
+            // Check if this is a stops-based expression
+            auto stopsIt = obj.find("stops");
+            if (stopsIt != obj.end() && stopsIt->second.is<picojson::array>()) {
+                return convertStopsExpression(obj, propName);
+            }
+            
+            // Handle other object-based expressions (not fully supported yet)
             return "";
         }
         
         return "";
+    }
+
+    std::string convertStopsExpression(const picojson::object& obj, const std::string& propName) {
+        auto stopsIt = obj.find("stops");
+        if (stopsIt == obj.end() || !stopsIt->second.is<picojson::array>()) {
+            return "";
+        }
+        
+        const picojson::array& stops = stopsIt->second.get<picojson::array>();
+        if (stops.empty()) {
+            return "";
+        }
+        
+        // Get the interpolation base (default is 1 for linear)
+        std::string interpolationType = "linear";
+        auto baseIt = obj.find("base");
+        if (baseIt != obj.end() && baseIt->second.is<double>()) {
+            double base = baseIt->second.get<double>();
+            if (base == 2.0) {
+                interpolationType = "exp";
+            } else if (base != 1.0) {
+                interpolationType = "exp"; // Use exp for any non-linear base
+            }
+        }
+        
+        // Build CartoCSS function: interpolationType([view::zoom], (zoom1, value1), (zoom2, value2), ...)
+        std::ostringstream oss;
+        oss << interpolationType << "([view::zoom]";
+        
+        for (const auto& stop : stops) {
+            if (!stop.is<picojson::array>()) continue;
+            const picojson::array& stopArr = stop.get<picojson::array>();
+            if (stopArr.size() < 2) continue;
+            
+            std::string zoom = valueToString(stopArr[0]);
+            std::string value = valueToString(stopArr[1]);
+            
+            oss << ", (" << zoom << ", " << value << ")";
+        }
+        
+        oss << ")";
+        return oss.str();
+    }
+    
+    std::string convertInterpolateExpression(const picojson::array& arr, const std::string& propName) {
+        // Format: ["interpolate", interpolationType, ["zoom"], zoom1, value1, zoom2, value2, ...]
+        if (arr.size() < 5) return "";
+        
+        std::string interpolationType = "linear";
+        
+        // Parse interpolation type
+        if (arr.size() >= 2 && arr[1].is<picojson::array>()) {
+            const picojson::array& interpArr = arr[1].get<picojson::array>();
+            if (!interpArr.empty() && interpArr[0].is<std::string>()) {
+                std::string interpType = interpArr[0].get<std::string>();
+                if (interpType == "linear") interpolationType = "linear";
+                else if (interpType == "exponential") interpolationType = "exp";
+                else if (interpType == "cubic-bezier") interpolationType = "cubic";
+            }
+        }
+        
+        // Check if it's based on zoom
+        bool isZoomBased = false;
+        if (arr.size() >= 3 && arr[2].is<picojson::array>()) {
+            const picojson::array& inputArr = arr[2].get<picojson::array>();
+            if (!inputArr.empty() && inputArr[0].is<std::string>()) {
+                std::string input = inputArr[0].get<std::string>();
+                if (input == "zoom") isZoomBased = true;
+            }
+        }
+        
+        if (!isZoomBased) return ""; // Only support zoom-based expressions for now
+        
+        // Build CartoCSS function
+        std::ostringstream oss;
+        oss << interpolationType << "([view::zoom]";
+        
+        // Parse stop pairs (starting from index 3)
+        for (size_t i = 3; i + 1 < arr.size(); i += 2) {
+            std::string zoom = valueToString(arr[i]);
+            std::string value = valueToString(arr[i + 1]);
+            oss << ", (" << zoom << ", " << value << ")";
+        }
+        
+        oss << ")";
+        return oss.str();
+    }
+    
+    std::string convertStepExpression(const picojson::array& arr, const std::string& propName) {
+        // Format: ["step", ["zoom"], defaultValue, stop1, value1, stop2, value2, ...]
+        if (arr.size() < 4) return "";
+        
+        // Build CartoCSS step function
+        std::ostringstream oss;
+        oss << "step([view::zoom]";
+        
+        // Default value (index 2)
+        if (arr.size() >= 3) {
+            std::string defaultValue = valueToString(arr[2]);
+            oss << ", " << defaultValue;
+        }
+        
+        // Parse stop pairs (starting from index 3)
+        for (size_t i = 3; i + 1 < arr.size(); i += 2) {
+            std::string zoom = valueToString(arr[i]);
+            std::string value = valueToString(arr[i + 1]);
+            oss << ", (" << zoom << ", " << value << ")";
+        }
+        
+        oss << ")";
+        return oss.str();
+    }
+    
+    std::string convertMatchExpression(const picojson::array& arr, const std::string& propName) {
+        // Match expressions need to be converted to multiple rules
+        // For now, we'll return empty and handle this at a higher level
+        // This signals that the property needs special handling
+        return ""; // Will be handled by generating multiple rules
     }
 
     std::string convertFilter(const picojson::value& filter) {
@@ -402,22 +699,33 @@ private:
         }
         else if (op == "in") {
             // ["in", "field", "value1", "value2", ...]
-            // NOTE: 'in' filters are not directly supported in CartoCSS predicates.
-            // Would require multiple rule definitions or when() expressions.
-            // Skipping for now - users need to handle manually.
-            return "";
+            // Convert to comma-separated rules (handled at layer level)
+            if (filterArray.size() >= 3 && filterArray[1].is<std::string>()) {
+                std::string key = filterArray[1].get<std::string>();
+                std::ostringstream oss;
+                
+                // Generate multiple predicates separated by OR marker
+                for (size_t i = 2; i < filterArray.size(); i++) {
+                    if (i > 2) oss << "|OR|"; // Special separator for OR logic
+                    std::string value = valueToString(filterArray[i]);
+                    oss << "[" << key << " = " << value << "]";
+                }
+                return oss.str();
+            }
         }
         else if (op == "has") {
             if (filterArray.size() >= 2 && filterArray[1].is<std::string>()) {
                 std::string key = filterArray[1].get<std::string>();
-                // CartoCSS doesn't have a direct "has" operator
-                // Could use [field != null] but that's not quite the same
-                return "";
+                // CartoCSS supports null comparison
+                return "[" + key + " != null]";
             }
         }
         else if (op == "!has") {
-            // Similar to has, not directly supported
-            return "";
+            if (filterArray.size() >= 2 && filterArray[1].is<std::string>()) {
+                std::string key = filterArray[1].get<std::string>();
+                // CartoCSS supports null comparison
+                return "[" + key + " = null]";
+            }
         }
         else if (op == "all") {
             // Combine multiple filters with AND (implicit in CartoCSS)
@@ -425,6 +733,12 @@ private:
             for (size_t i = 1; i < filterArray.size(); i++) {
                 std::string subFilter = convertFilter(filterArray[i]);
                 if (!subFilter.empty()) {
+                    // Check if subfilter contains OR logic
+                    if (subFilter.find("|OR|") != std::string::npos) {
+                        // This is complex - would need expansion at layer level
+                        // For now, skip complex AND + OR combinations
+                        return "";
+                    }
                     oss << subFilter;
                 }
             }
@@ -432,9 +746,15 @@ private:
         }
         else if (op == "any") {
             // Combine multiple filters with OR
-            // Not directly supported in CartoCSS predicates
-            // Would need multiple rule definitions
-            return "";
+            std::ostringstream oss;
+            for (size_t i = 1; i < filterArray.size(); i++) {
+                if (i > 1) oss << "|OR|";
+                std::string subFilter = convertFilter(filterArray[i]);
+                if (!subFilter.empty()) {
+                    oss << subFilter;
+                }
+            }
+            return oss.str();
         }
         else if (op == "none") {
             // Not directly supported
