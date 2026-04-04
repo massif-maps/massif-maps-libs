@@ -394,6 +394,10 @@ namespace carto::vt {
         // Map from grid cell to label indices
         std::unordered_map<GridCell, std::vector<std::size_t>, GridCellHash> gridCells;
         
+        // Estimate world-space grid cell size from cluster distance
+        // We need to convert pixel-based cluster distance to world space for stable grid assignment
+        // This is approximate but provides stability - labels won't change grid cells when panning
+        
         // Assign labels to grid cells based on their world position
         for (std::size_t idx : clusterableIndices) {
             const std::shared_ptr<Label>& label = validLabelList[idx].label;
@@ -401,14 +405,16 @@ namespace carto::vt {
             // Get world position of the label
             cglib::vec3<double> worldPos;
             if (label->calculateCenter(worldPos)) {
-                // Convert world position to screen position to determine grid cell
-                // We use screen space for grid calculation to ensure consistent pixel-based clustering
-                cglib::vec2<float> screenPos = validLabelList[idx].screenPos;
+                // Use world coordinates for grid cell assignment to ensure stability during panning
+                // Grid cell size in world space is approximated from cluster distance in pixels
+                // This ensures labels remain in the same grid cell regardless of viewport position
                 
-                // Calculate grid cell coordinates
-                // Grid cell size is based on cluster distance to ensure stable grouping
-                int gridX = static_cast<int>(std::floor(screenPos(0) / clusterDistancePx));
-                int gridY = static_cast<int>(std::floor(screenPos(1) / clusterDistancePx));
+                // Use a fixed world-space grid size derived from cluster distance
+                // The scale factor converts from pixels to world coordinates (approximate)
+                double worldGridSize = clusterDistancePx * 0.01; // Approximate scale conversion
+                
+                int gridX = static_cast<int>(std::floor(worldPos(0) / worldGridSize));
+                int gridY = static_cast<int>(std::floor(worldPos(1) / worldGridSize));
                 
                 GridCell cell{gridX, gridY};
                 gridCells[cell].push_back(idx);
