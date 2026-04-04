@@ -254,17 +254,17 @@ namespace carto::vt {
             return;
         }
 
-        // Early exit: Check if any labels have clustering enabled
-        bool hasClusteringEnabled = false;
+        // Early exit: Check if ClusterSymbolizer is present (indicated by clusterDistance > 0)
+        bool hasClusterSymbolizer = false;
         for (const auto& labelInfo : validLabelList) {
-            if (labelInfo.label->allowClustering() && labelInfo.label->getClusterDistance() > 0) {
-                hasClusteringEnabled = true;
+            if (labelInfo.label->getClusterDistance() > 0) {
+                hasClusterSymbolizer = true;
                 break;
             }
         }
         
-        if (!hasClusteringEnabled) {
-            return; // No clustering needed - zero performance impact
+        if (!hasClusterSymbolizer) {
+            return; // No ClusterSymbolizer - zero performance impact
         }
 
         // Group labels by clustering configuration (layer + cluster distance)
@@ -273,7 +273,10 @@ namespace carto::vt {
         
         for (std::size_t i = 0; i < validLabelList.size(); i++) {
             const std::shared_ptr<Label>& label = validLabelList[i].label;
-            if (label->allowClustering() && label->getClusterDistance() > 0) {
+            // Only cluster labels that:
+            // 1. Have clusterDistance > 0 (are in a rule with ClusterSymbolizer)
+            // 2. Have allowClustering == true (haven't opted out)
+            if (label->getClusterDistance() > 0 && label->allowClustering()) {
                 // Group by layer index and cluster distance to cluster labels from same rule together
                 std::string key = std::to_string(validLabelList[i].layerIndex) + "_" + std::to_string(label->getClusterDistance());
                 clusterGroups[key].push_back(i);
@@ -308,6 +311,19 @@ namespace carto::vt {
                     // Set cluster count on representative label
                     {
                         std::lock_guard<std::mutex> labelLock(labelMutex);
+                        validLabelList[representativeIdx].label->setClusterCount(cluster.count);
+                    }
+
+                    // Hide other labels in the cluster by marking them as invalid
+                    for (std::size_t idx : cluster.labelIndices) {
+                        if (idx != representativeIdx) {
+                            validLabelList[idx].valid = false;
+                        }
+                    }
+                }
+            }
+        }
+    }
                         validLabelList[representativeIdx].label->setClusterCount(cluster.count);
                     }
 

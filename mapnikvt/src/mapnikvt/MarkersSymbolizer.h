@@ -73,7 +73,7 @@ namespace carto::mvt {
         BoolProperty _allowOverlapSameFeatureId = BoolProperty(false);
         BoolProperty _sameFeatureIdDependent = BoolProperty(false);
         BoolProperty _ignorePlacement = BoolProperty(false);
-        BoolProperty _allowClustering = BoolProperty(false);
+        BoolProperty _allowClustering = BoolProperty(true);
         TransformProperty _transform;
 
         FloatFunctionBuilder _sizeFuncBuilder;

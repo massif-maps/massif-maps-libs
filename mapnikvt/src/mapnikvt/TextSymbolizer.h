@@ -96,7 +96,7 @@ namespace carto::mvt {
         BoolProperty _clip = BoolProperty(false);
         BoolProperty _allowOverlapSameFeatureId = BoolProperty(false);
         BoolProperty _sameFeatureIdDependent = BoolProperty(false);
-        BoolProperty _allowClustering = BoolProperty(false);
+        BoolProperty _allowClustering = BoolProperty(true);
         StringProperty _wrapCharacter = StringProperty("");
         FloatProperty _wrapWidth = FloatProperty(0.0f);
         BoolProperty _wrapBefore = BoolProperty(false);
