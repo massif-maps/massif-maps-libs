@@ -1,0 +1,95 @@
+{
+  "version": 8,
+  "name": "Test Advanced Features",
+  "layers": [
+    {
+      "id": "background",
+      "type": "background",
+      "paint": {
+        "background-color": "#f0f0f0",
+        "background-opacity": 0.9
+      }
+    },
+    {
+      "id": "roads-with-stops",
+      "type": "line",
+      "source-layer": "roads",
+      "paint": {
+        "line-color": "#ff0000",
+        "line-width": {
+          "stops": [[10, 1], [15, 3], [20, 6]]
+        },
+        "line-opacity": 0.8
+      }
+    },
+    {
+      "id": "roads-with-interpolate",
+      "type": "line",
+      "source-layer": "highways",
+      "paint": {
+        "line-color": "#0000ff",
+        "line-width": ["interpolate", ["linear"], ["zoom"], 10, 2, 15, 5, 20, 10]
+      }
+    },
+    {
+      "id": "roads-with-step",
+      "type": "line",
+      "source-layer": "streets",
+      "paint": {
+        "line-width": ["step", ["zoom"], 1, 12, 2, 15, 4, 18, 8]
+      }
+    },
+    {
+      "id": "water-with-pattern",
+      "type": "fill",
+      "source-layer": "water",
+      "paint": {
+        "fill-pattern": "water-pattern",
+        "fill-opacity": 0.7
+      }
+    },
+    {
+      "id": "buildings-with-in-filter",
+      "type": "fill",
+      "source-layer": "buildings",
+      "filter": ["in", "type", "residential", "commercial", "industrial"],
+      "paint": {
+        "fill-color": "#cccccc"
+      }
+    },
+    {
+      "id": "pois-with-any-filter",
+      "type": "symbol",
+      "source-layer": "pois",
+      "filter": ["any", ["==", "category", "restaurant"], ["==", "category", "cafe"], ["==", "category", "bar"]],
+      "layout": {
+        "text-field": "{name}",
+        "text-size": 12
+      }
+    },
+    {
+      "id": "places-with-has-filter",
+      "type": "symbol",
+      "source-layer": "places",
+      "filter": ["has", "name"],
+      "layout": {
+        "text-field": "{name}",
+        "symbol-placement": "line",
+        "symbol-spacing": 250
+      },
+      "paint": {
+        "text-color": "#000000"
+      }
+    },
+    {
+      "id": "unnamed-places",
+      "type": "symbol",
+      "source-layer": "places",
+      "filter": ["!has", "name"],
+      "layout": {
+        "icon-image": "dot",
+        "icon-size": 0.5
+      }
+    }
+  ]
+}
