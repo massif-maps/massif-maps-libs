@@ -43,6 +43,13 @@ namespace carto::mvt {
             }
         }
         
+        // Create unique cluster group ID combining rule and symbolizer
+        // This ensures labels from different rules are clustered separately
+        long long clusterGroupId = 0;
+        if (clusterDistance > 0) {
+            clusterGroupId = (reinterpret_cast<long long>(rule.get()) ^ reinterpret_cast<long long>(this));
+        }
+        
         if (transform) { // if rotation transform is explicitly defined, use point orientation
             if ((*transform).matrix2()(0, 1) != 0 || (*transform).matrix2()(1, 0) != 0) {
                 orientation = vt::LabelOrientation::POINT;
@@ -212,7 +219,7 @@ namespace carto::mvt {
             };
         }
 
-        return [compOp, fillFunc, normalizedSizeFunc, bitmapImage, transform, orientation, placement, placementPriority, spacing, bitmapSize, tileId, tileSize, glyphMap, groupId, labelIdOverride, allowOverlapSameFeatureId, sameFeatureIdDependent, allowClustering, clusterDistance, hash, this](const FeatureCollection& featureCollection, vt::TileLayerBuilder& layerBuilder) {
+        return [compOp, fillFunc, normalizedSizeFunc, bitmapImage, transform, orientation, placement, placementPriority, spacing, bitmapSize, tileId, tileSize, glyphMap, groupId, labelIdOverride, allowOverlapSameFeatureId, sameFeatureIdDependent, allowClustering, clusterDistance, clusterGroupId, hash, this](const FeatureCollection& featureCollection, vt::TileLayerBuilder& layerBuilder) {
             vt::PointLabelStyle style(orientation, fillFunc, normalizedSizeFunc, false, bitmapImage, transform);
             vt::TileLayerBuilder::PointLabelProcessor pointProcessor;
             for (std::size_t featureIndex = 0; featureIndex < featureCollection.size(); featureIndex++) {
@@ -237,7 +244,7 @@ namespace carto::mvt {
                     int index = 0;
                     for (const auto& vertices : verticesList) {
                         for (const auto &vertex: vertices) {
-                            pointProcessor(localId, 10 * labelId + index, groupId, vertex, placementPriority, 0, allowOverlapSameFeatureId, sameFeatureIdDependent, index, allowClustering, clusterDistance);
+                            pointProcessor(localId, 10 * labelId + index, groupId, vertex, placementPriority, 0, allowOverlapSameFeatureId, sameFeatureIdDependent, index, allowClustering, clusterDistance, clusterGroupId);
                         }
                         index++;
                     }
@@ -245,12 +252,12 @@ namespace carto::mvt {
                 else if (placement != vt::LabelOrientation::LINE) {
                     if (auto lineGeometry = std::get_if<LineGeometry>(featureCollection.getGeometry(featureIndex).get())) {
                         for (const auto& vertices : lineGeometry->getVerticesList()) {
-                            pointProcessor(localId, labelId, groupId, vertices, placementPriority, 0, allowOverlapSameFeatureId, sameFeatureIdDependent, 0, allowClustering, clusterDistance);
+                            pointProcessor(localId, labelId, groupId, vertices, placementPriority, 0, allowOverlapSameFeatureId, sameFeatureIdDependent, 0, allowClustering, clusterDistance, clusterGroupId);
                         }
                     }
                     else if (auto polygonGeometry = std::get_if<PolygonGeometry>(featureCollection.getGeometry(featureIndex).get())) {
                         for (const auto& vertex : polygonGeometry->getSurfacePoints()) {
-                            pointProcessor(localId, labelId, groupId, vertex, placementPriority, 0, allowOverlapSameFeatureId, sameFeatureIdDependent, 0, allowClustering, clusterDistance);
+                            pointProcessor(localId, labelId, groupId, vertex, placementPriority, 0, allowOverlapSameFeatureId, sameFeatureIdDependent, 0, allowClustering, clusterDistance, clusterGroupId);
                         }
                     }
                 }
@@ -265,7 +272,7 @@ namespace carto::mvt {
 
                     for (const auto& vertices : verticesList) {
                         if (spacing <= 0) {
-                            pointProcessor(localId, labelId, groupId, vertices, placementPriority, 0, allowOverlapSameFeatureId, sameFeatureIdDependent, 0, allowClustering, clusterDistance);
+                            pointProcessor(localId, labelId, groupId, vertices, placementPriority, 0, allowOverlapSameFeatureId, sameFeatureIdDependent, 0, allowClustering, clusterDistance, clusterGroupId);
                             continue;
                         }
                         
@@ -276,7 +283,7 @@ namespace carto::mvt {
                                 int counter = 0;
                                 for (const auto& vertex : transformedPoints.second) {
                                     long long generatedLabelId = combineId(labelId, std::hash<vt::TileId>()(tileId) * 63 + counter);
-                                    pointProcessor(localId, generatedLabelId, groupId, vertex, placementPriority, 0, allowOverlapSameFeatureId, sameFeatureIdDependent, 0);
+                                    pointProcessor(localId, generatedLabelId, groupId, vertex, placementPriority, 0, allowOverlapSameFeatureId, sameFeatureIdDependent, 0, allowClustering, clusterDistance, clusterGroupId);
                                     counter++;
                                 }
                                 pointProcessor = vt::TileLayerBuilder::PointLabelProcessor();

@@ -267,9 +267,29 @@ namespace carto::vt {
             return; // No ClusterSymbolizer - zero performance impact
         }
 
-        // Group labels by clustering configuration (layer + cluster distance)
-        // Labels from the same rule will have the same clusterDistance
-        std::unordered_map<std::string, std::vector<std::size_t>> clusterGroups;
+        // Group labels by cluster group ID and distance for hierarchical clustering
+        // Each unique clusterGroupId represents a distinct clustering rule
+        struct ClusterGroupKey {
+            long long clusterGroupId;
+            float clusterDistance;
+            int layerIndex;
+            
+            bool operator==(const ClusterGroupKey& other) const {
+                return clusterGroupId == other.clusterGroupId && 
+                       clusterDistance == other.clusterDistance && 
+                       layerIndex == other.layerIndex;
+            }
+        };
+        
+        struct ClusterGroupKeyHash {
+            std::size_t operator()(const ClusterGroupKey& key) const {
+                return std::hash<long long>()(key.clusterGroupId) ^ 
+                       std::hash<float>()(key.clusterDistance) ^ 
+                       std::hash<int>()(key.layerIndex);
+            }
+        };
+        
+        std::unordered_map<ClusterGroupKey, std::vector<std::size_t>, ClusterGroupKeyHash> clusterGroups;
         
         for (std::size_t i = 0; i < validLabelList.size(); i++) {
             const std::shared_ptr<Label>& label = validLabelList[i].label;
@@ -277,14 +297,23 @@ namespace carto::vt {
             // 1. Have clusterDistance > 0 (are in a rule with ClusterSymbolizer)
             // 2. Have allowClustering == true (haven't opted out)
             if (label->getClusterDistance() > 0 && label->allowClustering()) {
-                // Group by layer index and cluster distance to cluster labels from same rule together
-                std::string key = std::to_string(validLabelList[i].layerIndex) + "_" + std::to_string(label->getClusterDistance());
+                ClusterGroupKey key{label->getClusterGroupId(), label->getClusterDistance(), validLabelList[i].layerIndex};
                 clusterGroups[key].push_back(i);
             }
         }
 
-        // Process each cluster group independently
-        for (auto& entry : clusterGroups) {
+        // Sort cluster groups by distance (smallest first) for hierarchical clustering
+        // This ensures that smaller-distance clusters are created first,
+        // then larger-distance clusters can cluster the representatives
+        std::vector<std::pair<ClusterGroupKey, std::vector<std::size_t>>> sortedGroups(
+            clusterGroups.begin(), clusterGroups.end());
+        std::sort(sortedGroups.begin(), sortedGroups.end(),
+                  [](const auto& a, const auto& b) { 
+                      return a.first.clusterDistance < b.first.clusterDistance; 
+                  });
+
+        // Process each cluster group in order (smallest distance first)
+        for (auto& entry : sortedGroups) {
             const std::vector<std::size_t>& clusterableIndices = entry.second;
             
             if (clusterableIndices.size() < 2) {
@@ -308,23 +337,18 @@ namespace carto::vt {
                         }
                     }
 
-                    // Set cluster count on representative label
-                    {
+                    // Accumulate cluster counts: when clustering already-clustered labels,
+                    // sum their cluster counts instead of treating each as 1
+                    int totalCount = 0;
+                    for (std::size_t idx : cluster.labelIndices) {
                         std::lock_guard<std::mutex> labelLock(labelMutex);
-                        validLabelList[representativeIdx].label->setClusterCount(cluster.count);
+                        totalCount += validLabelList[idx].label->getClusterCount();
                     }
 
-                    // Hide other labels in the cluster by marking them as invalid
-                    for (std::size_t idx : cluster.labelIndices) {
-                        if (idx != representativeIdx) {
-                            validLabelList[idx].valid = false;
-                        }
-                    }
-                }
-            }
-        }
-    }
-                        validLabelList[representativeIdx].label->setClusterCount(cluster.count);
+                    // Set accumulated cluster count on representative label
+                    {
+                        std::lock_guard<std::mutex> labelLock(labelMutex);
+                        validLabelList[representativeIdx].label->setClusterCount(totalCount);
                     }
 
                     // Hide other labels in the cluster by marking them as invalid
