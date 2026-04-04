@@ -366,33 +366,96 @@ namespace carto::vt {
     }
 
     std::vector<LabelCuller::ClusterNode> LabelCuller::buildClusters(const std::vector<std::size_t>& clusterableIndices, const std::vector<LabelInfo>& validLabelList) {
-        // Create initial singleton clusters
-        std::vector<ClusterNode> clusters;
-        clusters.reserve(clusterableIndices.size());
-        
-        for (std::size_t idx : clusterableIndices) {
-            ClusterNode node;
-            node.labelIndices.push_back(idx);
-            node.center = validLabelList[idx].screenPos;
-            node.count = 1;
-            node.maxDistance = 0.0f;
-            clusters.push_back(node);
-        }
-
-        if (clusters.empty()) {
-            return clusters;
+        if (clusterableIndices.empty()) {
+            return {};
         }
 
         // Get cluster distance from first label (all in group have same distance)
         float clusterDistancePx = validLabelList[clusterableIndices[0]].label->getClusterDistance();
 
-        // Merge clusters iteratively until no more merging is possible
-        bool merged = true;
-        while (merged && clusters.size() > 1) {
-            merged = (mergeClusters(clusters, clusterDistancePx) > 0);
+        // Grid-based clustering for stability during map panning
+        // Group labels by grid cells based on their world position
+        struct GridCell {
+            int x;
+            int y;
+            
+            bool operator==(const GridCell& other) const {
+                return x == other.x && y == other.y;
+            }
+        };
+        
+        struct GridCellHash {
+            std::size_t operator()(const GridCell& cell) const {
+                // Simple hash combination
+                return std::hash<int>()(cell.x) ^ (std::hash<int>()(cell.y) << 1);
+            }
+        };
+        
+        // Map from grid cell to label indices
+        std::unordered_map<GridCell, std::vector<std::size_t>, GridCellHash> gridCells;
+        
+        // Assign labels to grid cells based on their world position
+        for (std::size_t idx : clusterableIndices) {
+            const std::shared_ptr<Label>& label = validLabelList[idx].label;
+            
+            // Get world position of the label
+            cglib::vec3<double> worldPos;
+            if (label->calculateCenter(worldPos)) {
+                // Convert world position to screen position to determine grid cell
+                // We use screen space for grid calculation to ensure consistent pixel-based clustering
+                cglib::vec2<float> screenPos = validLabelList[idx].screenPos;
+                
+                // Calculate grid cell coordinates
+                // Grid cell size is based on cluster distance to ensure stable grouping
+                int gridX = static_cast<int>(std::floor(screenPos(0) / clusterDistancePx));
+                int gridY = static_cast<int>(std::floor(screenPos(1) / clusterDistancePx));
+                
+                GridCell cell{gridX, gridY};
+                gridCells[cell].push_back(idx);
+            }
+        }
+        
+        // Build clusters from grid cells
+        std::vector<ClusterNode> allClusters;
+        
+        for (const auto& cellEntry : gridCells) {
+            const std::vector<std::size_t>& cellIndices = cellEntry.second;
+            
+            if (cellIndices.size() == 1) {
+                // Single label in cell - create singleton cluster
+                ClusterNode node;
+                node.labelIndices.push_back(cellIndices[0]);
+                node.center = validLabelList[cellIndices[0]].screenPos;
+                node.count = 1;
+                node.maxDistance = 0.0f;
+                allClusters.push_back(node);
+            } else {
+                // Multiple labels in cell - apply proximity-based clustering within the cell
+                std::vector<ClusterNode> cellClusters;
+                cellClusters.reserve(cellIndices.size());
+                
+                // Create initial singleton clusters for this cell
+                for (std::size_t idx : cellIndices) {
+                    ClusterNode node;
+                    node.labelIndices.push_back(idx);
+                    node.center = validLabelList[idx].screenPos;
+                    node.count = 1;
+                    node.maxDistance = 0.0f;
+                    cellClusters.push_back(node);
+                }
+                
+                // Merge clusters within the cell based on proximity
+                bool merged = true;
+                while (merged && cellClusters.size() > 1) {
+                    merged = (mergeClusters(cellClusters, clusterDistancePx) > 0);
+                }
+                
+                // Add cell's clusters to all clusters
+                allClusters.insert(allClusters.end(), cellClusters.begin(), cellClusters.end());
+            }
         }
 
-        return clusters;
+        return allClusters;
     }
 
     int LabelCuller::mergeClusters(std::vector<ClusterNode>& clusters, float minDistance) {

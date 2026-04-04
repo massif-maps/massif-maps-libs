@@ -29,8 +29,9 @@ namespace carto::mvt {
         float clusterDx = _clusterDx.getValue(exprContext);
         float clusterDy = _clusterDy.getValue(exprContext);
         
-        // ClusterSymbolizer uses allow-clustering to control if its own labels participate in clustering
-        bool allowClustering = _allowClustering.getValue(exprContext);
+        // ClusterSymbolizer labels should NOT participate in clustering - they ARE the cluster representatives
+        // Setting allowClustering to false ensures these labels show the cluster count instead of being clustered
+        bool allowClustering = false;  // Force false - ClusterSymbolizer labels are cluster representatives
         float clusterDistance = _clusterDistance.getValue(exprContext);
         
         // Create unique cluster group ID using stable hash of rule name and symbolizer index
