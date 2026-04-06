@@ -60,6 +60,7 @@ namespace carto::vt {
         const std::vector<LabelAnchor>& getVariableAnchors() const { return _variableAnchors; }
         int getChosenAnchorIndex() const { return _chosenAnchorIndex; }
         void setChosenAnchorIndex(int index) { _chosenAnchorIndex = index; }
+        bool hasValidChosenAnchor() const { return !_variableAnchors.empty() && _chosenAnchorIndex >= 0 && _chosenAnchorIndex < static_cast<int>(_variableAnchors.size()); }
 
         void mergeGeometries(Label& label);
         void snapPlacement(const Label& label);

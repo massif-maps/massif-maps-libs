@@ -191,9 +191,14 @@ namespace carto::vt {
                 int prevAnchorIdx = label->getChosenAnchorIndex();
                 for (int i = 0; i < static_cast<int>(variableAnchors.size()) && !visible; i++) {
                     // Try the previously chosen anchor first, then the rest in order
-                    int anchorIdx = (i == 0 && prevAnchorIdx >= 0 && prevAnchorIdx < static_cast<int>(variableAnchors.size())) ? prevAnchorIdx
-                                  : (i == prevAnchorIdx)                                                                        ? 0
-                                  : i;
+                    int anchorIdx;
+                    if (i == 0 && prevAnchorIdx >= 0 && prevAnchorIdx < static_cast<int>(variableAnchors.size())) {
+                        anchorIdx = prevAnchorIdx;
+                    } else if (i == prevAnchorIdx) {
+                        anchorIdx = 0;
+                    } else {
+                        anchorIdx = i;
+                    }
                     label->setChosenAnchorIndex(anchorIdx);
 
                     CullRecord candidateCullRecord;

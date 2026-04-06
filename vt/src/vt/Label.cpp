@@ -173,7 +173,7 @@ namespace carto::vt {
         else {
             // Use bounding box for envelope
             cglib::vec3<float> anchoredOrigin = origin;
-            if (!_variableAnchors.empty() && _chosenAnchorIndex >= 0 && _chosenAnchorIndex < static_cast<int>(_variableAnchors.size())) {
+            if (hasValidChosenAnchor()) {
                 cglib::vec2<float> anchorOffset = calculateAnchorOffset(_variableAnchors[_chosenAnchorIndex], _glyphBBox);
                 anchoredOrigin = origin + xAxis * (anchorOffset(0) * scale) + yAxis * (anchorOffset(1) * scale);
             }
@@ -247,7 +247,7 @@ namespace carto::vt {
 
             cglib::vec3<float> origin, xAxis, yAxis;
             setupCoordinateSystem(viewState, placement, origin, xAxis, yAxis);
-            if (!_variableAnchors.empty() && _chosenAnchorIndex >= 0 && _chosenAnchorIndex < static_cast<int>(_variableAnchors.size())) {
+            if (hasValidChosenAnchor()) {
                 cglib::vec2<float> anchorOffset = calculateAnchorOffset(_variableAnchors[_chosenAnchorIndex], _glyphBBox);
                 origin = origin + xAxis * (anchorOffset(0) * scale) + yAxis * (anchorOffset(1) * scale);
             }

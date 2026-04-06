@@ -327,7 +327,11 @@ namespace carto::mvt {
             while (std::getline(ss, token, ',')) {
                 boost::algorithm::trim(token);
                 if (!token.empty()) {
-                    anchors.push_back(parseLabelAnchor(token));
+                    try {
+                        anchors.push_back(parseLabelAnchor(token));
+                    } catch (const ParserException& ex) {
+                        throw ParserException("Invalid anchor value '" + token + "' in variable-anchor list", str);
+                    }
                 }
             }
             return anchors;
