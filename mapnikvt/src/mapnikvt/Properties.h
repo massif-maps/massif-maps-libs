@@ -22,6 +22,10 @@
 #include <mutex>
 #include <set>
 #include <functional>
+#include <sstream>
+#include <vector>
+
+#include <boost/algorithm/string.hpp>
 
 namespace carto::mvt {
     struct Property {
@@ -304,6 +308,29 @@ namespace carto::mvt {
                 return 1.0f;
             }
             throw ParserException("Invalid vertical alignment", verticalAlignment);
+        }
+    };
+
+    struct VariableAnchorsProperty : GenericValueProperty<std::vector<vt::LabelAnchor>> {
+        VariableAnchorsProperty() { initialize(std::string()); }
+
+    protected:
+        virtual std::vector<vt::LabelAnchor> buildValue(const ExpressionContext& context) const override {
+            Value val = std::visit(ExpressionEvaluator(context, nullptr), _expr);
+            std::string str = toLower(ValueConverter<std::string>::convert(val));
+            if (str.empty()) {
+                return {};
+            }
+            std::vector<vt::LabelAnchor> anchors;
+            std::istringstream ss(str);
+            std::string token;
+            while (std::getline(ss, token, ',')) {
+                boost::algorithm::trim(token);
+                if (!token.empty()) {
+                    anchors.push_back(parseLabelAnchor(token));
+                }
+            }
+            return anchors;
         }
     };
 

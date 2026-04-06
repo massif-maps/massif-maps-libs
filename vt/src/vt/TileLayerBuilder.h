@@ -57,8 +57,8 @@ namespace carto::vt {
         LineProcessor createLineProcessor(const LineStyle& style, const std::shared_ptr<StrokeMap>& strokeMap);
         PolygonProcessor createPolygonProcessor(const PolygonStyle& style);
         Polygon3DProcessor createPolygon3DProcessor(const Polygon3DStyle& style);
-        PointLabelProcessor createPointLabelProcessor(const PointLabelStyle& style, const std::shared_ptr<GlyphMap>& glyphMap);
-        TextLabelProcessor createTextLabelProcessor(const TextLabelStyle& style, const TextFormatter& formatter);
+        PointLabelProcessor createPointLabelProcessor(const PointLabelStyle& style, const std::shared_ptr<GlyphMap>& glyphMap, std::vector<LabelAnchor> variableAnchors = {});
+        TextLabelProcessor createTextLabelProcessor(const TextLabelStyle& style, const TextFormatter& formatter, std::vector<LabelAnchor> variableAnchors = {});
 
         std::shared_ptr<TileLayer> buildTileLayer() const;
 

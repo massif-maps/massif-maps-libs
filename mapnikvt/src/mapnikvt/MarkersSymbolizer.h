@@ -35,6 +35,7 @@ namespace carto::mvt {
             bindProperty("clip", &_clip);
             bindProperty("ignore-placement", &_ignorePlacement);
             bindProperty("transform", &_transform);
+            bindProperty("variable-anchor", &_variableAnchors);
         }
 
         virtual FeatureProcessor createFeatureProcessor(const ExpressionContext& exprContext, const SymbolizerContext& symbolizerContext) const override;
@@ -73,6 +74,7 @@ namespace carto::mvt {
         BoolProperty _sameFeatureIdDependent = BoolProperty(false);
         BoolProperty _ignorePlacement = BoolProperty(false);
         TransformProperty _transform;
+        VariableAnchorsProperty _variableAnchors;
 
         FloatFunctionBuilder _sizeFuncBuilder;
         ColorFunctionBuilder _fillFuncBuilder;

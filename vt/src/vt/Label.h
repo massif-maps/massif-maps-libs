@@ -57,6 +57,10 @@ namespace carto::vt {
         bool isActive() const { return _active; }
         void setActive(bool active) { _active = active; }
 
+        const std::vector<LabelAnchor>& getVariableAnchors() const { return _variableAnchors; }
+        int getChosenAnchorIndex() const { return _chosenAnchorIndex; }
+        void setChosenAnchorIndex(int index) { _chosenAnchorIndex = index; }
+
         void mergeGeometries(Label& label);
         void snapPlacement(const Label& label);
         bool updatePlacement(const ViewState& viewState);
@@ -76,6 +80,8 @@ namespace carto::vt {
         static constexpr float SINGLE_ANGLE_SPLIT_THRESHOLD = 1.57f; // maximum single segment angle, in radians
         static constexpr float MIN_LINE_SEGMENT_DOTPRODUCT = 0.5f; // the minimum allowed dot product between consecutive segments
         static constexpr float MIN_BILLBOARD_VIEW_NORMAL_DOTPRODUCT = 0.49f; // the minimum allowed dot product between view vector and surface normal
+
+        static cglib::vec2<float> calculateAnchorOffset(LabelAnchor anchor, const cglib::bbox2<float>& glyphBBox);
 
         struct TilePoint {
             TileId tileId;
@@ -198,6 +204,7 @@ namespace carto::vt {
         const float _minimumGroupDistance;
         const bool _allowOverlapSameFeatureId;
         const bool _sameFeatureIdDependent;
+        const std::vector<LabelAnchor> _variableAnchors;
 
         cglib::bbox2<float> _glyphBBox;
         std::list<TilePoint> _tilePoints;
@@ -206,6 +213,7 @@ namespace carto::vt {
         float _opacity = 0.0f;
         bool _visible = false;
         bool _active = false;
+        int _chosenAnchorIndex = -1;
 
         std::shared_ptr<const Placement> _placement;
         mutable std::shared_ptr<const Placement> _cachedFlippedPlacement;

@@ -50,6 +50,7 @@ namespace carto::mvt {
             bindProperty("line-spacing", &_lineSpacing);
             bindProperty("horizontal-alignment", &_horizontalAlignment);
             bindProperty("vertical-alignment", &_verticalAlignment);
+            bindProperty("variable-anchor", &_variableAnchors);
             bindProperty("avoid-edges", nullptr);
             bindProperty("halo-rasterizer", nullptr);
         }
@@ -102,6 +103,7 @@ namespace carto::mvt {
         FloatProperty _lineSpacing = FloatProperty(0.0f);
         HorizontalAlignmentProperty _horizontalAlignment = HorizontalAlignmentProperty("auto");
         VerticalAlignmentProperty _verticalAlignment = VerticalAlignmentProperty("auto");
+        VariableAnchorsProperty _variableAnchors;
 
         ColorFunctionBuilder _fillFuncBuilder;
         FloatFunctionBuilder _sizeFuncBuilder;

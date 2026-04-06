@@ -37,6 +37,10 @@ namespace carto::vt {
         BILLBOARD_2D, BILLBOARD_3D, LINE_BILLBOARD_3D, POINT, LINE
     };
 
+    enum class LabelAnchor {
+        CENTER, TOP, BOTTOM, LEFT, RIGHT, TOP_LEFT, TOP_RIGHT, BOTTOM_LEFT, BOTTOM_RIGHT
+    };
+
     enum class RasterFilterMode {
         NONE, NEAREST, BILINEAR, BICUBIC
     };

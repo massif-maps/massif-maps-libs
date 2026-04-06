@@ -162,24 +162,70 @@ namespace carto::vt {
         std::unordered_map<long long, std::vector<const LabelInfo*>> groupMap;
         groupMap.reserve(validLabelList.size());
         bool changed = false;
-        for (const LabelInfo& labelInfo : validLabelList) {
+        for (LabelInfo& labelInfo : validLabelList) {
             std::lock_guard<std::mutex> labelLock(labelMutex);
 
             const std::shared_ptr<Label>& label = labelInfo.label;
 
             long long groupId = label->getGroupId();
 
-            // Label is always visible if its group is set to negative value. Otherwise test visibility against other labels
-            bool visible = groupId >= 0 ? labelInfo.valid && testGridOverlap(labelInfo) : labelInfo.valid;
+            bool visible = false;
+            const std::vector<LabelAnchor>& variableAnchors = label->getVariableAnchors();
 
-            if (visible && groupId > 0) {
-                for (const LabelInfo* otherLabelInfo : groupMap[groupId]) {
-                    const std::shared_ptr<Label>& otherLabel = otherLabelInfo->label;
-                    float minimumDistance = std::min(label->getMinimumGroupDistance(), otherLabel->getMinimumGroupDistance());
-                    if ((!labelInfo.label->allowOverlapSameFeatureId() || !otherLabel->allowOverlapSameFeatureId() ||  labelInfo.label->getLocalId() != otherLabel->getLocalId()) && testPolygonOverlap(labelInfo.cullRecord.envelope, otherLabelInfo->cullRecord.envelope, minimumDistance)) {
-                        visible = false;
-                        break;
+            if (variableAnchors.empty()) {
+                // Standard behavior: no variable anchor
+                visible = groupId >= 0 ? labelInfo.valid && testGridOverlap(labelInfo) : labelInfo.valid;
+
+                if (visible && groupId > 0) {
+                    for (const LabelInfo* otherLabelInfo : groupMap[groupId]) {
+                        const std::shared_ptr<Label>& otherLabel = otherLabelInfo->label;
+                        float minimumDistance = std::min(label->getMinimumGroupDistance(), otherLabel->getMinimumGroupDistance());
+                        if ((!labelInfo.label->allowOverlapSameFeatureId() || !otherLabel->allowOverlapSameFeatureId() ||  labelInfo.label->getLocalId() != otherLabel->getLocalId()) && testPolygonOverlap(labelInfo.cullRecord.envelope, otherLabelInfo->cullRecord.envelope, minimumDistance)) {
+                            visible = false;
+                            break;
+                        }
                     }
+                }
+            } else {
+                // Variable anchor: try anchors in order, prioritizing the previously chosen one for stability
+                int prevAnchorIdx = label->getChosenAnchorIndex();
+                for (int i = 0; i < static_cast<int>(variableAnchors.size()) && !visible; i++) {
+                    // Try the previously chosen anchor first, then the rest in order
+                    int anchorIdx = (i == 0 && prevAnchorIdx >= 0 && prevAnchorIdx < static_cast<int>(variableAnchors.size())) ? prevAnchorIdx
+                                  : (i == prevAnchorIdx)                                                                        ? 0
+                                  : i;
+                    label->setChosenAnchorIndex(anchorIdx);
+
+                    CullRecord candidateCullRecord;
+                    bool valid = calculateScreenEnvelope(label, candidateCullRecord.envelope);
+                    if (!valid) {
+                        continue;
+                    }
+                    candidateCullRecord.bounds = cglib::bbox2<float>::make_union(candidateCullRecord.envelope.begin(), candidateCullRecord.envelope.end());
+
+                    LabelInfo candidateLabelInfo = { valid, labelInfo.wasVisible, labelInfo.priority, labelInfo.layerIndex, labelInfo.size, labelInfo.opacity, label, candidateCullRecord };
+
+                    bool anchorFits = (groupId < 0) || testGridOverlap(candidateLabelInfo);
+
+                    if (anchorFits && groupId > 0) {
+                        for (const LabelInfo* otherLabelInfo : groupMap[groupId]) {
+                            const std::shared_ptr<Label>& otherLabel = otherLabelInfo->label;
+                            float minimumDistance = std::min(label->getMinimumGroupDistance(), otherLabel->getMinimumGroupDistance());
+                            if ((!label->allowOverlapSameFeatureId() || !otherLabel->allowOverlapSameFeatureId() || label->getLocalId() != otherLabel->getLocalId()) && testPolygonOverlap(candidateCullRecord.envelope, otherLabelInfo->cullRecord.envelope, minimumDistance)) {
+                                anchorFits = false;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (anchorFits) {
+                        visible = true;
+                        labelInfo.cullRecord = candidateCullRecord;
+                    }
+                }
+
+                if (!visible) {
+                    label->setChosenAnchorIndex(-1);
                 }
             }
 

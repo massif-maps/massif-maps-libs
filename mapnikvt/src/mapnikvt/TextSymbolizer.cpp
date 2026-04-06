@@ -37,7 +37,15 @@ namespace carto::mvt {
         float orientationAngle = _orientationAngle.getValue(exprContext);
         float sizeStatic = _size.getStaticValue(exprContext);
 
-        vt::TextFormatter formatter(font, sizeStatic, getFormatterOptions(symbolizerContext, exprContext));
+        std::vector<vt::LabelAnchor> variableAnchors = _variableAnchors.getValue(exprContext);
+
+        vt::TextFormatter::Options formatterOptions = getFormatterOptions(symbolizerContext, exprContext);
+        if (!variableAnchors.empty()) {
+            // When variable-anchor is active, use center alignment so the culler can apply per-anchor offsets
+            formatterOptions.alignment = cglib::vec2<float>(0, 0);
+            formatterOptions.offset = cglib::vec2<float>(0, 0);
+        }
+        vt::TextFormatter formatter(font, sizeStatic, formatterOptions);
         vt::CompOp compOp = _compOp.getValue(exprContext);
         vt::LabelOrientation placement = getPlacement(exprContext);
         if (placement == vt::LabelOrientation::LINE) {
@@ -150,12 +158,12 @@ namespace carto::mvt {
             };
         }
 
-        return [compOp, fillFunc, haloFillFunc, sizeFunc, haloRadiusFunc, fontScale, placement, text, hash, orientationAngle, formatter, backgroundOffset, backgroundImage, spacing, textSize, tileId, tileSize, labelIdOverride, groupId, placementPriority, minimumDistance, allowOverlapSameFeatureId, sameFeatureIdDependent, this](const FeatureCollection& featureCollection, vt::TileLayerBuilder& layerBuilder) {
+        return [compOp, fillFunc, haloFillFunc, sizeFunc, haloRadiusFunc, fontScale, placement, text, hash, orientationAngle, formatter, backgroundOffset, backgroundImage, spacing, textSize, tileId, tileSize, labelIdOverride, groupId, placementPriority, minimumDistance, allowOverlapSameFeatureId, sameFeatureIdDependent, variableAnchors, this](const FeatureCollection& featureCollection, vt::TileLayerBuilder& layerBuilder) {
             vt::TextLabelStyle style(placement, fillFunc, sizeFunc, haloFillFunc, haloRadiusFunc, true, orientationAngle, fontScale, backgroundOffset, backgroundImage);
             vt::TileLayerBuilder::TextLabelProcessor textProcessor;
             for (std::size_t featureIndex = 0; featureIndex < featureCollection.size(); featureIndex++) {
                 if (!textProcessor) {
-                    textProcessor = layerBuilder.createTextLabelProcessor(style, formatter);
+                    textProcessor = layerBuilder.createTextLabelProcessor(style, formatter, variableAnchors);
                     if (!textProcessor) {
                         return;
                     }

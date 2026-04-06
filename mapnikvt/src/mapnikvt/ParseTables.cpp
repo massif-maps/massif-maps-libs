@@ -52,4 +52,19 @@ namespace carto::mvt {
         };
         return labelOrientationTable;
     }
+
+    const ParseTable<vt::LabelAnchor>& getLabelAnchorTable() {
+        static const std::unordered_map<std::string, vt::LabelAnchor> labelAnchorTable = {
+            { "center",       vt::LabelAnchor::CENTER },
+            { "top",          vt::LabelAnchor::TOP },
+            { "bottom",       vt::LabelAnchor::BOTTOM },
+            { "left",         vt::LabelAnchor::LEFT },
+            { "right",        vt::LabelAnchor::RIGHT },
+            { "top-left",     vt::LabelAnchor::TOP_LEFT },
+            { "top-right",    vt::LabelAnchor::TOP_RIGHT },
+            { "bottom-left",  vt::LabelAnchor::BOTTOM_LEFT },
+            { "bottom-right", vt::LabelAnchor::BOTTOM_RIGHT }
+        };
+        return labelAnchorTable;
+    }
 }

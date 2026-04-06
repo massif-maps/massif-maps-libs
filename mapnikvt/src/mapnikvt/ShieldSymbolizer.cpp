@@ -41,7 +41,14 @@ namespace carto::mvt {
         bool unlockImage = _unlockImage.getValue(exprContext);
 
         vt::TextFormatter textFormatter(font, sizeStatic, getFormatterOptions(symbolizerContext, exprContext));
+
+        std::vector<vt::LabelAnchor> variableAnchors = _variableAnchors.getValue(exprContext);
+
         vt::TextFormatter::Options shieldFormatterOptions = textFormatter.getOptions();
+        if (!variableAnchors.empty()) {
+            // When variable-anchor is active, use center alignment so the culler can apply per-anchor offsets
+            shieldFormatterOptions.alignment = cglib::vec2<float>(0, 0);
+        }
         shieldFormatterOptions.offset = cglib::vec2<float>(shieldDx * fontScale, -shieldDy * fontScale);
         vt::TextFormatter shieldFormatter(font, sizeStatic, shieldFormatterOptions);
         vt::CompOp compOp = _compOp.getValue(exprContext);
@@ -136,12 +143,12 @@ namespace carto::mvt {
             };
         }
 
-        return [compOp, fillFunc, haloFillFunc, sizeFunc, haloRadiusFunc, fontScale, placement, orientation, text, hash, orientationAngle, formatter, backgroundOffset, backgroundImage, spacing, textSize, tileId, tileSize, labelIdOverride, groupId, placementPriority, minimumDistance, this](const FeatureCollection& featureCollection, vt::TileLayerBuilder& layerBuilder) {
+        return [compOp, fillFunc, haloFillFunc, sizeFunc, haloRadiusFunc, fontScale, placement, orientation, text, hash, orientationAngle, formatter, backgroundOffset, backgroundImage, spacing, textSize, tileId, tileSize, labelIdOverride, groupId, placementPriority, minimumDistance, variableAnchors, this](const FeatureCollection& featureCollection, vt::TileLayerBuilder& layerBuilder) {
             vt::TextLabelStyle style(orientation, fillFunc, sizeFunc, haloFillFunc, haloRadiusFunc, true, orientationAngle, fontScale, backgroundOffset, backgroundImage);
             vt::TileLayerBuilder::TextLabelProcessor textProcessor;
             for (std::size_t featureIndex = 0; featureIndex < featureCollection.size(); featureIndex++) {
                 if (!textProcessor) {
-                    textProcessor = layerBuilder.createTextLabelProcessor(style, formatter);
+                    textProcessor = layerBuilder.createTextLabelProcessor(style, formatter, variableAnchors);
                     if (!textProcessor) {
                         return;
                     }

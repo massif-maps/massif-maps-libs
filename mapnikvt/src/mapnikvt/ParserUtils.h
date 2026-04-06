@@ -35,6 +35,7 @@ namespace carto::mvt {
     vt::LineJoinMode parseLineJoinMode(const std::string& str);
     vt::CompOp parseCompOp(const std::string& str);
     vt::LabelOrientation parseLabelOrientation(const std::string& str);
+    vt::LabelAnchor parseLabelAnchor(const std::string& str);
     vt::Color parseColor(const std::string& str);
     Value parseValue(const std::string& str);
     Expression parseExpression(const std::string& str, bool stringExpr);

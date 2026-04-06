@@ -5,7 +5,7 @@
 
 namespace carto::vt {
     Label::Label(const TileLabel& tileLabel, const TileId& tileId, int layerIdx, const cglib::mat4x4<double>& tileMatrix, const std::shared_ptr<const TileTransformer::VertexTransformer>& transformer) :
-        _tileId(tileId), _layerIndex(layerIdx), _localId(tileLabel.getLocalId()), _globalId(tileLabel.getGlobalId()), _groupId(tileLabel.getGroupId()), _glyphs(tileLabel.getGlyphs()), _style(tileLabel.getStyle()), _priority(tileLabel.getPlacementInfo().priority), _minimumGroupDistance(tileLabel.getPlacementInfo().minimumGroupDistance), _allowOverlapSameFeatureId(tileLabel.getPlacementInfo().allowOverlapSameFeatureId), _sameFeatureIdDependent(tileLabel.getPlacementInfo().sameFeatureIdDependent), _geoPointIndex(tileLabel.getGeoPointIndex())
+        _tileId(tileId), _layerIndex(layerIdx), _localId(tileLabel.getLocalId()), _globalId(tileLabel.getGlobalId()), _groupId(tileLabel.getGroupId()), _glyphs(tileLabel.getGlyphs()), _style(tileLabel.getStyle()), _priority(tileLabel.getPlacementInfo().priority), _minimumGroupDistance(tileLabel.getPlacementInfo().minimumGroupDistance), _allowOverlapSameFeatureId(tileLabel.getPlacementInfo().allowOverlapSameFeatureId), _sameFeatureIdDependent(tileLabel.getPlacementInfo().sameFeatureIdDependent), _variableAnchors(tileLabel.getPlacementInfo().variableAnchors), _geoPointIndex(tileLabel.getGeoPointIndex())
     {
         _cachedVertices.reserve(_glyphs.size() * 4);
         _cachedTexCoords.reserve(_glyphs.size() * 4);
@@ -172,6 +172,11 @@ namespace carto::vt {
         }
         else {
             // Use bounding box for envelope
+            cglib::vec3<float> anchoredOrigin = origin;
+            if (!_variableAnchors.empty() && _chosenAnchorIndex >= 0 && _chosenAnchorIndex < static_cast<int>(_variableAnchors.size())) {
+                cglib::vec2<float> anchorOffset = calculateAnchorOffset(_variableAnchors[_chosenAnchorIndex], _glyphBBox);
+                anchoredOrigin = origin + xAxis * (anchorOffset(0) * scale) + yAxis * (anchorOffset(1) * scale);
+            }
             float minX = _glyphBBox.min(0) * scale - padding, maxX = _glyphBBox.max(0) * scale + padding;
             float minY = _glyphBBox.min(1) * scale - padding, maxY = _glyphBBox.max(1) * scale + padding;
             if (_style->transform) {
@@ -180,16 +185,16 @@ namespace carto::vt {
                 cglib::vec2<float> p01 = cglib::transform(cglib::vec2<float>(minX, maxY), transform);
                 cglib::vec2<float> p10 = cglib::transform(cglib::vec2<float>(maxX, minY), transform);
                 cglib::vec2<float> p11 = cglib::transform(cglib::vec2<float>(maxX, maxY), transform);
-                envelope[0] = origin + xAxis * p00(0) + yAxis * p00(1);
-                envelope[1] = origin + xAxis * p10(0) + yAxis * p10(1);
-                envelope[2] = origin + xAxis * p11(0) + yAxis * p11(1);
-                envelope[3] = origin + xAxis * p01(0) + yAxis * p01(1);
+                envelope[0] = anchoredOrigin + xAxis * p00(0) + yAxis * p00(1);
+                envelope[1] = anchoredOrigin + xAxis * p10(0) + yAxis * p10(1);
+                envelope[2] = anchoredOrigin + xAxis * p11(0) + yAxis * p11(1);
+                envelope[3] = anchoredOrigin + xAxis * p01(0) + yAxis * p01(1);
             }
             else {
-                envelope[0] = origin + xAxis * minX + yAxis * minY;
-                envelope[1] = origin + xAxis * maxX + yAxis * minY;
-                envelope[2] = origin + xAxis * maxX + yAxis * maxY;
-                envelope[3] = origin + xAxis * minX + yAxis * maxY;
+                envelope[0] = anchoredOrigin + xAxis * minX + yAxis * minY;
+                envelope[1] = anchoredOrigin + xAxis * maxX + yAxis * minY;
+                envelope[2] = anchoredOrigin + xAxis * maxX + yAxis * maxY;
+                envelope[3] = anchoredOrigin + xAxis * minX + yAxis * maxY;
             }
         }
         return valid;
@@ -242,6 +247,10 @@ namespace carto::vt {
 
             cglib::vec3<float> origin, xAxis, yAxis;
             setupCoordinateSystem(viewState, placement, origin, xAxis, yAxis);
+            if (!_variableAnchors.empty() && _chosenAnchorIndex >= 0 && _chosenAnchorIndex < static_cast<int>(_variableAnchors.size())) {
+                cglib::vec2<float> anchorOffset = calculateAnchorOffset(_variableAnchors[_chosenAnchorIndex], _glyphBBox);
+                origin = origin + xAxis * (anchorOffset(0) * scale) + yAxis * (anchorOffset(1) * scale);
+            }
             for (const cglib::vec3<float>& vertex : _cachedVertices) {
                 vertices.append(origin + xAxis * (vertex(0) * scale) + yAxis * (vertex(1) * scale));
             }
@@ -689,5 +698,20 @@ namespace carto::vt {
             updateBestPlacement(tileLine, i0, tileLine.vertices.size());
         }
         return bestPlacement;
+    }
+
+    cglib::vec2<float> Label::calculateAnchorOffset(LabelAnchor anchor, const cglib::bbox2<float>& glyphBBox) {
+        switch (anchor) {
+        case LabelAnchor::CENTER:       return cglib::vec2<float>(0, 0);
+        case LabelAnchor::TOP:          return cglib::vec2<float>(0, -glyphBBox.max(1));
+        case LabelAnchor::BOTTOM:       return cglib::vec2<float>(0, -glyphBBox.min(1));
+        case LabelAnchor::LEFT:         return cglib::vec2<float>(-glyphBBox.min(0), 0);
+        case LabelAnchor::RIGHT:        return cglib::vec2<float>(-glyphBBox.max(0), 0);
+        case LabelAnchor::TOP_LEFT:     return cglib::vec2<float>(-glyphBBox.min(0), -glyphBBox.max(1));
+        case LabelAnchor::TOP_RIGHT:    return cglib::vec2<float>(-glyphBBox.max(0), -glyphBBox.max(1));
+        case LabelAnchor::BOTTOM_LEFT:  return cglib::vec2<float>(-glyphBBox.min(0), -glyphBBox.min(1));
+        case LabelAnchor::BOTTOM_RIGHT: return cglib::vec2<float>(-glyphBBox.max(0), -glyphBBox.min(1));
+        default:                        return cglib::vec2<float>(0, 0);
+        }
     }
 }

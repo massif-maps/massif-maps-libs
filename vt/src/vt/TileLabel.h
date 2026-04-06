@@ -48,7 +48,8 @@ namespace carto::vt {
             float minimumGroupDistance;
             bool allowOverlapSameFeatureId;
             bool sameFeatureIdDependent;
-            explicit PlacementInfo(int priority, float minimumGroupDistance,bool allowOverlapSameFeatureId, bool sameFeatureIdDependent) : priority(priority), minimumGroupDistance(minimumGroupDistance), allowOverlapSameFeatureId(allowOverlapSameFeatureId), sameFeatureIdDependent(sameFeatureIdDependent) { }
+            std::vector<LabelAnchor> variableAnchors;
+            explicit PlacementInfo(int priority, float minimumGroupDistance, bool allowOverlapSameFeatureId, bool sameFeatureIdDependent, std::vector<LabelAnchor> variableAnchors = {}) : priority(priority), minimumGroupDistance(minimumGroupDistance), allowOverlapSameFeatureId(allowOverlapSameFeatureId), sameFeatureIdDependent(sameFeatureIdDependent), variableAnchors(std::move(variableAnchors)) { }
         };
         
         explicit TileLabel(long long localId, long long globalId, long long groupId, std::vector<Font::Glyph> glyphs, std::optional<cglib::vec2<float>> position, std::vector<cglib::vec2<float>> vertices, std::shared_ptr<const Style> style, const PlacementInfo& placementInfo, int geoPointIndex) : _localId(localId), _globalId(globalId), _groupId(groupId), _glyphs(std::move(glyphs)), _position(std::move(position)), _vertices(std::move(vertices)), _style(std::move(style)), _placementInfo(placementInfo), _geoPointIndex(geoPointIndex) { }

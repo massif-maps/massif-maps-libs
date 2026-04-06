@@ -45,6 +45,14 @@ namespace carto::mvt {
         return it->second;
     }
 
+    vt::LabelAnchor parseLabelAnchor(const std::string& str) {
+        auto it = getLabelAnchorTable().find(toLower(str));
+        if (it == getLabelAnchorTable().end()) {
+            throw ParserException("LabelAnchor parsing failed", str);
+        }
+        return it->second;
+    }
+
     vt::Color parseColor(const std::string& str) {
         std::string::const_iterator it = str.begin();
         std::string::const_iterator end = str.end();

@@ -29,6 +29,7 @@ namespace carto::mvt {
         vt::LabelOrientation orientation = placement;
         bool allowOverlapSameFeatureId = _allowOverlapSameFeatureId.getValue(exprContext);
         bool sameFeatureIdDependent = _sameFeatureIdDependent.getValue(exprContext);
+        std::vector<vt::LabelAnchor> variableAnchors = _variableAnchors.getValue(exprContext);
         if (transform) { // if rotation transform is explicitly defined, use point orientation
             if ((*transform).matrix2()(0, 1) != 0 || (*transform).matrix2()(1, 0) != 0) {
                 orientation = vt::LabelOrientation::POINT;
@@ -198,12 +199,12 @@ namespace carto::mvt {
             };
         }
 
-        return [compOp, fillFunc, normalizedSizeFunc, bitmapImage, transform, orientation, placement, placementPriority, spacing, bitmapSize, tileId, tileSize, glyphMap, groupId, labelIdOverride, allowOverlapSameFeatureId, sameFeatureIdDependent, hash, this](const FeatureCollection& featureCollection, vt::TileLayerBuilder& layerBuilder) {
+        return [compOp, fillFunc, normalizedSizeFunc, bitmapImage, transform, orientation, placement, placementPriority, spacing, bitmapSize, tileId, tileSize, glyphMap, groupId, labelIdOverride, allowOverlapSameFeatureId, sameFeatureIdDependent, variableAnchors, hash, this](const FeatureCollection& featureCollection, vt::TileLayerBuilder& layerBuilder) {
             vt::PointLabelStyle style(orientation, fillFunc, normalizedSizeFunc, false, bitmapImage, transform);
             vt::TileLayerBuilder::PointLabelProcessor pointProcessor;
             for (std::size_t featureIndex = 0; featureIndex < featureCollection.size(); featureIndex++) {
                 if (!pointProcessor) {
-                    pointProcessor = layerBuilder.createPointLabelProcessor(style, glyphMap);
+                    pointProcessor = layerBuilder.createPointLabelProcessor(style, glyphMap, variableAnchors);
                     if (!pointProcessor) {
                         return;
                     }
@@ -257,7 +258,7 @@ namespace carto::mvt {
                         
                         for (const auto& transformedPoints : generateTransformedPoints(vertices, spacing, bitmapSize, tileSize)) {
                             vt::PointLabelStyle transformedStyle(orientation, fillFunc, normalizedSizeFunc, false, bitmapImage, transformedPoints.first * (transform ? *transform : vt::Transform()));
-                            pointProcessor = layerBuilder.createPointLabelProcessor(transformedStyle, glyphMap);
+                            pointProcessor = layerBuilder.createPointLabelProcessor(transformedStyle, glyphMap, variableAnchors);
                             if (pointProcessor) {
                                 int counter = 0;
                                 for (const auto& vertex : transformedPoints.second) {

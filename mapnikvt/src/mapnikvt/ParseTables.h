@@ -20,6 +20,7 @@ namespace carto::mvt {
     const ParseTable<vt::LineJoinMode>& getLineJoinModeTable();
     const ParseTable<vt::CompOp>& getCompOpTable();
     const ParseTable<vt::LabelOrientation>& getLabelOrientationTable();
+    const ParseTable<vt::LabelAnchor>& getLabelAnchorTable();
 }
 
 #endif
