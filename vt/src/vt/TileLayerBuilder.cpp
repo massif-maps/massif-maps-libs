@@ -469,7 +469,8 @@ namespace carto::vt {
             _labelStyle = std::make_shared<TileLabel::Style>(style.orientation, style.colorFunc, style.sizeFunc, style.haloColorFunc, style.haloRadiusFunc, style.autoflip, scale, metrics.ascent, metrics.descent, transform, font->getGlyphMap(), glyphRenderSize);
         }
 
-        return [style, font, formatter, this](long long id, long long labelId, long long groupId, const std::optional<Vertex>& position, const Vertices& vertices, const std::string& text, float priority, float minimumGroupDistance, bool allowOverlapSameFeatureId, bool sameFeatureIdDependent, int geoPointIndex) {
+        auto labelStyleCapture = _labelStyle;
+        return [style, font, formatter, labelStyleCapture, this](long long id, long long labelId, long long groupId, const std::optional<Vertex>& position, const Vertices& vertices, const std::string& text, float priority, float minimumGroupDistance, bool allowOverlapSameFeatureId, bool sameFeatureIdDependent, int geoPointIndex) {
             if (!text.empty() || style.backgroundImage) {
                 std::vector<Font::Glyph> glyphs;
                 if (!text.empty()) {
@@ -496,7 +497,62 @@ namespace carto::vt {
 
                 TileLabel::PlacementInfo placementInfo(priority, minimumGroupDistance, allowOverlapSameFeatureId, sameFeatureIdDependent);
                 long long globalId = (labelId ^ (static_cast<long long>(_layerIdx) << 32)) * 3 + (style.backgroundImage ? 2 : 1);
-                auto textLabel = std::make_shared<TileLabel>(id, globalId, groupId, std::move(glyphs), std::move(labelPosition), std::move(labelVertices), _labelStyle, placementInfo, geoPointIndex);
+                auto textLabel = std::make_shared<TileLabel>(id, globalId, groupId, std::move(glyphs), std::move(labelPosition), std::move(labelVertices), labelStyleCapture, placementInfo, geoPointIndex);
+                _labelList.push_back(std::move(textLabel));
+            }
+        };
+    }
+
+    TileLayerBuilder::GlyphTextLabelProcessor TileLayerBuilder::createGlyphTextLabelProcessor(const TextLabelStyle& style, const std::shared_ptr<const Font>& font) {
+        if (!font) {
+            return GlyphTextLabelProcessor();
+        }
+
+        float scale = 1.0f / _tileSize;
+        std::optional<Transform> transform;
+        if (style.orientation != LabelOrientation::LINE && style.angle != 0) {
+            float angle = style.angle * boost::math::constants::pi<float>() / 180.0f;
+            transform = Transform::fromMatrix2(cglib::rotate2_matrix(angle));
+        }
+
+        Font::Metrics metrics = font->getMetrics(1.0f);
+        int glyphRenderSize = font->getGlyphRenderSize();
+
+        bool needsNewLabelStyle = !_labelStyle
+            || _labelStyle->orientation != style.orientation
+            || _labelStyle->colorFunc != style.colorFunc
+            || _labelStyle->sizeFunc != style.sizeFunc
+            || _labelStyle->haloColorFunc != style.haloColorFunc
+            || _labelStyle->haloRadiusFunc != style.haloRadiusFunc
+            || _labelStyle->autoflip != style.autoflip
+            || _labelStyle->scale != scale
+            || _labelStyle->ascent != metrics.ascent
+            || _labelStyle->descent != metrics.descent
+            || _labelStyle->transform != transform
+            || _labelStyle->glyphMap != font->getGlyphMap()
+            || _labelStyle->glyphRenderSize != glyphRenderSize;
+
+        if (needsNewLabelStyle) {
+            _labelStyle = std::make_shared<TileLabel::Style>(style.orientation, style.colorFunc, style.sizeFunc, style.haloColorFunc, style.haloRadiusFunc, style.autoflip, scale, metrics.ascent, metrics.descent, transform, font->getGlyphMap(), glyphRenderSize);
+        }
+
+        auto labelStyleCapture = _labelStyle;
+        return [labelStyleCapture, this](long long id, long long labelId, long long groupId, const std::optional<Vertex>& position, const Vertices& vertices, std::vector<Font::Glyph> glyphs, float priority, float minimumGroupDistance, bool allowOverlapSameFeatureId, bool sameFeatureIdDependent, int geoPointIndex) {
+            if (!glyphs.empty()) {
+                std::optional<cglib::vec2<float>> labelPosition;
+                if (position) {
+                    labelPosition = *position;
+                }
+                std::vector<cglib::vec2<float>> labelVertices;
+                if (!vertices.empty()) {
+                    VertexArray<cglib::vec2<float>> tesselatedVertices;
+                    _transformer->tesselateLineString(vertices.data(), vertices.size(), tesselatedVertices);
+                    labelVertices.assign(tesselatedVertices.begin(), tesselatedVertices.end());
+                }
+
+                TileLabel::PlacementInfo placementInfo(priority, minimumGroupDistance, allowOverlapSameFeatureId, sameFeatureIdDependent);
+                long long globalId = (labelId ^ (static_cast<long long>(_layerIdx) << 32)) * 3 + 1;
+                auto textLabel = std::make_shared<TileLabel>(id, globalId, groupId, std::move(glyphs), std::move(labelPosition), std::move(labelVertices), labelStyleCapture, placementInfo, geoPointIndex);
                 _labelList.push_back(std::move(textLabel));
             }
         };
