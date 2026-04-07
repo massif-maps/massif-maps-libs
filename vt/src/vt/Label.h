@@ -45,6 +45,7 @@ namespace carto::vt {
         float getMinimumGroupDistance() const { return _minimumGroupDistance; }
         bool allowOverlapSameFeatureId() const { return _allowOverlapSameFeatureId; }
         bool sameFeatureIdDependent() const { return _sameFeatureIdDependent; }
+        bool isVariantLabel() const { return _variantLabel; }
 
         bool isValid() const { return (bool) _placement; }
 
@@ -198,6 +199,7 @@ namespace carto::vt {
         const float _minimumGroupDistance;
         const bool _allowOverlapSameFeatureId;
         const bool _sameFeatureIdDependent;
+        const bool _variantLabel;
 
         cglib::bbox2<float> _glyphBBox;
         std::list<TilePoint> _tilePoints;
