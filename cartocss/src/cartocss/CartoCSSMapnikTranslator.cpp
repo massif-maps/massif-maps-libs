@@ -19,6 +19,7 @@
 #include "mapnikvt/MarkersSymbolizer.h"
 #include "mapnikvt/ShieldSymbolizer.h"
 #include "mapnikvt/BuildingSymbolizer.h"
+#include "mapnikvt/PoiSymbolizer.h"
 #include "mapnikvt/GeneratorUtils.h"
 
 #include <algorithm>
@@ -436,7 +437,7 @@ namespace carto::css {
         else if (symbolizerType == "marker") {
             mapnikSymbolizer = std::make_shared<mvt::MarkersSymbolizer>(_logger);
         }
-        else if (symbolizerType == "text" || symbolizerType == "shield") {
+        else if (symbolizerType == "text" || symbolizerType == "shield" || symbolizerType == "poi") {
             // Extact text expression and font name or font set name
             mvt::Expression mapnikTextExpr = mvt::Value(std::string());
             std::pair<std::string, mvt::Expression> fontSetFaceName;
@@ -483,6 +484,9 @@ namespace carto::css {
                 }
                 else if (symbolizerType == "shield") {
                     mapnikSymbolizer = std::make_shared<mvt::ShieldSymbolizer>(mapnikTextExpr, map->getFontSets(), _logger);
+                }
+                else if (symbolizerType == "poi") {
+                    mapnikSymbolizer = std::make_shared<mvt::PoiSymbolizer>(map->getFontSets(), _logger);
                 }
                 if (mapnikSymbolizer && !fontSetFaceName.first.empty()) {
                     try {
@@ -628,6 +632,7 @@ namespace carto::css {
         "polygon",
         "point",
         "text",
+        "poi",
         "marker",
         "shield",
         "building"
@@ -737,6 +742,52 @@ namespace carto::css {
         { "shield-placement-priority", "placement-priority" },
         { "shield-comp-op", "comp-op" },
         { "shield-clip", "clip" },
+
+        { "poi-name", "name" },
+        { "poi-feature-id", "feature-id" },
+        { "poi-face-name", "face-name" },
+        { "poi-dx", "poi-dx" },
+        { "poi-dy", "poi-dy" },
+        { "poi-unlock-image", "unlock-image" },
+        { "poi-placement", "placement" },
+        { "poi-size", "size" },
+        { "poi-spacing", "spacing" },
+        { "poi-fill", "fill" },
+        { "poi-text-opacity", "opacity" },
+        { "poi-halo-fill", "halo-fill" },
+        { "poi-halo-opacity", "halo-opacity" },
+        { "poi-halo-radius", "halo-radius" },
+        { "poi-halo-rasterizer", "halo-rasterizer" },
+        { "poi-allow-overlap", "allow-overlap" },
+        { "poi-min-distance", "minimum-distance" },
+        { "poi-text-transform", "text-transform" },
+        { "poi-orientation", "orientation" },
+        { "poi-text-dx", "dx" },
+        { "poi-text-dy", "dy" },
+        { "poi-avoid-edges", "avoid-edges" },
+        { "poi-wrap-character", "wrap-character" },
+        { "poi-wrap-width", "wrap-width" },
+        { "poi-wrap-before", "wrap-before" },
+        { "poi-character-spacing", "character-spacing" },
+        { "poi-line-spacing", "line-spacing" },
+        { "poi-horizontal-alignment", "horizontal-alignment" },
+        { "poi-vertical-alignment", "vertical-alignment" },
+        { "poi-placement-priority", "placement-priority" },
+        { "poi-comp-op", "comp-op" },
+        { "poi-clip", "clip" },
+        { "poi-icon-file", "file" },
+        { "poi-icon-name",        "poi-icon-name" },
+        { "poi-icon-face-name",       "poi-icon-face-name" },
+        { "poi-icon-fontset-name",      "poi-icon-fontset-name" },
+        { "poi-icon-size",            "poi-icon-size"},
+        { "poi-icon-fill",        "poi-icon-fill" },
+        { "poi-icon-opacity",   "poi-icon-opacity" },
+        { "poi-icon-halo-fill",        "poi-icon-halo-fill" },
+        { "poi-icon-halo-opacity",    "poi-icon-halo-opacity" },
+        { "poi-icon-halo-radius",  "poi-icon-halo-radius" },
+        { "poi-variable-anchor",   "poi-variable-anchor" },
+        { "poi-text-margin",   "poi-text-margin" },
+        { "poi-can-hide-text",   "poi-can-hide-text" },
 
         { "marker-file", "file" },
         { "marker-placement", "placement" },

@@ -21,31 +21,31 @@ namespace carto::mvt {
             Symbolizer(std::move(logger)), _fontSets(std::move(fontSets))
         {
             // Text label properties
-            bindProperty("poi-name",                  &_name);
-            bindProperty("poi-feature-id",            &_featureId);
-            bindProperty("poi-text-transform",        &_textTransform);
-            bindProperty("poi-face-name",             &_faceName);
-            bindProperty("poi-fontset-name",          &_fontSetName);
-            bindProperty("poi-placement",             &_placement);
-            bindProperty("poi-size",                  &_size);
-            bindProperty("poi-fill",                  &_fill);
-            bindProperty("poi-opacity",               &_opacity);
-            bindProperty("poi-halo-fill",             &_haloFill);
-            bindProperty("poi-halo-opacity",          &_haloOpacity);
-            bindProperty("poi-halo-radius",           &_haloRadius);
-            bindProperty("poi-wrap-character",        &_wrapCharacter);
-            bindProperty("poi-wrap-width",            &_wrapWidth);
-            bindProperty("poi-wrap-before",           &_wrapBefore);
-            bindProperty("poi-character-spacing",     &_characterSpacing);
-            bindProperty("poi-line-spacing",          &_lineSpacing);
-            bindProperty("poi-horizontal-alignment",  &_horizontalAlignment);
-            bindProperty("poi-vertical-alignment",    &_verticalAlignment);
-            bindProperty("poi-spacing",               &_spacing);
-            bindProperty("poi-minimum-distance",      &_minimumDistance);
-            bindProperty("poi-placement-priority",    &_placementPriority);
-            bindProperty("poi-allow-overlap",         &_allowOverlap);
-            bindProperty("poi-allow-overlap-same-feature-id", &_allowOverlapSameFeatureId);
-            bindProperty("poi-clip",                  &_clip);
+            bindProperty("name",                  &_name);
+            bindProperty("feature-id",            &_featureId);
+            bindProperty("text-transform",        &_textTransform);
+            bindProperty("face-name",             &_faceName);
+            bindProperty("fontset-name",          &_fontSetName);
+            bindProperty("placement",             &_placement);
+            bindProperty("size",                  &_size);
+            bindProperty("fill",                  &_fill);
+            bindProperty("opacity",               &_opacity);
+            bindProperty("halo-fill",             &_haloFill);
+            bindProperty("halo-opacity",          &_haloOpacity);
+            bindProperty("halo-radius",           &_haloRadius);
+            bindProperty("wrap-character",        &_wrapCharacter);
+            bindProperty("wrap-width",            &_wrapWidth);
+            bindProperty("wrap-before",           &_wrapBefore);
+            bindProperty("character-spacing",     &_characterSpacing);
+            bindProperty("line-spacing",          &_lineSpacing);
+            bindProperty("horizontal-alignment",  &_horizontalAlignment);
+            bindProperty("vertical-alignment",    &_verticalAlignment);
+            bindProperty("spacing",               &_spacing);
+            bindProperty("minimum-distance",      &_minimumDistance);
+            bindProperty("placement-priority",    &_placementPriority);
+            bindProperty("allow-overlap",         &_allowOverlap);
+            bindProperty("allow-overlap-same-feature-id", &_allowOverlapSameFeatureId);
+            bindProperty("clip",                  &_clip);
 
             // Icon (bitmap or text glyph)
             bindProperty("poi-icon-file",             &_iconFile);
@@ -63,9 +63,6 @@ namespace carto::mvt {
             bindProperty("poi-variable-anchor",       &_variableAnchor);
             bindProperty("poi-text-margin",           &_textMargin);
             bindProperty("poi-can-hide-text",         &_canHideText);
-
-            // Clustering
-            bindProperty("poi-allow-clustering",      &_allowClustering);
         }
 
         virtual FeatureProcessor createFeatureProcessor(const ExpressionContext& exprContext, const SymbolizerContext& symbolizerContext) const override;
@@ -126,9 +123,6 @@ namespace carto::mvt {
         StringProperty _variableAnchor = StringProperty("bottom");
         FloatProperty _textMargin = FloatProperty(4.0f);
         BoolProperty _canHideText = BoolProperty(false);
-
-        // Clustering
-        BoolProperty _allowClustering = BoolProperty(true);
 
         ColorFunctionBuilder _fillFuncBuilder;
         FloatFunctionBuilder _sizeFuncBuilder;
