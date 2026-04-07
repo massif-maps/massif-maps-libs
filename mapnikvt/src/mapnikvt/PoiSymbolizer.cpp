@@ -264,14 +264,6 @@ namespace carto::mvt {
             if (iconHalfW < 1.0f) iconHalfW = iconSizeStatic * 0.5f;
             if (iconHalfH < 1.0f) iconHalfH = iconSizeStatic * 0.5f;
 
-            // Phantom SPACE glyph for text labels' bbox (to include icon area so anchors block each other)
-            // Size in text-label glyph units: iconBBox dimensions (already in textSizeNorm glyph units)
-            vt::Font::Glyph phantom(0, vt::Font::SPACE_CODEPOINT,
-                vt::GlyphMap::Glyph(vt::GlyphMap::GlyphMode::SDF, 0, 0, 0, 0, cglib::vec2<float>(0, 0)),
-                cglib::vec2<float>(iconBBoxMax(0) - iconBBoxMin(0), iconBBoxMax(1) - iconBBoxMin(1)),
-                cglib::vec2<float>(iconBBoxMin(0), iconBBoxMin(1)),
-                cglib::vec2<float>(0, 0));
-
             if (canHideText) {
                 // COMBINED icon+text per anchor (variantLabel) + icon-only fallback (lowest priority).
                 // The culler will show the best-fitting anchor first; if none fit, shows icon-only.
