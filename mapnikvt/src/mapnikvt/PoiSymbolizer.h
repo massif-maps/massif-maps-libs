@@ -78,7 +78,7 @@ namespace carto::mvt {
         std::string getTransformedText(const ExpressionContext& exprContext) const;
 
         static std::vector<std::string> parseAnchorList(const std::string& anchorStr);
-        static vt::TextFormatter::Options makeAnchorOptions(const std::string& anchor, float iconHalfW, float iconHalfH, float margin, float fontScale, float sizeStatic, const vt::TextFormatter::Options& baseOptions);
+        static vt::TextFormatter::Options makeAnchorOptions(const std::string& anchor, float iconHalfW, float iconHalfH, float margin, float fontScale, const vt::TextFormatter::Options& baseOptions);
         static std::shared_ptr<vt::BitmapImage> tintBitmapImage(const std::shared_ptr<const vt::BitmapImage>& image, const vt::Color& tintColor);
 
         const std::vector<std::shared_ptr<FontSet>> _fontSets;

@@ -9,6 +9,7 @@
 #include "MarkersSymbolizer.h"
 #include "TextSymbolizer.h"
 #include "ShieldSymbolizer.h"
+#include "PoiSymbolizer.h"
 #include "ParserUtils.h"
 #include "Logger.h"
 
@@ -74,6 +75,9 @@ namespace carto::mvt {
             else if (type == "TextSymbolizer") {
                 symbolizer = std::make_shared<TextSymbolizer>(text, map->getFontSets(), _logger);
             }
+        }
+        else if (type == "PoiSymbolizer") {
+            symbolizer = std::make_shared<PoiSymbolizer>(map->getFontSets(), _logger);
         }
         else {
             _logger->write(Logger::Severity::WARNING, "Unsupported symbolizer type: " + type);
