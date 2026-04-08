@@ -121,45 +121,38 @@ namespace carto::mvt {
                 return FeatureProcessor();
             }
 
-            // Capture fallback font in case textFont is null (no text configured)
-            std::shared_ptr<const vt::Font> fontForIcon = textFont ? textFont : symbolizerContext.getSettings().getFallbackFont();
-            // Ensure a valid font size for the icon formatter when no text is configured
-            float iconFontSize = (textSizeStatic > 0) ? textSizeStatic : 16.0f;
-
             // Build per-anchor processors lazily inside the returned lambda.
-            // NEW: separate icon-only label (independent, high globalId) + N text-variant labels
-            // (sameFeatureIdDependent=true, allowOverlapSameFeatureId=true, variantLabel=true).
-            // The icon bbox only covers the icon; the text bbox only covers the text area.
-            // Winner-takes-all in LabelCuller ensures at most one text anchor shows.
+            // Combined icon+text per anchor: icon rendered as background image, text offset by anchor.
+            // allowOverlapSameFeatureId=true so sibling variants sharing the icon bbox don't block
+            // each other; winner-takes-all in LabelCuller ensures only one anchor is shown.
             return [=, this](const FeatureCollection& featureCollection, vt::TileLayerBuilder& layerBuilder) {
-                vt::TileLayerBuilder::TextLabelProcessor iconProc;
-                std::vector<vt::TileLayerBuilder::TextLabelProcessor> textProcs;
+                // N combined icon+text anchor processors + optional icon-only fallback
+                std::vector<vt::TileLayerBuilder::TextLabelProcessor> anchorProcs;
+                vt::TileLayerBuilder::TextLabelProcessor iconOnlyProc;
                 bool initialized = false;
 
                 for (std::size_t featureIndex = 0; featureIndex < featureCollection.size(); featureIndex++) {
                     if (!initialized) {
                         cglib::vec2<float> bgOffset(-bitmapW * fontScale * 0.5f, -bitmapH * fontScale * 0.5f);
-
-                        // Icon-only processor: background image, empty text, font only for GlyphMap
-                        if (fontForIcon) {
-                            vt::TextFormatter::Options iconOpts = baseOptions;
-                            iconOpts.alignment = cglib::vec2<float>(0, 0);
-                            iconOpts.offset    = cglib::vec2<float>(0, 0);
-                            vt::TextFormatter iconFmt(fontForIcon, iconFontSize, iconOpts);
-                            vt::TextLabelStyle iconStyle(placement, textFillFunc, textSizeFunc, textHaloFill, textHaloRadius, true, 0.0f, fontScale, bgOffset, tintedImage);
-                            iconProc = layerBuilder.createTextLabelProcessor(iconStyle, iconFmt);
-                        }
-
-                        // Text-variant processors: text only, no background image, per anchor
                         for (int i = 0; i < N; i++) {
-                            if (!textFont || text.empty()) {
-                                textProcs.push_back({});
+                            if (!textFont) {
+                                anchorProcs.push_back({});
                                 continue;
                             }
                             vt::TextFormatter::Options anchorOpts = makeAnchorOptions(anchors[i], iconHalfW, iconHalfH, textMargin, fontScale, baseOptions);
                             vt::TextFormatter formatter(textFont, textSizeStatic, anchorOpts);
-                            vt::TextLabelStyle textStyle(placement, textFillFunc, textSizeFunc, textHaloFill, textHaloRadius, true, 0.0f, fontScale, cglib::vec2<float>(0, 0), nullptr);
-                            textProcs.push_back(layerBuilder.createTextLabelProcessor(textStyle, formatter));
+                            vt::TextLabelStyle style(placement, textFillFunc, textSizeFunc, textHaloFill, textHaloRadius, true, 0.0f, fontScale, bgOffset, tintedImage);
+                            auto proc = layerBuilder.createTextLabelProcessor(style, formatter);
+                            anchorProcs.push_back(std::move(proc));
+                        }
+                        if (canHideText && textFont) {
+                            // icon-only fallback: empty text, icon as background
+                            vt::TextFormatter::Options centerOpts = baseOptions;
+                            centerOpts.alignment = cglib::vec2<float>(0, 0);
+                            centerOpts.offset    = cglib::vec2<float>(0, 0);
+                            vt::TextFormatter formatter(textFont, textSizeStatic, centerOpts);
+                            vt::TextLabelStyle style(placement, textFillFunc, textSizeFunc, textHaloFill, textHaloRadius, true, 0.0f, fontScale, bgOffset, tintedImage);
+                            iconOnlyProc = layerBuilder.createTextLabelProcessor(style, formatter);
                         }
                         initialized = true;
                     }
@@ -167,36 +160,21 @@ namespace carto::mvt {
                     long long localId = featureCollection.getLocalId(featureIndex);
                     long long baseId  = labelIdOverride ? *labelIdOverride : combineId(featureCollection.getFeatureId(featureIndex), textHash);
                     if (baseId == 0) baseId = generateId();
-                    // slots: N+1 for icon, 1..N for text variants (0 unused)
-                    int slots = N + 2;
-                    // Text variants always need testGridOverlap for sameFeatureIdDependent check
-                    long long textGroupId = std::max(0LL, groupId);
+                    int slots = N + (canHideText ? 1 : 0);
 
                     auto processVertex = [&](const vt::TileLayerBuilder::Vertex& vertex, int geoPointIndex) {
-                        // Icon label: highest labelId so culler processes it first.
-                        // Not a variant (variantLabel=false); allowOverlapSameFeatureId=true so
-                        // the icon and its own text variants don't block each other via same-feature check.
-                        if (iconProc) {
-                            long long labelId = static_cast<long long>(slots) * baseId + static_cast<long long>(N + 1);
-                            iconProc(localId, labelId, groupId, vertex, vt::TileLayerBuilder::Vertices(), std::string(),
-                                     placementPriority, minimumDistance,
-                                     /*allowOverlapSameFeatureId=*/true,
-                                     /*sameFeatureIdDependent=*/false,
-                                     geoPointIndex, /*variantLabel=*/false);
-                        }
-                        // Text variant labels: one per anchor, tried in globalId order (highest first).
-                        // sameFeatureIdDependent=false: fully independent of the icon label;
-                        //   the text bbox may not share grid cells with the icon (left/right anchors).
-                        // allowOverlapSameFeatureId=true: not blocked by the icon of the same feature.
-                        // variantLabel=true: winner-takes-all ensures only one text anchor shows.
+                        // Anchor 0 = highest labelId = tried first by culler.
+                        // allowOverlapSameFeatureId=true: sibling variants share the same icon area
+                        // in their bbox but must not block each other; winner-takes-all handles exclusivity.
                         for (int i = 0; i < N; i++) {
-                            if (!textProcs[i]) continue;
+                            if (!anchorProcs[i]) continue;
                             long long labelId = static_cast<long long>(slots) * baseId + static_cast<long long>(N - i);
-                            textProcs[i](localId, labelId, textGroupId, vertex, vt::TileLayerBuilder::Vertices(), text,
-                                         placementPriority, minimumDistance,
-                                         /*allowOverlapSameFeatureId=*/true,
-                                         /*sameFeatureIdDependent=*/false,
-                                         geoPointIndex, /*variantLabel=*/true);
+                            anchorProcs[i](localId, labelId, groupId, vertex, vt::TileLayerBuilder::Vertices(), text.empty() ? std::string() : text, placementPriority, minimumDistance, /*allowOverlapSameFeatureId=*/true, false, geoPointIndex, true);
+                        }
+                        if (canHideText && iconOnlyProc) {
+                            // icon-only fallback: lowest labelId, shown when all text+icon anchors fail
+                            long long labelId = static_cast<long long>(slots) * baseId + 0;
+                            iconOnlyProc(localId, labelId, groupId, vertex, vt::TileLayerBuilder::Vertices(), std::string(), placementPriority, minimumDistance, /*allowOverlapSameFeatureId=*/true, false, geoPointIndex, true);
                         }
                     };
 
@@ -291,65 +269,47 @@ namespace carto::mvt {
             if (iconHalfW < 1.0f) iconHalfW = iconSizeStatic * 0.5f;
             if (iconHalfH < 1.0f) iconHalfH = iconSizeStatic * 0.5f;
 
-            // Mode 2: separate icon-only label (GlyphTextLabelProcessor) + N text-variant labels
-            // (TextLabelProcessor, sameFeatureIdDependent=true, variantLabel=true).
-            // The icon bbox only covers the icon glyphs; the text bbox only covers the text area.
-            // Winner-takes-all in LabelCuller ensures at most one text anchor shows.
+            // Mode 2: combined icon glyphs + text glyphs per anchor (one label per anchor).
+            // allowOverlapSameFeatureId=true: sibling variants share the icon glyph area
+            // but must not block each other; winner-takes-all in LabelCuller handles exclusivity.
             return [=, this](const FeatureCollection& featureCollection, vt::TileLayerBuilder& layerBuilder) {
-                vt::TileLayerBuilder::GlyphTextLabelProcessor iconProc;
-                std::vector<vt::TileLayerBuilder::TextLabelProcessor> textProcs;
-                bool initialized = false;
+                std::vector<vt::TileLayerBuilder::GlyphTextLabelProcessor> anchorProcs;
+                vt::TileLayerBuilder::GlyphTextLabelProcessor iconOnlyProc;
 
                 for (std::size_t featureIndex = 0; featureIndex < featureCollection.size(); featureIndex++) {
-                    if (!initialized) {
-                        vt::TextLabelStyle iconStyle(placement, textFillFunc, textSizeFunc, textHaloFill, textHaloRadius, true, 0.0f, fontScale, cglib::vec2<float>(0, 0), nullptr);
-                        // Icon-only processor: only the pre-shaped icon glyphs, no text
-                        iconProc = layerBuilder.createGlyphTextLabelProcessor(iconStyle, textFont);
-
-                        // Text-variant processors: text only, per anchor (no icon glyphs)
+                    if (anchorProcs.empty()) {
+                        vt::TextLabelStyle combinedStyle(placement, textFillFunc, textSizeFunc, textHaloFill, textHaloRadius, true, 0.0f, fontScale, cglib::vec2<float>(0, 0), nullptr);
                         for (int i = 0; i < N; i++) {
-                            if (text.empty()) {
-                                textProcs.push_back({});
-                                continue;
-                            }
-                            vt::TextFormatter::Options anchorOpts = makeAnchorOptions(anchors[i], iconHalfW, iconHalfH, textMargin, fontScale, baseOptions);
-                            vt::TextFormatter formatter(textFont, textSizeStatic, anchorOpts);
-                            vt::TextLabelStyle textStyle(placement, textFillFunc, textSizeFunc, textHaloFill, textHaloRadius, true, 0.0f, fontScale, cglib::vec2<float>(0, 0), nullptr);
-                            textProcs.push_back(layerBuilder.createTextLabelProcessor(textStyle, formatter));
+                            auto proc = layerBuilder.createGlyphTextLabelProcessor(combinedStyle, textFont);
+                            anchorProcs.push_back(std::move(proc));
                         }
-                        initialized = true;
+                        if (canHideText) {
+                            iconOnlyProc = layerBuilder.createGlyphTextLabelProcessor(combinedStyle, textFont);
+                        }
                     }
 
                     long long localId = featureCollection.getLocalId(featureIndex);
                     long long baseId  = labelIdOverride ? *labelIdOverride : combineId(featureCollection.getFeatureId(featureIndex), textHash);
                     if (baseId == 0) baseId = generateId();
-                    // slots: N+1 for icon, 1..N for text variants (0 unused)
-                    int slots = N + 2;
-                    // Text variants always need testGridOverlap for sameFeatureIdDependent check
-                    long long textGroupId = std::max(0LL, groupId);
+                    int slots = N + (canHideText ? 1 : 0);
 
                     auto processVertex = [&](const vt::TileLayerBuilder::Vertex& vertex, int geoIdx) {
-                        // Icon label: highest labelId, not a variant, allowOverlapSameFeatureId=true
-                        // so the icon and its own text variants don't block each other.
-                        if (iconProc) {
-                            long long labelId = static_cast<long long>(slots) * baseId + static_cast<long long>(N + 1);
-                            iconProc(localId, labelId, groupId, vertex, vt::TileLayerBuilder::Vertices(), iconGlyphs,
-                                     placementPriority, minimumDistance,
-                                     /*allowOverlapSameFeatureId=*/true,
-                                     /*sameFeatureIdDependent=*/false,
-                                     geoIdx, /*variantLabel=*/false);
-                        }
-                        // Text variant labels: one per anchor, sameFeatureIdDependent=false
-                        // (fully independent; left/right text bbox may not share grid cells with icon),
-                        // allowOverlapSameFeatureId=true, variantLabel=true.
                         for (int i = 0; i < N; i++) {
-                            if (!textProcs[i] || text.empty()) continue;
+                            if (!anchorProcs[i]) continue;
                             long long labelId = static_cast<long long>(slots) * baseId + static_cast<long long>(N - i);
-                            textProcs[i](localId, labelId, textGroupId, vertex, vt::TileLayerBuilder::Vertices(), text,
-                                         placementPriority, minimumDistance,
-                                         /*allowOverlapSameFeatureId=*/true,
-                                         /*sameFeatureIdDependent=*/false,
-                                         geoIdx, /*variantLabel=*/true);
+                            // Combined: icon at center + text at anchor
+                            std::vector<vt::Font::Glyph> glyphs = iconGlyphs;
+                            if (!text.empty()) {
+                                vt::TextFormatter::Options anchorOpts = makeAnchorOptions(anchors[i], iconHalfW, iconHalfH, textMargin, fontScale, baseOptions);
+                                vt::TextFormatter formatter(textFont, textSizeStatic, anchorOpts);
+                                auto textGlyphs = formatter.format(text, 1.0f);
+                                glyphs.insert(glyphs.end(), textGlyphs.begin(), textGlyphs.end());
+                            }
+                            anchorProcs[i](localId, labelId, groupId, vertex, vt::TileLayerBuilder::Vertices(), std::move(glyphs), placementPriority, minimumDistance, /*allowOverlapSameFeatureId=*/true, false, geoIdx, true);
+                        }
+                        if (canHideText && iconOnlyProc) {
+                            long long labelId = static_cast<long long>(slots) * baseId + 0;
+                            iconOnlyProc(localId, labelId, groupId, vertex, vt::TileLayerBuilder::Vertices(), iconGlyphs, placementPriority, minimumDistance, /*allowOverlapSameFeatureId=*/true, false, geoIdx, true);
                         }
                     };
 
