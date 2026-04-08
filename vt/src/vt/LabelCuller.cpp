@@ -3,6 +3,7 @@
 #include <array>
 #include <vector>
 #include <list>
+#include <set>
 #include <unordered_map>
 #include <memory>
 
@@ -173,6 +174,10 @@ namespace carto::vt {
         // Update label visibility flag based on overlap analysis
         std::unordered_map<long long, std::vector<const LabelInfo*>> groupMap;
         groupMap.reserve(validLabelList.size());
+        // Winner-takes-all for variant labels: once the first variant of a feature is placed,
+        // all remaining variants of that feature are immediately suppressed without testing.
+        // Key is (localId, layerIndex) packed as a pair.
+        std::set<std::pair<long long, int>> variantWinnerSet;
         bool changed = false;
         for (const LabelInfo& labelInfo : validLabelList) {
             std::lock_guard<std::mutex> labelLock(labelMutex);
@@ -181,8 +186,17 @@ namespace carto::vt {
 
             long long groupId = label->getGroupId();
 
+            // Winner-takes-all: suppress this variant immediately if a sibling already placed.
+            bool suppressedVariant = false;
+            if (label->isVariantLabel()) {
+                auto key = std::make_pair(label->getLocalId(), labelInfo.layerIndex);
+                if (variantWinnerSet.count(key)) {
+                    suppressedVariant = true;
+                }
+            }
+
             // Label is always visible if its group is set to negative value. Otherwise test visibility against other labels
-            bool visible = groupId >= 0 ? labelInfo.valid && testGridOverlap(labelInfo) : labelInfo.valid;
+            bool visible = suppressedVariant ? false : (groupId >= 0 ? labelInfo.valid && testGridOverlap(labelInfo) : labelInfo.valid);
 
             if (visible && groupId > 0) {
                 for (const LabelInfo* otherLabelInfo : groupMap[groupId]) {
@@ -201,6 +215,10 @@ namespace carto::vt {
                 }
                 if (groupId > 0) {
                     groupMap[groupId].push_back(&labelInfo);
+                }
+                // Record this variant as the winner so siblings are suppressed.
+                if (label->isVariantLabel()) {
+                    variantWinnerSet.insert(std::make_pair(label->getLocalId(), labelInfo.layerIndex));
                 }
             }
             if (visible != label->isVisible()) {
