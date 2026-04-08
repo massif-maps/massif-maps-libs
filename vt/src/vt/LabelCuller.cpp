@@ -144,12 +144,15 @@ namespace carto::vt {
                 return labelInfo1.priority > labelInfo2.priority;
             }
             // For variant labels belonging to the same feature (same localId + layerIndex),
-            // always order by globalId (descending) regardless of wasVisible.  This ensures
-            // the preferred anchor (highest globalId) is retried first when space opens up,
-            // preventing a previously-visible fallback anchor from blocking the preferred one.
+            // prefer the currently-visible anchor first for stability (committed placement).
+            // Only when both anchors have the same visibility state do we fall back to globalId
+            // ordering so the preferred (highest globalId) anchor is retried when space opens up.
             if (labelInfo1.layerIndex == labelInfo2.layerIndex &&
                 labelInfo1.label->getLocalId() == labelInfo2.label->getLocalId() &&
                 labelInfo1.label->isVariantLabel() && labelInfo2.label->isVariantLabel()) {
+                if (labelInfo1.wasVisible != labelInfo2.wasVisible) {
+                    return labelInfo1.wasVisible;
+                }
                 return labelInfo1.label->getGlobalId() > labelInfo2.label->getGlobalId();
             }
             if (labelInfo1.wasVisible != labelInfo2.wasVisible) {

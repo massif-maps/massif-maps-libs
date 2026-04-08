@@ -352,7 +352,8 @@ namespace carto::mvt {
                         auto processVertex = [&](const vt::TileLayerBuilder::Vertex& vertex, int geoIdx) {
                             for (int i = 0; i < N; i++) {
                                 if (!anchorProcs[i]) continue;
-                                long long labelId = static_cast<long long>(N) * baseId + static_cast<long long>(N - 1 - i);
+                                // Use slots=N+1 and offsets 1..N (consistent with Mode 1); offset 0 is reserved
+                                long long labelId = static_cast<long long>(N + 1) * baseId + static_cast<long long>(N - i);
                                 // Combined: icon at center + text at anchor
                                 std::vector<vt::Font::Glyph> glyphs = iconGlyphs;
                                 if (!text.empty()) {
@@ -425,7 +426,7 @@ namespace carto::mvt {
                     auto processVertex = [&](const vt::TileLayerBuilder::Vertex& vertex, int geoIdx) {
                         for (int i = 0; i < N; i++) {
                             if (!anchorProcs[i]) continue;
-                            long long labelId = static_cast<long long>(N) * baseId + static_cast<long long>(N - 1 - i);
+                            long long labelId = static_cast<long long>(N + 1) * baseId + static_cast<long long>(N - i);
                             anchorProcs[i](localId, labelId, groupId, vertex, vt::TileLayerBuilder::Vertices(), text, placementPriority, minimumDistance, allowOverlapSameFeatureId, false, geoIdx, true);
                         }
                     };
