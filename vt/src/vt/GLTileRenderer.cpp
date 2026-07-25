@@ -491,7 +491,13 @@ namespace carto::vt {
             // one draw call, and draped geometry passes only within its own small
             // forward slack. It also optionally paints the terrain background color
             // with the same meshes.
-            if (_terrainMode && _terrainTextureProvider) {
+            //
+            // Skipped entirely under a cross-layer drape: the owner has already baked every
+            // layer's content into one texture per tile and drawn the shared surface, which is
+            // then the only depth-writing terrain geometry. Running this per-layer pre-pass would
+            // glClear(DEPTH) that shared surface away and re-establish the private depth domain
+            // the shared drape exists to remove.
+            if (_terrainMode && _terrainTextureProvider && !_externalDrapeTarget) {
                 bool colorFill = (_terrainBackgroundColor.value() != 0);
                 glEnable(GL_DEPTH_TEST);
                 glDepthMask(GL_TRUE);
