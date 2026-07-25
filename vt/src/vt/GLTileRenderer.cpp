@@ -2303,14 +2303,27 @@ namespace carto::vt {
         _drapeMVPOverride = &drapeOrtho;
         setCompOp(CompOp::SRC_OVER);
 
+        // Accept render tiles that COVER the terrain tile, not just exact matches: the terrain
+        // tile set is one normalized cover shared by every layer, so a layer whose own tiles are
+        // coarser (a hillshade limited by its DEM max zoom) contributes through its ancestor tile.
+        //
+        // Several of this renderer's tiles can cover the same terrain tile at once - during a zoom
+        // it holds a proxy parent that is blending out AND the live children. They must be baked
+        // COARSEST FIRST, with retained (proxy) tiles before active ones at the same zoom, or a
+        // parent's full-tile background paints over a child's content and the tile reverts to bare
+        // background colour. _visibleRenderTiles is in no such order.
+        std::vector<const RenderTile*> coveringTiles;
         for (const RenderTile& renderTile : *_visibleRenderTiles) {
-            // Accept render tiles that COVER the terrain tile, not just exact matches: the
-            // terrain tile set is one normalized cover shared by every layer, so a layer whose
-            // own tiles are coarser (a hillshade limited by its DEM max zoom) contributes through
-            // its ancestor tile, baked via the sub-rect transform.
-            if (!renderTile.visible || !tileCovers(renderTile.targetTileId, targetTileId)) {
-                continue;
+            if (renderTile.visible && tileCovers(renderTile.targetTileId, targetTileId)) {
+                coveringTiles.push_back(&renderTile);
             }
+        }
+        std::stable_sort(coveringTiles.begin(), coveringTiles.end(), [](const RenderTile* tile1, const RenderTile* tile2) {
+            return tile1->targetTileId.zoom < tile2->targetTileId.zoom;
+        });
+
+        for (const RenderTile* renderTilePtr : coveringTiles) {
+            const RenderTile& renderTile = *renderTilePtr;
             for (auto it = renderTile.renderLayers.begin(); it != renderTile.renderLayers.end(); it++) {
                 const RenderTileLayer& renderLayer = it->second;
                 if (!hasDrapeableContent(renderLayer)) {
