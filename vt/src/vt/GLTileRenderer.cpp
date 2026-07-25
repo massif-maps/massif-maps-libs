@@ -2505,7 +2505,12 @@ namespace carto::vt {
         if (_externalDrapeTarget) {
             return; // the owner drives baking across all layers (cross-layer stacks)
         }
-        static const std::size_t DRAPE_BAKE_BUDGET_PER_FRAME = 4;
+        // An integer zoom change invalidates the whole visible set at once. With a small budget
+        // most tiles then spend several frames showing a texture baked from an overzoomed parent -
+        // magnified content that pops when the native bake lands, because the bake is deliberately
+        // unblended (full opacity, so the cached texture is stable). Bake enough per frame that
+        // the window is one or two frames rather than four or five.
+        static const std::size_t DRAPE_BAKE_BUDGET_PER_FRAME = 24;
         // Textures orphaned by a resolution change: deleted here, on the GL thread.
         for (GLuint texture : _drapeStaleTextures) {
             glDeleteTextures(1, &texture);
