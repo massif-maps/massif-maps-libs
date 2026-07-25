@@ -2673,7 +2673,12 @@ namespace carto::vt {
             glUniform1f(shaderProgram.uniforms[U_DEPTHBIAS], terrainVTF ? _terrainDrawDepthBias : _terrainDepthBias);
         }
         if (terrainVTF) {
-            setupTerrainUniforms(shaderProgram, sourceTileId, calculateTileMatrix(sourceTileId, 1.0f / vertexGeomLayoutParams.coordScale));
+            // TEST: take the elevation texture AND the lattice cell from the TARGET tile, keeping
+            // the SOURCE tile only for the vertex frame. The terrain surface uses the target tile,
+            // so an overzoomed/proxy source made geometry sample a different DEM level and a
+            // coarser lattice than the surface it is drawn on - it then sits at a different height
+            // and is occluded by the depth-writing surface.
+            setupTerrainUniforms(shaderProgram, targetTileId, calculateTileMatrix(sourceTileId, 1.0f / vertexGeomLayoutParams.coordScale));
         }
         
         if (styleParams.translate) {
