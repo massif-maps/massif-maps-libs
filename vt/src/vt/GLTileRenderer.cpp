@@ -300,6 +300,7 @@ namespace carto::vt {
         _drapeFingerprints.clear();
         _drapeTexturePool.clear();
         _drapeTilesThisFrame.clear();
+        _externalDrapeTiles.clear();
         _drapeFBO = 0;
     }
         
@@ -1641,7 +1642,7 @@ namespace carto::vt {
                 // Draped content lives in the tile's drape texture and must NOT also be drawn as
                 // displaced geometry. Overzoomed/proxy layers are draped too (through the
                 // sub-rect bake), so this no longer requires sourceTileId == targetTileId.
-                bool drapedTile = _terrainDrapeFills && _drapeTilesThisFrame.count(renderLayer->targetTileId) > 0;
+                bool drapedTile = isTileDraped(renderLayer->targetTileId);
                 for (const std::shared_ptr<TileBackground>& background : renderLayer->layer->getBackgrounds()) {
                     // Draped native backgrounds are baked into the surface texture already.
                     if (drapedTile) {
@@ -2268,6 +2269,12 @@ namespace carto::vt {
         }
     }
 
+    void GLTileRenderer::setExternalDrapeTiles(const std::vector<TileId>& tileIds) {
+        std::lock_guard<std::mutex> lock(_mutex);
+
+        _externalDrapeTiles.assign(tileIds.begin(), tileIds.end());
+    }
+
     void GLTileRenderer::collectDrapeTiles(std::map<TileId, std::size_t>& drapeTiles) const {
         std::lock_guard<std::mutex> lock(_mutex);
 
@@ -2392,6 +2399,7 @@ namespace carto::vt {
         }
         _drapeStaleTextures.clear();
         _drapeTilesThisFrame.clear();
+        _externalDrapeTiles.clear();
         if (_drapeFBO != 0) {
             glDeleteFramebuffers(1, &_drapeFBO);
             _drapeFBO = 0;
@@ -2414,6 +2422,25 @@ namespace carto::vt {
         // 3D extrusions and point symbols stay live in the scene (they are not surface-conformal,
         // so flattening them into the terrain skin would be wrong, not just imprecise).
         return type == TileGeometry::Type::POLYGON || type == TileGeometry::Type::LINE;
+    }
+
+    bool GLTileRenderer::isTileDraped(const TileId& targetTileId) const {
+        if (!_terrainDrapeFills) {
+            return false;
+        }
+        if (!_externalDrapeTarget) {
+            return _drapeTilesThisFrame.count(targetTileId) > 0;
+        }
+        // Under a cross-layer drape the baked tiles are the OWNER's terrain tiles, which are the
+        // finest cover across all layers - this layer's tile is therefore equal to or coarser than
+        // them, and its content was baked into every terrain tile it covers (bakeDrapeTile takes
+        // covering render tiles). So "draped" means: some drawn terrain tile lies within it.
+        for (const TileId& drapeTileId : _externalDrapeTiles) {
+            if (tileCovers(targetTileId, drapeTileId)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     bool GLTileRenderer::tileCovers(const TileId& tileId, const TileId& targetTileId) const {

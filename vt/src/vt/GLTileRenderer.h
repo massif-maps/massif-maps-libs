@@ -112,6 +112,10 @@ namespace carto::vt {
         // renderDrapedSurface. That is what lets a hillshade layer and a vector tile layer share
         // a single drape texture, a single surface draw and a single depth domain.
         void setExternalDrapeTarget(bool enabled);
+        // The terrain tiles the owner drapes and draws this frame. Content covered by them must
+        // NOT be drawn again as displaced 3D geometry - it is already in the drape texture, and
+        // redrawing it brings back the depth-writing tile background that hides the fills.
+        void setExternalDrapeTiles(const std::vector<TileId>& tileIds);
         // Target tiles this renderer would drape this frame, each with a fingerprint of the
         // content that would be baked (so the owner can detect a stale texture).
         void collectDrapeTiles(std::map<TileId, std::size_t>& drapeTiles) const;
@@ -311,6 +315,7 @@ namespace carto::vt {
         bool isDrapeableGeometry(TileGeometry::Type type) const;
         bool hasDrapeableContent(const RenderTileLayer& renderLayer) const;
         bool tileCovers(const TileId& tileId, const TileId& targetTileId) const;
+        bool isTileDraped(const TileId& targetTileId) const;
         cglib::mat4x4<float> calculateDrapeMVPMatrix(const TileId& sourceTileId, const TileId& targetTileId) const;
         std::size_t calculateDrapeFingerprint(const RenderTile& renderTile) const;
         void renderTileWireframe(const TileId& tileId);
@@ -382,6 +387,7 @@ namespace carto::vt {
         std::vector<GLuint> _drapeStaleTextures; // wrong-size textures awaiting deletion on the GL thread
         bool _externalDrapeTarget = false;       // drape textures are owned by the caller (cross-layer stacks)
         std::set<TileId> _drapeTilesThisFrame;   // target tiles that have a valid drape texture this frame
+        std::vector<TileId> _externalDrapeTiles; // terrain tiles the owner drapes this frame
         const cglib::mat4x4<float>* _drapeMVPOverride = nullptr; // when set, renderTileGeometry draws flat into the drape FBO
         bool _debugWireframe = false;
         bool _debugSurfacePrefill = false;
