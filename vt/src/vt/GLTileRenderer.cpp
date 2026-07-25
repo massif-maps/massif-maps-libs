@@ -2278,13 +2278,11 @@ namespace carto::vt {
             if (!renderTile.visible) {
                 continue;
             }
-            bool hasContent = false;
-            for (auto it = renderTile.renderLayers.begin(); it != renderTile.renderLayers.end() && !hasContent; it++) {
-                hasContent = hasDrapeableContent(it->second);
-            }
-            if (!hasContent) {
-                continue;
-            }
+            // EVERY visible tile is reported, including ones whose content has not loaded yet.
+            // Taking over the surface means the per-layer pre-pass no longer draws one, so a tile
+            // omitted here gets no terrain surface at all and the global terrain background shows
+            // through it - which is what the pre-pass used to cover unconditionally. Its drape
+            // texture is simply empty until content arrives.
             // Combined, so a target tile covered by several render tiles of this renderer gets a
             // fingerprint reflecting all of them.
             std::size_t& fingerprint = drapeTiles[renderTile.targetTileId];
@@ -2973,7 +2971,7 @@ namespace carto::vt {
             glUniform1f(shaderProgram.uniforms[U_DEPTHBIAS], terrainVTF ? _terrainDrawDepthBias : _terrainDepthBias);
         }
         if (terrainVTF) {
-            setupTerrainUniforms(shaderProgram, sourceTileId, calculateTileMatrix(sourceTileId, 1.0f / vertexGeomLayoutParams.coordScale));
+            setupTerrainUniforms(shaderProgram, sourceTileId, calculateTileMatrix(targetTileId, 1.0f / vertexGeomLayoutParams.coordScale));
         }
         
         if (styleParams.translate) {
