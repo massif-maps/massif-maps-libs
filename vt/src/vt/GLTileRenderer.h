@@ -103,6 +103,7 @@ namespace carto::vt {
         void setTerrainPainterOrder(bool enabled);
         void setTerrainSlackScale(float slackScale);
         void setTerrainDrapeFills(bool enabled, bool includeLines);
+        void setTerrainDrapeResolution(int resolution);
         void setTerrainDepthWrite(bool enabled);
         void setTerrainTextureProvider(TerrainTextureProvider provider);
         void setDebugWireframe(bool enabled);
@@ -247,6 +248,7 @@ namespace carto::vt {
         static constexpr float TERRAIN_DEPTH_CLIP_SLACK = 1.0e-3f; // clip-space depth shift per bias unit at the reference tile size, scaled by tile size (quadratic law, see setupTerrainUniforms) and |proj m22|
         static constexpr double TERRAIN_DEPTH_CLIP_REF_TILE_SIZE = 512.0; // zoom 11 tile size in internal units - the anchor of the quadratic slack law
         static constexpr float ALPHA_HIT_THRESHOLD = 0.05f; // threshold value for 'transparent' pixel alphas
+        static constexpr std::size_t DRAPE_TEXTURE_POOL_SIZE = 32; // recycled drape textures kept alive between frames
 
         bool isTileVisible(const TileId& tileId) const;
         bool isEmptyBlendRequired(CompOp compOp) const;
@@ -286,6 +288,12 @@ namespace carto::vt {
         void renderDrapeTextures(const std::vector<RenderTile>& renderTiles);
         void renderTileSurfaceDrape(const TileId& tileId);
         GLuint ensureDrapeTexture(const TileId& tileId);
+        void releaseDrapeTexture(GLuint texture);
+        void deleteDrapeResources();
+        bool isDrapeableGeometry(TileGeometry::Type type) const;
+        bool hasDrapeableContent(const RenderTileLayer& renderLayer) const;
+        cglib::mat4x4<float> calculateDrapeMVPMatrix(const TileId& sourceTileId, const TileId& targetTileId) const;
+        std::size_t calculateDrapeFingerprint(const RenderTile& renderTile) const;
         void renderTileWireframe(const TileId& tileId);
         void renderTileBackground(const TileId& tileId, float blend, float opacity, float tileSize, const std::shared_ptr<TileBackground>& background);
         void renderTileBitmap(const TileId& sourceTileId, const TileId& targetTileId, float blend, float opacity, const std::shared_ptr<TileBitmap>& bitmap);
@@ -349,7 +357,10 @@ namespace carto::vt {
         bool _terrainDrapeLines = false;         // also bake vt tile lines into the drape texture (softer, but zero leak/hug error)
         int _drapeTextureSize = 512;             // per-tile drape texture resolution
         GLuint _drapeFBO = 0;                    // shared offscreen FBO for baking drape textures
-        std::map<TileId, GLuint> _drapeTextures; // per-target-tile baked fill textures (frame pool)
+        std::map<TileId, GLuint> _drapeTextures; // per-target-tile baked drape textures
+        std::map<TileId, std::size_t> _drapeFingerprints; // what each cached texture was baked from; a change means it is stale
+        std::vector<GLuint> _drapeTexturePool;   // recycled textures, so panning does not churn GL allocations
+        std::vector<GLuint> _drapeStaleTextures; // wrong-size textures awaiting deletion on the GL thread
         std::set<TileId> _drapeTilesThisFrame;   // target tiles that have a valid drape texture this frame
         const cglib::mat4x4<float>* _drapeMVPOverride = nullptr; // when set, renderTileGeometry draws flat into the drape FBO
         bool _debugWireframe = false;

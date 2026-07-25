@@ -101,6 +101,23 @@ namespace carto::vt {
         _terrainDrapeLines = enabled && includeLines;
     }
 
+    void GLTileRenderer::setTerrainDrapeResolution(int resolution) {
+        std::lock_guard<std::mutex> lock(_mutex);
+
+        int size = std::min(2048, std::max(128, resolution));
+        if (size != _drapeTextureSize) {
+            _drapeTextureSize = size;
+            // Cached textures are the old size; drop them (and the pool) so they re-bake.
+            _drapeStaleTextures.insert(_drapeStaleTextures.end(), _drapeTexturePool.begin(), _drapeTexturePool.end());
+            _drapeTexturePool.clear();
+            for (auto it = _drapeTextures.begin(); it != _drapeTextures.end(); it++) {
+                _drapeStaleTextures.push_back(it->second);
+            }
+            _drapeTextures.clear();
+            _drapeFingerprints.clear();
+        }
+    }
+
     void GLTileRenderer::setTerrainDepthWrite(bool enabled) {
         std::lock_guard<std::mutex> lock(_mutex);
 
@@ -279,6 +296,11 @@ namespace carto::vt {
         _overlayBuffer2D = FrameBuffer();
         _overlayBuffer3D = FrameBuffer();
         _screenQuad = CompiledQuad();
+        _drapeTextures.clear();
+        _drapeFingerprints.clear();
+        _drapeTexturePool.clear();
+        _drapeTilesThisFrame.clear();
+        _drapeFBO = 0;
     }
         
     void GLTileRenderer::resetTileSurfaces() {
@@ -332,6 +354,9 @@ namespace carto::vt {
         // Release screen and overlay FBOs
         deleteFrameBuffer(_overlayBuffer2D);
         deleteFrameBuffer(_overlayBuffer3D);
+
+        // Release drape FBO and textures
+        deleteDrapeResources();
 
         // Release tile and screen VBOs
         deleteCompiledQuad(_screenQuad);
@@ -1607,7 +1632,10 @@ namespace carto::vt {
                     }
                 }
 
-                bool drapedTile = _terrainDrapeFills && renderLayer->sourceTileId == renderLayer->targetTileId && _drapeTilesThisFrame.count(renderLayer->targetTileId);
+                // Draped content lives in the tile's drape texture and must NOT also be drawn as
+                // displaced geometry. Overzoomed/proxy layers are draped too (through the
+                // sub-rect bake), so this no longer requires sourceTileId == targetTileId.
+                bool drapedTile = _terrainDrapeFills && _drapeTilesThisFrame.count(renderLayer->targetTileId) > 0;
                 for (const std::shared_ptr<TileBackground>& background : renderLayer->layer->getBackgrounds()) {
                     // Draped native backgrounds are baked into the surface texture already.
                     if (drapedTile) {
@@ -1622,6 +1650,10 @@ namespace carto::vt {
                 }
 
                 for (const std::shared_ptr<TileBitmap>& bitmap : renderLayer->layer->getBitmaps()) {
+                    // Draped rasters (hillshade, imagery) are baked into the drape texture already.
+                    if (drapedTile) {
+                        continue;
+                    }
                     CompOp bitmapCompOp = CompOp::SRC_OVER;
                     if (currentCompOp != bitmapCompOp) {
                         setCompOp(bitmapCompOp);
@@ -1670,8 +1702,8 @@ namespace carto::vt {
                 }
 
                 for (const std::shared_ptr<TileGeometry>& geometry : renderLayer->layer->getGeometries()) {
-                    // Draped native fills (and lines, if enabled) are baked into the surface texture already.
-                    if (drapedTile && (geometry->getType() == TileGeometry::Type::POLYGON || (_terrainDrapeLines && geometry->getType() == TileGeometry::Type::LINE))) {
+                    // Draped fills/lines are baked into the drape texture already.
+                    if (drapedTile && isDrapeableGeometry(geometry->getType())) {
                         continue;
                     }
                     if (geometry->getType() != TileGeometry::Type::POLYGON3D) {
@@ -2195,6 +2227,13 @@ namespace carto::vt {
     GLuint GLTileRenderer::ensureDrapeTexture(const TileId& tileId) {
         GLuint& tex = _drapeTextures[tileId];
         if (tex == 0) {
+            // Recycle through a pool: tiles enter and leave the visible set constantly while
+            // panning, and glGenTextures/glTexImage2D per tile per pan is real allocation churn.
+            if (!_drapeTexturePool.empty()) {
+                tex = _drapeTexturePool.back();
+                _drapeTexturePool.pop_back();
+                return tex;
+            }
             glGenTextures(1, &tex);
             glBindTexture(GL_TEXTURE_2D, tex);
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, _drapeTextureSize, _drapeTextureSize, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
@@ -2205,6 +2244,112 @@ namespace carto::vt {
             glBindTexture(GL_TEXTURE_2D, 0);
         }
         return tex;
+    }
+
+    void GLTileRenderer::deleteDrapeResources() {
+        // Called on renderer reset/deinit. Without this the FBO and every cached drape texture
+        // survive GL context loss as stale names - a leak, and a source of draws against
+        // handles that no longer exist.
+        for (auto it = _drapeTextures.begin(); it != _drapeTextures.end(); it++) {
+            glDeleteTextures(1, &it->second);
+        }
+        _drapeTextures.clear();
+        _drapeFingerprints.clear();
+        for (GLuint texture : _drapeTexturePool) {
+            glDeleteTextures(1, &texture);
+        }
+        _drapeTexturePool.clear();
+        for (GLuint texture : _drapeStaleTextures) {
+            glDeleteTextures(1, &texture);
+        }
+        _drapeStaleTextures.clear();
+        _drapeTilesThisFrame.clear();
+        if (_drapeFBO != 0) {
+            glDeleteFramebuffers(1, &_drapeFBO);
+            _drapeFBO = 0;
+        }
+    }
+
+    void GLTileRenderer::releaseDrapeTexture(GLuint texture) {
+        if (texture == 0) {
+            return;
+        }
+        if (_drapeTexturePool.size() < DRAPE_TEXTURE_POOL_SIZE) {
+            _drapeTexturePool.push_back(texture);
+        } else {
+            glDeleteTextures(1, &texture);
+        }
+    }
+
+    bool GLTileRenderer::isDrapeableGeometry(TileGeometry::Type type) const {
+        // The maplibre drapeable set: backgrounds, fills, lines and rasters go into the texture;
+        // 3D extrusions and point symbols stay live in the scene (they are not surface-conformal,
+        // so flattening them into the terrain skin would be wrong, not just imprecise).
+        return type == TileGeometry::Type::POLYGON || type == TileGeometry::Type::LINE;
+    }
+
+    cglib::mat4x4<float> GLTileRenderer::calculateDrapeMVPMatrix(const TileId& sourceTileId, const TileId& targetTileId) const {
+        // Orthographic bake frame: map the part of the SOURCE tile covering the target tile onto
+        // the full [-1,1] clip square of the target's drape texture.
+        //
+        // Handling source != target is the whole point: overzoomed/proxy content (a parent tile
+        // standing in while the native tile loads) is exactly what is on screen during a pan or
+        // zoom. Left undraped it falls through to the displaced-geometry path, where it samples a
+        // coarser lattice than the surface it sits on and sinks into it.
+        //
+        // Tile-local vertex y runs NORTHWARD (the vertex transformer maps (u,v) -> (u, 1-v) and v
+        // grows southward with the XYZ tile y), so the y sub-rect index is mirrored.
+        int deltaZoom = targetTileId.zoom - sourceTileId.zoom;
+        float n = 1.0f;
+        float fx = 0.0f, gy = 0.0f;
+        if (deltaZoom > 0) {
+            int span = 1 << deltaZoom;
+            n = static_cast<float>(span);
+            fx = static_cast<float>(targetTileId.x - (sourceTileId.x << deltaZoom));
+            gy = static_cast<float>(span - 1 - (targetTileId.y - (sourceTileId.y << deltaZoom)));
+        }
+        // source-local [0,1] -> target-local [0,1] -> clip [-1,1]
+        return cglib::translate4_matrix(cglib::vec3<float>(-1.0f, -1.0f, 0.0f))
+             * cglib::scale4_matrix(cglib::vec3<float>(2.0f, 2.0f, 1.0f))
+             * cglib::translate4_matrix(cglib::vec3<float>(-fx, -gy, 0.0f))
+             * cglib::scale4_matrix(cglib::vec3<float>(n, n, 1.0f));
+    }
+
+    std::size_t GLTileRenderer::calculateDrapeFingerprint(const RenderTile& renderTile) const {
+        // Identifies exactly what would be baked. When it changes - a style layer finishes
+        // loading, a proxy is replaced by its native tile - the cached texture is stale and must
+        // be re-baked, which the original bake-once cache had no way to notice.
+        std::size_t hash = 0;
+        auto combine = [&hash](std::size_t value) {
+            hash ^= value + 0x9e3779b9 + (hash << 6) + (hash >> 2);
+        };
+        for (auto it = renderTile.renderLayers.begin(); it != renderTile.renderLayers.end(); it++) {
+            const RenderTileLayer& renderLayer = it->second;
+            if (!hasDrapeableContent(renderLayer)) {
+                continue;
+            }
+            combine(static_cast<std::size_t>(it->first));
+            combine(static_cast<std::size_t>(renderLayer.sourceTileId.zoom) * 2654435761u
+                  ^ static_cast<std::size_t>(renderLayer.sourceTileId.x) * 40503u
+                  ^ static_cast<std::size_t>(renderLayer.sourceTileId.y));
+            combine(std::hash<const void*>()(renderLayer.layer.get()));
+        }
+        return hash;
+    }
+
+    bool GLTileRenderer::hasDrapeableContent(const RenderTileLayer& renderLayer) const {
+        if (!renderLayer.layer) {
+            return false;
+        }
+        if (!renderLayer.layer->getBackgrounds().empty() || !renderLayer.layer->getBitmaps().empty()) {
+            return true;
+        }
+        for (const std::shared_ptr<TileGeometry>& geometry : renderLayer.layer->getGeometries()) {
+            if (isDrapeableGeometry(geometry->getType())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     void GLTileRenderer::renderDrapeTextures(const std::vector<RenderTile>& renderTiles) {
@@ -2222,6 +2367,11 @@ namespace carto::vt {
         // its content renders as normal geometry (no gap). New-tile bakes are capped per frame
         // so a fast zoom's burst of tiles is spread over a few frames instead of stalling one.
         static const std::size_t DRAPE_BAKE_BUDGET_PER_FRAME = 4;
+        // Textures orphaned by a resolution change: deleted here, on the GL thread.
+        for (GLuint texture : _drapeStaleTextures) {
+            glDeleteTextures(1, &texture);
+        }
+        _drapeStaleTextures.clear();
         _drapeTilesThisFrame.clear();
         std::set<TileId> drapeContentTiles;
 
@@ -2236,36 +2386,30 @@ namespace carto::vt {
             }
             bool hasContent = false;
             for (auto it = renderTile.renderLayers.begin(); it != renderTile.renderLayers.end() && !hasContent; it++) {
-                if (it->second.sourceTileId != targetTileId) {
-                    continue;
-                }
-                if (!it->second.layer->getBackgrounds().empty()) {
-                    hasContent = true;
-                    break;
-                }
-                for (const std::shared_ptr<TileGeometry>& geometry : it->second.layer->getGeometries()) {
-                    TileGeometry::Type type = geometry->getType();
-                    if (type == TileGeometry::Type::POLYGON || (_terrainDrapeLines && type == TileGeometry::Type::LINE)) {
-                        hasContent = true;
-                        break;
-                    }
-                }
+                hasContent = hasDrapeableContent(it->second);
             }
             if (!hasContent) {
                 continue;
             }
             drapeContentTiles.insert(targetTileId);
-            if (_drapeTextures.find(targetTileId) != _drapeTextures.end()) {
-                _drapeTilesThisFrame.insert(targetTileId); // already baked - drape it now
+            std::size_t fingerprint = calculateDrapeFingerprint(renderTile);
+            auto texIt = _drapeTextures.find(targetTileId);
+            auto printIt = _drapeFingerprints.find(targetTileId);
+            bool baked = texIt != _drapeTextures.end() && printIt != _drapeFingerprints.end() && printIt->second == fingerprint;
+            if (baked) {
+                _drapeTilesThisFrame.insert(targetTileId); // cached and still current - drape it now
             } else if (tilesToBake.size() < DRAPE_BAKE_BUDGET_PER_FRAME) {
-                tilesToBake.push_back(&renderTile); // new tile - bake this frame (within budget)
+                tilesToBake.push_back(&renderTile); // new or stale - (re)bake this frame, within budget
+            } else if (texIt != _drapeTextures.end()) {
+                _drapeTilesThisFrame.insert(targetTileId); // stale but budgeted out - keep showing the old bake
             }
         }
 
-        // Free textures for tiles no longer needing a drape.
+        // Recycle textures for tiles no longer needing a drape.
         for (auto it = _drapeTextures.begin(); it != _drapeTextures.end(); ) {
             if (!drapeContentTiles.count(it->first)) {
-                glDeleteTextures(1, &it->second);
+                releaseDrapeTexture(it->second);
+                _drapeFingerprints.erase(it->first);
                 it = _drapeTextures.erase(it);
             } else {
                 it++;
@@ -2288,33 +2432,43 @@ namespace carto::vt {
         glDisable(GL_STENCIL_TEST);
         setCompOp(CompOp::SRC_OVER);
 
-        // tile-local [0,1] -> clip [-1,1]; renderTileGeometry pre-multiplies by 1/coordScale.
-        cglib::mat4x4<float> drapeOrtho = cglib::translate4_matrix(cglib::vec3<float>(-1.0f, -1.0f, 0.0f)) * cglib::scale4_matrix(cglib::vec3<float>(2.0f, 2.0f, 1.0f));
+        cglib::mat4x4<float> drapeOrtho;
         _drapeMVPOverride = &drapeOrtho;
 
         for (const RenderTile* renderTilePtr : tilesToBake) {
             const RenderTile& renderTile = *renderTilePtr;
             const TileId& targetTileId = renderTile.targetTileId;
             _drapeTilesThisFrame.insert(targetTileId); // baked now - drape it this frame
+            _drapeFingerprints[targetTileId] = calculateDrapeFingerprint(renderTile);
             GLuint tex = ensureDrapeTexture(targetTileId);
             glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
             glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
             glClear(GL_COLOR_BUFFER_BIT);
 
-            // Bake backgrounds then polygon fills (and lines, if enabled) in layer order at
-            // FULL opacity, so the cached texture is stable regardless of fade-in blend.
-            // Bitmaps stay as displaced surface draws; lines/points/labels stay sharp on top.
+            // Bake backgrounds, rasters and fills/lines in layer order at FULL opacity, so the
+            // cached texture is stable regardless of the fade-in blend of the moment. Layers
+            // whose source tile is an ancestor of the target are baked through a sub-rect
+            // transform, so proxy content drapes correctly instead of falling back to the
+            // displaced-geometry path. Points, 3D extrusions and labels stay live on top.
             for (auto it = renderTile.renderLayers.begin(); it != renderTile.renderLayers.end(); it++) {
                 const RenderTileLayer& renderLayer = it->second;
-                if (renderLayer.sourceTileId != targetTileId) {
+                if (!hasDrapeableContent(renderLayer)) {
                     continue;
                 }
+                // Backgrounds and rasters draw the TARGET tile's surface mesh (their own uv logic
+                // already resolves overzoom), so they bake through the plain target-tile square.
+                drapeOrtho = calculateDrapeMVPMatrix(targetTileId, targetTileId);
                 for (const std::shared_ptr<TileBackground>& background : renderLayer.layer->getBackgrounds()) {
                     renderTileBackground(renderLayer.targetTileId, 1.0f, 1.0f, renderLayer.tileSize, background);
                 }
+                for (const std::shared_ptr<TileBitmap>& bitmap : renderLayer.layer->getBitmaps()) {
+                    renderTileBitmap(renderLayer.sourceTileId, renderLayer.targetTileId, 1.0f, 1.0f, bitmap);
+                }
+                // Geometry vertices are in SOURCE tile-local coordinates, so an overzoomed layer
+                // needs the sub-rect transform to land on the target tile's texture.
+                drapeOrtho = calculateDrapeMVPMatrix(renderLayer.sourceTileId, targetTileId);
                 for (const std::shared_ptr<TileGeometry>& geometry : renderLayer.layer->getGeometries()) {
-                    TileGeometry::Type type = geometry->getType();
-                    if (type == TileGeometry::Type::POLYGON || (_terrainDrapeLines && type == TileGeometry::Type::LINE)) {
+                    if (isDrapeableGeometry(geometry->getType())) {
                         renderTileGeometry(renderLayer.sourceTileId, renderLayer.targetTileId, 1.0f, 1.0f, renderLayer.tileSize, geometry);
                     }
                 }
@@ -2525,6 +2679,11 @@ namespace carto::vt {
             return;
         }
 
+        // In the drape bake the raster is rendered FLAT into the tile's texture: the same grid
+        // surface mesh, but with terrain displacement off and the orthographic bake matrix, so
+        // the [0,1] tile-local mesh maps onto the texture. The uv matrix below already resolves
+        // source-vs-target overzoom, so the bake frame is the plain target-tile square.
+        bool flatDrape = (_drapeMVPOverride != nullptr);
         bool terrainVTF = _terrainMode && (bool) _terrainTextureProvider;
         bool gridMode = _terrainRegularGrid && terrainVTF;
         cglib::mat4x4<double> surfaceFrame = gridMode ? calculateTileMatrix(targetTileId, 1.0f) : cglib::translate4_matrix(_tileSurfaceBuilderOrigin);
@@ -2532,7 +2691,7 @@ namespace carto::vt {
             const TileSurface::VertexGeometryLayoutParameters& vertexGeomLayoutParams = tileSurface->getVertexGeometryLayoutParameters();
             const CompiledSurface& compiledTileSurface = _compiledTileSurfaceMap[tileSurface];
 
-            unsigned int terrainFlag = (terrainVTF ? TERRAIN_FLAG | TERRAIN_VTF_FLAG : (_terrainMode && !_terrainDepthWrite ? TERRAIN_FLAG : 0));
+            unsigned int terrainFlag = flatDrape ? 0 : (terrainVTF ? TERRAIN_FLAG | TERRAIN_VTF_FLAG : (_terrainMode && !_terrainDepthWrite ? TERRAIN_FLAG : 0));
             const ShaderProgram* shaderProgramPtr = nullptr;
             switch (bitmap->getType()) {
             case TileBitmap::Type::COLORMAP:
@@ -2549,7 +2708,7 @@ namespace carto::vt {
             if ((terrainFlag & TERRAIN_FLAG) != 0) {
                 glUniform1f(shaderProgram.uniforms[U_DEPTHBIAS], terrainVTF ? _terrainDrawDepthBias : _terrainDepthBias);
             }
-            if (terrainVTF) {
+            if (terrainVTF && !flatDrape) {
                 setupTerrainUniforms(shaderProgram, targetTileId, surfaceFrame);
             }
 
@@ -2584,7 +2743,7 @@ namespace carto::vt {
 
             glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, compiledTileSurface.indicesVBO);
 
-            cglib::mat4x4<float> mvpMatrix = gridMode ? calculateTileMVPMatrix(targetTileId, 1.0f) : cglib::mat4x4<float>::convert(_cameraProjMatrix * surfaceFrame);
+            cglib::mat4x4<float> mvpMatrix = flatDrape ? *_drapeMVPOverride : (gridMode ? calculateTileMVPMatrix(targetTileId, 1.0f) : cglib::mat4x4<float>::convert(_cameraProjMatrix * surfaceFrame));
             glUniformMatrix4fv(shaderProgram.uniforms[U_MVPMATRIX], 1, GL_FALSE, mvpMatrix.data());
 
             const CompiledBitmap& compiledTileBitmap = buildCompiledTileBitmap(bitmap);
