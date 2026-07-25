@@ -104,6 +104,24 @@ namespace carto::vt {
         void setTerrainSlackScale(float slackScale);
         void setTerrainDrapeFills(bool enabled, bool includeLines);
         void setTerrainDrapeResolution(int resolution);
+
+        // Cross-layer drape (S3). When an external drape target is set, this renderer stops
+        // owning drape textures and becomes a pure content baker: the owner collects the target
+        // tiles via collectDrapeTiles, bakes every participating renderer into ONE texture per
+        // tile in layer order via bakeDrapeTile, and then draws the surface once per tile with
+        // renderDrapedSurface. That is what lets a hillshade layer and a vector tile layer share
+        // a single drape texture, a single surface draw and a single depth domain.
+        void setExternalDrapeTarget(bool enabled);
+        // Target tiles this renderer would drape this frame, each with a fingerprint of the
+        // content that would be baked (so the owner can detect a stale texture).
+        void collectDrapeTiles(std::map<TileId, std::size_t>& drapeTiles) const;
+        // Bakes this renderer's drapeable content for one target tile into the currently bound
+        // framebuffer and viewport. Does not clear - the owner clears once per tile before the
+        // first renderer bakes, so later layers composite over earlier ones.
+        void bakeDrapeTile(const TileId& targetTileId);
+        // Draws the terrain surface for one target tile, textured with an externally owned drape
+        // texture. Writes depth: the surface is the only depth-writing terrain geometry.
+        void renderDrapedSurface(const TileId& targetTileId, GLuint drapeTexture);
         void setTerrainDepthWrite(bool enabled);
         void setTerrainTextureProvider(TerrainTextureProvider provider);
         void setDebugWireframe(bool enabled);
@@ -361,6 +379,7 @@ namespace carto::vt {
         std::map<TileId, std::size_t> _drapeFingerprints; // what each cached texture was baked from; a change means it is stale
         std::vector<GLuint> _drapeTexturePool;   // recycled textures, so panning does not churn GL allocations
         std::vector<GLuint> _drapeStaleTextures; // wrong-size textures awaiting deletion on the GL thread
+        bool _externalDrapeTarget = false;       // drape textures are owned by the caller (cross-layer stacks)
         std::set<TileId> _drapeTilesThisFrame;   // target tiles that have a valid drape texture this frame
         const cglib::mat4x4<float>* _drapeMVPOverride = nullptr; // when set, renderTileGeometry draws flat into the drape FBO
         bool _debugWireframe = false;

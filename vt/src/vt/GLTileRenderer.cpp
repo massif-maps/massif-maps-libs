@@ -2246,6 +2246,107 @@ namespace carto::vt {
         return tex;
     }
 
+    void GLTileRenderer::setExternalDrapeTarget(bool enabled) {
+        std::lock_guard<std::mutex> lock(_mutex);
+
+        if (enabled != _externalDrapeTarget) {
+            _externalDrapeTarget = enabled;
+            // Ownership of the textures changes hands; drop ours (deleted on the GL thread).
+            _drapeStaleTextures.insert(_drapeStaleTextures.end(), _drapeTexturePool.begin(), _drapeTexturePool.end());
+            _drapeTexturePool.clear();
+            for (auto it = _drapeTextures.begin(); it != _drapeTextures.end(); it++) {
+                _drapeStaleTextures.push_back(it->second);
+            }
+            _drapeTextures.clear();
+            _drapeFingerprints.clear();
+        }
+    }
+
+    void GLTileRenderer::collectDrapeTiles(std::map<TileId, std::size_t>& drapeTiles) const {
+        if (!_visibleRenderTiles) {
+            return;
+        }
+        for (const RenderTile& renderTile : *_visibleRenderTiles) {
+            if (!renderTile.visible) {
+                continue;
+            }
+            bool hasContent = false;
+            for (auto it = renderTile.renderLayers.begin(); it != renderTile.renderLayers.end() && !hasContent; it++) {
+                hasContent = hasDrapeableContent(it->second);
+            }
+            if (!hasContent) {
+                continue;
+            }
+            // Combined, so a target tile covered by several render tiles of this renderer gets a
+            // fingerprint reflecting all of them.
+            std::size_t& fingerprint = drapeTiles[renderTile.targetTileId];
+            std::size_t contribution = calculateDrapeFingerprint(renderTile);
+            fingerprint ^= contribution + 0x9e3779b9 + (fingerprint << 6) + (fingerprint >> 2);
+        }
+    }
+
+    void GLTileRenderer::bakeDrapeTile(const TileId& targetTileId) {
+        if (!_visibleRenderTiles) {
+            return;
+        }
+        cglib::mat4x4<float> drapeOrtho;
+        _drapeMVPOverride = &drapeOrtho;
+        setCompOp(CompOp::SRC_OVER);
+
+        for (const RenderTile& renderTile : *_visibleRenderTiles) {
+            if (!renderTile.visible || !(renderTile.targetTileId == targetTileId)) {
+                continue;
+            }
+            for (auto it = renderTile.renderLayers.begin(); it != renderTile.renderLayers.end(); it++) {
+                const RenderTileLayer& renderLayer = it->second;
+                if (!hasDrapeableContent(renderLayer)) {
+                    continue;
+                }
+                // Backgrounds/rasters draw the target tile's surface mesh (their own uv logic
+                // resolves overzoom); geometry is in source tile coordinates and needs the
+                // sub-rect transform.
+                drapeOrtho = calculateDrapeMVPMatrix(targetTileId, targetTileId);
+                for (const std::shared_ptr<TileBackground>& background : renderLayer.layer->getBackgrounds()) {
+                    renderTileBackground(renderLayer.targetTileId, 1.0f, 1.0f, renderLayer.tileSize, background);
+                }
+                for (const std::shared_ptr<TileBitmap>& bitmap : renderLayer.layer->getBitmaps()) {
+                    renderTileBitmap(renderLayer.sourceTileId, renderLayer.targetTileId, 1.0f, 1.0f, bitmap);
+                }
+                drapeOrtho = calculateDrapeMVPMatrix(renderLayer.sourceTileId, targetTileId);
+                for (const std::shared_ptr<TileGeometry>& geometry : renderLayer.layer->getGeometries()) {
+                    if (isDrapeableGeometry(geometry->getType())) {
+                        renderTileGeometry(renderLayer.sourceTileId, renderLayer.targetTileId, 1.0f, 1.0f, renderLayer.tileSize, geometry);
+                    }
+                }
+            }
+        }
+
+        _drapeMVPOverride = nullptr;
+        checkGLError();
+    }
+
+    void GLTileRenderer::renderDrapedSurface(const TileId& targetTileId, GLuint drapeTexture) {
+        if (drapeTexture == 0) {
+            return;
+        }
+        // renderTileSurfaceDrape reads the texture from the map; swap the external one in for the
+        // duration of the draw so the two paths share one surface implementation.
+        auto it = _drapeTextures.find(targetTileId);
+        GLuint previous = (it != _drapeTextures.end() ? it->second : 0);
+        bool wasDraped = _drapeTilesThisFrame.count(targetTileId) > 0;
+        _drapeTextures[targetTileId] = drapeTexture;
+        _drapeTilesThisFrame.insert(targetTileId);
+        renderTileSurfaceDrape(targetTileId);
+        if (previous != 0) {
+            _drapeTextures[targetTileId] = previous;
+        } else {
+            _drapeTextures.erase(targetTileId);
+        }
+        if (!wasDraped) {
+            _drapeTilesThisFrame.erase(targetTileId);
+        }
+    }
+
     void GLTileRenderer::deleteDrapeResources() {
         // Called on renderer reset/deinit. Without this the FBO and every cached drape texture
         // survive GL context loss as stale names - a leak, and a source of draws against
@@ -2366,6 +2467,9 @@ namespace carto::vt {
         // A tile is "draped" this frame only once its texture is actually baked; until then
         // its content renders as normal geometry (no gap). New-tile bakes are capped per frame
         // so a fast zoom's burst of tiles is spread over a few frames instead of stalling one.
+        if (_externalDrapeTarget) {
+            return; // the owner drives baking across all layers (cross-layer stacks)
+        }
         static const std::size_t DRAPE_BAKE_BUDGET_PER_FRAME = 4;
         // Textures orphaned by a resolution change: deleted here, on the GL thread.
         for (GLuint texture : _drapeStaleTextures) {
