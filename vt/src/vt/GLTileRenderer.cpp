@@ -2263,6 +2263,8 @@ namespace carto::vt {
     }
 
     void GLTileRenderer::collectDrapeTiles(std::map<TileId, std::size_t>& drapeTiles) const {
+        std::lock_guard<std::mutex> lock(_mutex);
+
         if (!_visibleRenderTiles) {
             return;
         }
@@ -2286,6 +2288,8 @@ namespace carto::vt {
     }
 
     void GLTileRenderer::bakeDrapeTile(const TileId& targetTileId) {
+        std::lock_guard<std::mutex> lock(_mutex);
+
         if (!_visibleRenderTiles) {
             return;
         }
@@ -2326,6 +2330,8 @@ namespace carto::vt {
     }
 
     void GLTileRenderer::renderDrapedSurface(const TileId& targetTileId, GLuint drapeTexture) {
+        std::lock_guard<std::mutex> lock(_mutex);
+
         if (drapeTexture == 0) {
             return;
         }
