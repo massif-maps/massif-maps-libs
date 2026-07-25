@@ -310,6 +310,7 @@ namespace carto::vt {
         void deleteDrapeResources();
         bool isDrapeableGeometry(TileGeometry::Type type) const;
         bool hasDrapeableContent(const RenderTileLayer& renderLayer) const;
+        bool tileCovers(const TileId& tileId, const TileId& targetTileId) const;
         cglib::mat4x4<float> calculateDrapeMVPMatrix(const TileId& sourceTileId, const TileId& targetTileId) const;
         std::size_t calculateDrapeFingerprint(const RenderTile& renderTile) const;
         void renderTileWireframe(const TileId& tileId);

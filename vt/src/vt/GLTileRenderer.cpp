@@ -2304,7 +2304,11 @@ namespace carto::vt {
         setCompOp(CompOp::SRC_OVER);
 
         for (const RenderTile& renderTile : *_visibleRenderTiles) {
-            if (!renderTile.visible || !(renderTile.targetTileId == targetTileId)) {
+            // Accept render tiles that COVER the terrain tile, not just exact matches: the
+            // terrain tile set is one normalized cover shared by every layer, so a layer whose
+            // own tiles are coarser (a hillshade limited by its DEM max zoom) contributes through
+            // its ancestor tile, baked via the sub-rect transform.
+            if (!renderTile.visible || !tileCovers(renderTile.targetTileId, targetTileId)) {
                 continue;
             }
             for (auto it = renderTile.renderLayers.begin(); it != renderTile.renderLayers.end(); it++) {
@@ -2312,10 +2316,10 @@ namespace carto::vt {
                 if (!hasDrapeableContent(renderLayer)) {
                     continue;
                 }
-                // Backgrounds/rasters draw the target tile's surface mesh (their own uv logic
-                // resolves overzoom); geometry is in source tile coordinates and needs the
-                // sub-rect transform.
-                drapeOrtho = calculateDrapeMVPMatrix(targetTileId, targetTileId);
+                // Backgrounds/rasters draw their own target tile's surface mesh (their uv logic
+                // resolves source-vs-target overzoom); geometry is in source tile coordinates.
+                // Both may be coarser than the terrain tile, hence the sub-rect in each case.
+                drapeOrtho = calculateDrapeMVPMatrix(renderLayer.targetTileId, targetTileId);
                 for (const std::shared_ptr<TileBackground>& background : renderLayer.layer->getBackgrounds()) {
                     renderTileBackground(renderLayer.targetTileId, 1.0f, 1.0f, renderLayer.tileSize, background);
                 }
@@ -2399,6 +2403,14 @@ namespace carto::vt {
         // 3D extrusions and point symbols stay live in the scene (they are not surface-conformal,
         // so flattening them into the terrain skin would be wrong, not just imprecise).
         return type == TileGeometry::Type::POLYGON || type == TileGeometry::Type::LINE;
+    }
+
+    bool GLTileRenderer::tileCovers(const TileId& tileId, const TileId& targetTileId) const {
+        if (tileId.zoom > targetTileId.zoom) {
+            return false;
+        }
+        int deltaZoom = targetTileId.zoom - tileId.zoom;
+        return (targetTileId.x >> deltaZoom) == tileId.x && (targetTileId.y >> deltaZoom) == tileId.y;
     }
 
     cglib::mat4x4<float> GLTileRenderer::calculateDrapeMVPMatrix(const TileId& sourceTileId, const TileId& targetTileId) const {
