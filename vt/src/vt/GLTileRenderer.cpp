@@ -30,6 +30,104 @@ namespace {
         }
 #endif
     }
+
+    // Attribute setup that tolerates an attribute the linker dropped. glGetAttribLocation returns
+    // -1 for those, and unlike a uniform location of -1 (legal, ignored) a vertex attribute index
+    // of -1 is GL_INVALID_VALUE - which on a translated GL shows up as
+    // "GL error 0x501 condition [indx >= CODEC_MAX_VERTEX_ATTRIBUTES]" and leaves the draw's
+    // attribute state half configured. The shadow caster programs are exactly this case: their
+    // fragment shader only writes depth, so uv/normal/attribs are optimised out of the program.
+    void enableVertexAttrib(GLint index, GLint size, GLenum type, GLboolean normalized, GLsizei stride, const GLvoid* offset) {
+        if (index < 0) {
+            return;
+        }
+        glVertexAttribPointer(static_cast<GLuint>(index), size, type, normalized, stride, offset);
+        glEnableVertexAttribArray(static_cast<GLuint>(index));
+    }
+
+    void disableVertexAttrib(GLint index) {
+        if (index >= 0) {
+            glDisableVertexAttribArray(static_cast<GLuint>(index));
+        }
+    }
+
+    void setConstVertexAttrib(GLint index, float x, float y, float z) {
+        if (index >= 0) {
+            glVertexAttrib3f(static_cast<GLuint>(index), x, y, z);
+        }
+    }
+
+    void setConstVertexAttrib(GLint index, float x, float y, float z, float w) {
+        if (index >= 0) {
+            glVertexAttrib4f(static_cast<GLuint>(index), x, y, z, w);
+        }
+    }
+
+    // Convex hull of a small point set (monotone chain), used to turn the endpoints of the visible
+    // frustum edges back into the ground polygon they outline. The visible ground is the
+    // intersection of convex sets, so its footprint is convex and the hull loses nothing.
+    std::vector<cglib::vec2<double> > convexHull2D(std::vector<cglib::vec2<double> > points) {
+        if (points.size() < 3) {
+            return points;
+        }
+        std::sort(points.begin(), points.end(), [](const cglib::vec2<double>& a, const cglib::vec2<double>& b) {
+            return a(0) != b(0) ? a(0) < b(0) : a(1) < b(1);
+        });
+        points.erase(std::unique(points.begin(), points.end(), [](const cglib::vec2<double>& a, const cglib::vec2<double>& b) {
+            return a(0) == b(0) && a(1) == b(1);
+        }), points.end());
+        if (points.size() < 3) {
+            return points;
+        }
+        auto cross = [](const cglib::vec2<double>& o, const cglib::vec2<double>& a, const cglib::vec2<double>& b) {
+            return (a(0) - o(0)) * (b(1) - o(1)) - (a(1) - o(1)) * (b(0) - o(0));
+        };
+        std::vector<cglib::vec2<double> > hull(points.size() * 2);
+        std::size_t k = 0;
+        for (std::size_t i = 0; i < points.size(); i++) {
+            while (k >= 2 && cross(hull[k - 2], hull[k - 1], points[i]) <= 0) {
+                k--;
+            }
+            hull[k++] = points[i];
+        }
+        for (std::size_t i = points.size() - 1, lower = k + 1; i > 0; i--) {
+            while (k >= lower && cross(hull[k - 2], hull[k - 1], points[i - 1]) <= 0) {
+                k--;
+            }
+            hull[k++] = points[i - 1];
+        }
+        hull.resize(k > 0 ? k - 1 : 0); // the first point is repeated at the end
+        return hull;
+    }
+
+    // Sutherland-Hodgman clip of a convex polygon against an axis-aligned rectangle.
+    std::vector<cglib::vec2<double> > clipPolygonToRect(const std::vector<cglib::vec2<double> >& polygon, double minX, double minY, double maxX, double maxY) {
+        std::vector<cglib::vec2<double> > input = polygon, output;
+        for (int side = 0; side < 4 && !input.empty(); side++) {
+            output.clear();
+            int axis = side & 1;
+            bool keepAbove = (side < 2);
+            double limit = (side == 0 ? minX : side == 1 ? minY : side == 2 ? maxX : maxY);
+            auto inside = [axis, keepAbove, limit](const cglib::vec2<double>& p) {
+                return keepAbove ? p(axis) >= limit : p(axis) <= limit;
+            };
+            for (std::size_t i = 0; i < input.size(); i++) {
+                const cglib::vec2<double>& current = input[i];
+                const cglib::vec2<double>& previous = input[(i + input.size() - 1) % input.size()];
+                bool currentInside = inside(current), previousInside = inside(previous);
+                if (currentInside != previousInside) {
+                    double denom = current(axis) - previous(axis);
+                    double t = (std::abs(denom) > 1.0e-12 ? (limit - previous(axis)) / denom : 0.0);
+                    output.emplace_back(previous(0) + (current(0) - previous(0)) * t, previous(1) + (current(1) - previous(1)) * t);
+                }
+                if (currentInside) {
+                    output.push_back(current);
+                }
+            }
+            input = output;
+        }
+        return input;
+    }
 }
 
 namespace carto::vt {
@@ -156,6 +254,7 @@ namespace carto::vt {
         std::lock_guard<std::mutex> lock(_mutex);
 
         if (tileIds.empty()) {
+            texelMeters = -1; // diagnostic: which fit bail-out fired
             return false;
         }
         // World-space box of the shadowed ground. The height range comes from the elevation
@@ -178,14 +277,25 @@ namespace carto::vt {
             }
         }
         if (first || maxX <= minX || maxY <= minY) {
+            texelMeters = -2; // diagnostic: which fit bail-out fired
             return false;
         }
+        // ANY tile with an elevation texture will do - the metres-to-internal factor is a property
+        // of the projection, not of the tile. Asking only tileIds.front() made the whole shadow
+        // pass fail whenever that one tile happened to have no decoded DEM yet: the provider is
+        // CACHED_ONLY, so a far tile that has not been decoded returns nothing, and the result was
+        // every shadow on screen disappearing at once. The more the view is tilted the more distant
+        // tiles are in the cover, so the more often it happened.
         double metersToInternal = 0;
-        TerrainTexture terrainTexture;
-        if (_terrainTextureProvider && _terrainTextureProvider(tileIds.front(), terrainTexture)) {
-            metersToInternal = terrainTexture.metersToInternal;
+        for (const TileId& tileId : tileIds) {
+            TerrainTexture terrainTexture;
+            if (_terrainTextureProvider && _terrainTextureProvider(tileId, terrainTexture) && terrainTexture.metersToInternal > 0) {
+                metersToInternal = terrainTexture.metersToInternal;
+                break;
+            }
         }
         if (metersToInternal <= 0) {
+            texelMeters = -3; // diagnostic: which fit bail-out fired
             return false;
         }
         double minZ = -1000.0 * metersToInternal;
@@ -201,28 +311,70 @@ namespace carto::vt {
         // and fitting the box to that wedge instead of to its bounding square is worth several
         // times the texel density - which is what a shadow edge and a stretched shadow's interior
         // are limited by. Beyond the radius there are simply no shadows.
+        //
+        // The wedge is kept as a POLYGON, not only as its bounding rectangle: the box below is
+        // fitted in LIGHT space, and a world-axis-aligned rectangle rotated into light space
+        // bounds far more ground than the wedge itself - up to twice the extent per axis when the
+        // map is rotated diagonally to the sun, which is a factor of two on every texel.
+        std::vector<cglib::vec2<double> > groundPolygon;
         {
             double visMinX = 0, visMinY = 0, visMaxX = 0, visMaxY = 0;
             bool visFirst = true;
+            groundPolygon.clear();
             cglib::mat4x4<double> invCameraProj = cglib::inverse(_viewState.projectionMatrix * _viewState.cameraMatrix);
             double maxDistance = (maxDistanceMeters > 0 ? maxDistanceMeters * metersToInternal : 0);
             const cglib::vec3<double>& eye = _viewState.origin; // camera position in world units
             // Each frustum edge, reduced to the piece of it that can see shadowed GROUND: the part
             // inside the height slab, in front of the camera and no further than the shadow
             // distance. Everything outside that is sky, or under the terrain.
-            struct GroundEdge { cglib::vec3<double> origin, delta; double t0, t1, d0, length; };
-            std::vector<GroundEdge> edges;
+            //
+            // Two quantities are taken from rays sampled across the screen: the DISTANCE RANGE over
+            // which the view crosses the slab, and the horizontal opening ANGLE of the frustum. The
+            // footprint itself is then built from those rather than from the rays, because a ray
+            // only crosses the slab over a short piece of its length: at this camera the five
+            // sampled screen heights cross it at 14.5-16.7, 16.6-19.2, 20.7-23.8, 29.1-33.6 and
+            // 53.7-62.0 km. Those are disjoint. A cascade whose distance slice lands in one of the
+            // gaps intersects NO ray and reports an empty box - which is exactly what the outermost
+            // cascade did (its texel size logged as 0.0 m) before the far half of the view lost its
+            // shadows. Sampling more rays only makes the gaps smaller, it does not remove them.
+            cglib::vec2<double> viewDir(1, 0);
+            double halfAngle = 0;
             double groundNear = 0, groundFar = 0;
-            for (int corner = 0; corner < 4; corner++) {
-                double ndcX = (corner & 1 ? 1.0 : -1.0), ndcY = (corner & 2 ? 1.0 : -1.0);
+            bool rangeFirst = true;
+            auto sampleRay = [&](double ndcX, double ndcY, cglib::vec3<double>& origin, double& d0, double& length) {
                 cglib::vec3<double> p0 = cglib::proj_p(cglib::transform(cglib::vec4<double>(ndcX, ndcY, -1.0, 1.0), invCameraProj));
                 cglib::vec3<double> p1 = cglib::proj_p(cglib::transform(cglib::vec4<double>(ndcX, ndcY,  1.0, 1.0), invCameraProj));
+                origin = p0;
+                d0 = cglib::length(p0 - eye);
                 cglib::vec3<double> delta = p1 - p0;
-                double length = cglib::length(delta);
+                length = cglib::length(delta);
+                return delta;
+            };
+            {
+                cglib::vec3<double> centreOrigin;
+                double centreD0 = 0, centreLength = 0;
+                cglib::vec3<double> centreDelta = sampleRay(0.0, 0.0, centreOrigin, centreD0, centreLength);
+                cglib::vec2<double> centreHorizontal(centreDelta(0), centreDelta(1));
+                if (cglib::length(centreHorizontal) > 1.0e-12) {
+                    viewDir = cglib::unit(centreHorizontal);
+                }
+            }
+            const int GROUND_SAMPLES = 5; // screen heights sampled per side, bottom to top
+            for (int sample = 0; sample < 2 * GROUND_SAMPLES; sample++) {
+                double ndcX = (sample & 1 ? 1.0 : -1.0);
+                double ndcY = -1.0 + 2.0 * (sample / 2) / (GROUND_SAMPLES - 1);
+                cglib::vec3<double> p0;
+                double d0 = 0, length = 0;
+                cglib::vec3<double> delta = sampleRay(ndcX, ndcY, p0, d0, length);
                 if (!(length > 0)) {
                     continue;
                 }
-                double d0 = cglib::length(p0 - eye); // distance from the eye to the near plane
+                cglib::vec2<double> horizontal(delta(0), delta(1));
+                if (cglib::length(horizontal) > 1.0e-12) {
+                    cglib::vec2<double> unitHorizontal = cglib::unit(horizontal);
+                    double cosAngle = std::min(1.0, std::max(-1.0, cglib::dot_product(unitHorizontal, viewDir)));
+                    halfAngle = std::max(halfAngle, std::acos(cosAngle));
+                }
                 double t0 = 0, t1 = 1;
                 if (maxDistance > 0 && length > maxDistance) {
                     t1 = maxDistance / length; // cap the far end at the shadow distance
@@ -235,16 +387,65 @@ namespace carto::vt {
                     continue; // parallel to the slab and outside it
                 }
                 if (t1 < t0) {
-                    continue; // this edge never crosses the shadowed height range
+                    continue; // this ray never crosses the shadowed height range
                 }
-                if (edges.empty()) {
+                if (rangeFirst) {
                     groundNear = d0 + t0 * length;
                     groundFar = d0 + t1 * length;
+                    rangeFirst = false;
                 } else {
                     groundNear = std::min(groundNear, d0 + t0 * length);
                     groundFar = std::max(groundFar, d0 + t1 * length);
                 }
-                edges.push_back(GroundEdge { p0, delta, t0, t1, d0, length });
+            }
+            // Looking straight down, the rays fan out into EVERY azimuth and the centre ray's own
+            // azimuth is numerical noise. Capping the opening angle there cuts the sector and
+            // leaves whatever falls outside it - the top and the bottom of the screen - with no
+            // light box over it and therefore no shadow. Past a wide fan the honest footprint is
+            // the whole disc around the camera, which the tile-cover rectangle then bounds anyway.
+            bool fullCircle = (halfAngle > 1.0);
+            if (fullCircle) {
+                halfAngle = 3.14159265358979323846;
+            }
+            // Cap how far the shadowed ground reaches. Left unbounded it runs to wherever the
+            // frustum finally leaves the height slab, which at a tilt is the horizon: measured
+            // 176 km of box at tilt 39 (172 m texels) against 12 km at tilt 35 (12 m) - the same
+            // camera, four degrees apart. That cliff is the distant shadows turning into blocks
+            // and then vanishing, and no split can hide it, since the outermost cascade is nested
+            // and must reach groundFar.
+            //
+            // Texel size follows the ground extent almost linearly, so the budget is simply how
+            // much ground is worth covering. Its unit is taken from the sun and the relief -
+            // relief/tan(altitude), the distance a ridge throws its shadow - because that is the
+            // scale over which shadows still carry information: three of them covers the part of
+            // the view where shadows read as shadows. (This term also stretches the light box, but
+            // along the light's DEPTH axis, which costs bias precision rather than texels.)
+            //
+            // The budget is measured from groundNear, and groundNear is a distance from the EYE:
+            // a camera at zoom 11 is 15 km up, so the nearest ground it sees is already 15 km away
+            // and the screen spans out to a hundred. A budget of ONE slab extent therefore ended
+            // the shadows just past the bottom of the screen - shadows "disappeared" instead of
+            // going blocky. Three slab extents keeps the outermost cascade near 4x the near one
+            // and still reaches well past the middle of a tilted view; the shader fades the shadow
+            // out at the edge of the last page, so where it does end there is no line.
+            if (groundFar > groundNear) {
+                cglib::vec3<double> sunUnit = cglib::unit(cglib::vec3<double>(sunDir(0), sunDir(1), sunDir(2)));
+                double horizontal = std::sqrt(std::max(0.0, 1.0 - sunUnit(2) * sunUnit(2)));
+                double slabExtent = (maxZ - minZ) * horizontal / std::max(0.05, std::abs(sunUnit(2)));
+                // The second term is what makes this scale with the VIEW rather than being a fixed
+                // number of kilometres. groundNear is the distance to the nearest visible ground,
+                // so it grows both as the camera rises and as the view tilts towards the horizon -
+                // exactly the two ways the useful shadow range grows. A fixed 8 km floor meant that
+                // zooming into a city still spent the map on 8 km of ground while the camera was
+                // 400 m up: 8 m texels against buildings 10-30 m wide, which is why building
+                // shadows were blobs and got worse the more the view was tilted. At z16 this gives
+                // about a kilometre and a metre-scale texel instead.
+                double allowedGround = std::min(std::max(3.0 * slabExtent, 4.0 * groundNear), 60000.0 * metersToInternal);
+                allowedGround = std::max(allowedGround, 1000.0 * metersToInternal);
+                if (maxDistance > 0) {
+                    allowedGround = maxDistance; // an explicit distance is the caller's decision
+                }
+                groundFar = std::min(groundFar, groundNear + allowedGround);
             }
             // Split THAT distance range, not the raw frustum: a camera above a mountain spends the
             // first kilometres of every edge in the air, and a cascade cut from the frustum alone
@@ -253,47 +454,111 @@ namespace carto::vt {
             // ground in proportion to its distance, so a geometric split keeps texels about the
             // same size relative to the pixels that read them, while the linear term stops the
             // near cascade from collapsing to nothing.
-            // NESTED, not disjoint: every cascade starts at the nearest ground and only its far
-            // end moves out, so cascade N+1 contains cascade N and the coarsest one covers
-            // everything visible. With disjoint slices a fragment that just fails the near
-            // cascade's test - inside its PCF margin, or above its height slab - falls through to
-            // a cascade that does not cover it either and comes out UNSHADOWED, in patches with
-            // straight edges: the light box's own outline projected onto the tilted ground.
+            // OVERLAPPING, not nested and not disjoint. Fully nested (every cascade starting at
+            // groundNear) means the outermost one always spans the WHOLE visible range, so with
+            // three cascades the far half of a tilted screen is served by a box as wide as the
+            // view - the 176 km box that produced 172 m texels. Fully disjoint is what nesting was
+            // introduced to fix: a fragment that just fails the near cascade's test (inside its
+            // PCF margin, or above its narrowed height slab) falls through to a cascade that does
+            // not contain it either and comes out UNSHADOWED, in patches with straight edges.
+            // Overlapping by 40% of the previous cascade's reach gives the density of disjoint
+            // slices with a fall-through band orders of magnitude wider than the PCF margin.
+            //
+            // The split itself is geometric with a token linear part: a screen pixel covers ground
+            // in proportion to its distance, so a geometric split keeps texels about the same size
+            // relative to the pixels that read them. A larger linear term hands the near cascade a
+            // slice measured in kilometres (with 3 cascades, a third of the whole view distance),
+            // which is what made near shadows staircase at a tilt.
             double sliceNear = groundNear, sliceFar = groundFar;
             if (cascadeCount > 1 && groundFar > groundNear && groundNear > 0) {
-                double part = static_cast<double>(cascade + 1) / cascadeCount;
-                double logSplit = groundNear * std::pow(groundFar / groundNear, part);
-                double linearSplit = groundNear + (groundFar - groundNear) * part;
-                sliceFar = 0.7 * logSplit + 0.3 * linearSplit;
-            }
-            for (auto it = edges.begin(); it != edges.end(); it++) {
-                double t0 = std::max(it->t0, (sliceNear - it->d0) / it->length);
-                double t1 = std::min(it->t1, (sliceFar - it->d0) / it->length);
-                if (t1 < t0) {
-                    continue; // this edge is not in this cascade's distance slice
+                // The ratio being split is capped at 100. When the camera sits INSIDE the height
+                // slab - anywhere near mountains, or at a city zoom where the cover reaches the
+                // hills - the frustum rays start already inside it, so groundNear collapses to the
+                // near plane, a few metres. A geometric split over a ratio of thousands then gives
+                // the near cascade a few tens of METRES of ground and hands everything the user is
+                // actually looking at to the coarse ones. Capped, the ladder stays useful: with
+                // 3 cascades the first covers about a hundredth of the range, the last all of it.
+                double splitNear = std::max(groundNear, groundFar / 100.0);
+                auto splitFar = [&](int index) {
+                    if (index + 1 >= cascadeCount) {
+                        return groundFar; // the last cascade always reaches the end of the range
+                    }
+                    double part = static_cast<double>(index + 1) / cascadeCount;
+                    double logSplit = splitNear * std::pow(groundFar / splitNear, part);
+                    double linearSplit = splitNear + (groundFar - splitNear) * part;
+                    return 0.95 * logSplit + 0.05 * linearSplit;
+                };
+                sliceFar = splitFar(cascade);
+                if (cascade > 0) {
+                    sliceNear = groundNear + (splitFar(cascade - 1) - groundNear) * 0.6;
                 }
-                for (int end = 0; end < 2; end++) {
-                    cglib::vec3<double> p = it->origin + it->delta * (end ? t1 : t0);
-                    if (visFirst) {
-                        visMinX = visMaxX = p(0);
-                        visMinY = visMaxY = p(1);
-                        visFirst = false;
-                    } else {
-                        visMinX = std::min(visMinX, p(0)); visMaxX = std::max(visMaxX, p(0));
-                        visMinY = std::min(visMinY, p(1)); visMaxY = std::max(visMaxY, p(1));
+            }
+            // The ground this cascade covers is the piece of the view cone between two distances:
+            // an annulus sector, centred on the camera, spanning the frustum's horizontal opening
+            // angle. Its inner and outer radii are the horizontal distances at which a slant range
+            // meets the slab - taken at BOTH slab heights, since the terrain in between is what
+            // receives. Built this way the footprint exists for every slice inside the distance
+            // range, which is what the ray-intersection version could not guarantee.
+            if (!rangeFirst && sliceFar > 0) {
+                // A sector is well approximated by five directions; a full circle sampled five
+                // times is a pentagon INSIDE the disc, which would clip the corners off the very
+                // footprint this is meant to cover.
+                const int ANGLE_SAMPLES = (fullCircle ? 13 : 5);
+                for (int level = 0; level < 2; level++) {
+                    // CLAMPED at zero: with mountains in the cover the top of the slab can be ABOVE
+                    // the camera, and then |height| > distance makes the radius zero - every sample
+                    // collapses onto the camera position, the footprint has fewer than three points
+                    // and falls back to the WHOLE tile cover. That is how the nearest cascade ended
+                    // up with the coarsest box of the three (measured 31 m for cascade 0 against
+                    // 2.7 m for cascade 1). A slab face at or above the eye is treated as being at
+                    // eye height, which covers the ground conservatively instead of collapsing.
+                    double height = std::max(0.0, eye(2) - (level ? maxZ : minZ));
+                    for (int end = 0; end < 2; end++) {
+                        double distance = (end ? sliceFar : sliceNear);
+                        double radius = std::sqrt(std::max(0.0, distance * distance - height * height));
+                        for (int i = 0; i < ANGLE_SAMPLES; i++) {
+                            double angle = halfAngle * (-1.0 + 2.0 * i / (ANGLE_SAMPLES - 1));
+                            double c = std::cos(angle), s = std::sin(angle);
+                            cglib::vec2<double> direction(viewDir(0) * c - viewDir(1) * s, viewDir(0) * s + viewDir(1) * c);
+                            double x = eye(0) + direction(0) * radius;
+                            double y = eye(1) + direction(1) * radius;
+                            groundPolygon.emplace_back(x, y);
+                            if (visFirst) {
+                                visMinX = visMaxX = x;
+                                visMinY = visMaxY = y;
+                                visFirst = false;
+                            } else {
+                                visMinX = std::min(visMinX, x); visMaxX = std::max(visMaxX, x);
+                                visMinY = std::min(visMinY, y); visMaxY = std::max(visMaxY, y);
+                            }
+                        }
                     }
                 }
             }
+            // Narrowing to the visible slice is an OPTIMISATION - the drawn tiles are the ground
+            // that can be shadowed at all, and this only trims them to the part this cascade
+            // covers. When the trim comes out empty the answer is therefore the tiles, NOT failure:
+            // a cascade slice can miss the cover completely (at a high zoom the cover is a handful
+            // of tiles around the focus while the near slice sits in front of them), and cascade 0
+            // returning false takes every shadow on screen with it. Measured: z16 tilt 50 over
+            // Grenoble, 4 drape tiles, "shadows WANTED BUT UNAVAILABLE" and a black-and-white map.
             if (!visFirst) {
-                minX = std::max(minX, visMinX); maxX = std::min(maxX, visMaxX);
-                minY = std::max(minY, visMinY); maxY = std::min(maxY, visMaxY);
-            } else if (cascade > 0 || cascadeCount > 1) {
-                return false; // an empty cascade: nothing of the ground falls in its slice
+                double trimMinX = std::max(minX, visMinX), trimMaxX = std::min(maxX, visMaxX);
+                double trimMinY = std::max(minY, visMinY), trimMaxY = std::min(maxY, visMaxY);
+                if (trimMaxX > trimMinX && trimMaxY > trimMinY) {
+                    minX = trimMinX; maxX = trimMaxX;
+                    minY = trimMinY; maxY = trimMaxY;
+                }
             } else if (maxDistance > 0) {
-                minX = std::max(minX, eye(0) - maxDistance); maxX = std::min(maxX, eye(0) + maxDistance);
-                minY = std::max(minY, eye(1) - maxDistance); maxY = std::min(maxY, eye(1) + maxDistance);
+                double trimMinX = std::max(minX, eye(0) - maxDistance), trimMaxX = std::min(maxX, eye(0) + maxDistance);
+                double trimMinY = std::max(minY, eye(1) - maxDistance), trimMaxY = std::min(maxY, eye(1) + maxDistance);
+                if (trimMaxX > trimMinX && trimMaxY > trimMinY) {
+                    minX = trimMinX; maxX = trimMaxX;
+                    minY = trimMinY; maxY = trimMaxY;
+                }
             }
             if (maxX <= minX || maxY <= minY) {
+                texelMeters = -5; // the drawn tiles themselves are degenerate: nothing to shadow
                 return false;
             }
         }
@@ -333,20 +598,41 @@ namespace carto::vt {
                 }
             }
             // Never narrower than a fraction of the whole slab: a tile whose elevation has not
-            // loaded reports an empty range, and intersecting with that would collapse the box
-            // onto a height the terrain is not at.
-            double minThickness = (casterMaxZ - casterMinZ) * 0.1;
-            if (!localFirst && localMaxZ - localMinZ > minThickness) {
-                minZ = std::max(minZ, localMinZ);
-                maxZ = std::min(maxZ, localMaxZ);
-                if (maxZ <= minZ) {
-                    return false;
+            // loaded reports an empty range, and collapsing the box onto that would put it at a
+            // height the terrain is not at. The floor is ENFORCED by widening the local range,
+            // not by refusing to narrow at all: refusing meant a near cascade sitting in a valley
+            // kept the whole mountain range's slab, and since a low sun stretches the box by that
+            // slab divided by tan(altitude), that one condition set the texel size for every
+            // cascade. Ground that still falls outside a narrowed box is not lost - the cascades
+            // are nested, so it is shadowed by the next one out.
+            double minThickness = (casterMaxZ - casterMinZ) * 0.02;
+            if (!localFirst) {
+                double slack = 0.5 * std::max(0.0, minThickness - (localMaxZ - localMinZ));
+                double narrowedMinZ = std::max(minZ, localMinZ - slack);
+                double narrowedMaxZ = std::min(maxZ, localMaxZ + slack);
+                if (narrowedMaxZ > narrowedMinZ) {
+                    minZ = narrowedMinZ;
+                    maxZ = narrowedMaxZ;
                 }
             }
+        }
+        // Things STAND on the terrain. The slab so far is the DEM's, and 3D extrusions reach well
+        // above it: a building whose roof is above maxZ lands in front of the light box's near
+        // plane, so it is clipped out of the caster pass (it throws no shadow) and, as a receiver,
+        // its own fragments fall outside every cascade page and come out unshadowed. Both symptoms
+        // read as "shadows stopped applying to buildings". The headroom that used to hide this was
+        // a PERCENTAGE of the relief - fine over a 2 km massif, nothing over flat ground - so it is
+        // metric here. The lateral fit needs it too, not just the depth range: at a low sun a
+        // receiver's light-space position is displaced sideways by its own height.
+        {
+            double standingHeadroom = 200.0 * metersToInternal;
+            maxZ += standingHeadroom;
+            casterMaxZ += standingHeadroom;
         }
 
         cglib::vec3<double> dir = cglib::unit(cglib::vec3<double>(sunDir(0), sunDir(1), sunDir(2)));
         if (dir(2) < 0.05) {
+            texelMeters = -6; // diagnostic: which fit bail-out fired
             return false; // sun at or below the horizon: nothing is meaningfully lit
         }
         cglib::vec3<double> up = std::abs(dir(2)) > 0.99 ? cglib::vec3<double>(0, 1, 0) : cglib::vec3<double>(0, 0, 1);
@@ -362,15 +648,32 @@ namespace carto::vt {
         // margin tile widens the box and coarsens every texel in it - which is why raising the
         // caster margin blurred and displaced the building shadows. Extending only the depth
         // range lets an off-screen mountain be rasterised into the same texels at no cost.
+        //
+        // The sides are fitted to the visible-ground POLYGON clipped to the drawn tiles, not to
+        // its bounding rectangle. The rectangle is world-axis-aligned and the fit happens in light
+        // space, so it is bounded twice - once by the world axes and once by the light axes - and
+        // at a tilt with the sun diagonal to the view that costs a factor of two on every texel.
+        std::vector<cglib::vec2<double> > footprint = clipPolygonToRect(convexHull2D(groundPolygon), minX, minY, maxX, maxY);
+        if (footprint.size() < 3) {
+            footprint.clear(); // no usable wedge (or it misses the tiles entirely): fall back to the rectangle
+            footprint.emplace_back(minX, minY);
+            footprint.emplace_back(maxX, minY);
+            footprint.emplace_back(maxX, maxY);
+            footprint.emplace_back(minX, maxY);
+        }
         double l = 0, r = 0, b = 0, t = 0, n = 0, f = 0;
-        for (int corner = 0; corner < 8; corner++) {
-            cglib::vec4<double> p = cglib::transform(cglib::vec4<double>(corner & 1 ? maxX : minX, corner & 2 ? maxY : minY, corner & 4 ? maxZ : minZ, 1.0), lightView);
-            if (corner == 0) {
-                l = r = p(0); b = t = p(1); n = f = -p(2);
-            } else {
-                l = std::min(l, p(0)); r = std::max(r, p(0));
-                b = std::min(b, p(1)); t = std::max(t, p(1));
-                n = std::min(n, -p(2)); f = std::max(f, -p(2));
+        bool fitFirst = true;
+        for (const cglib::vec2<double>& corner : footprint) {
+            for (int level = 0; level < 2; level++) {
+                cglib::vec4<double> p = cglib::transform(cglib::vec4<double>(corner(0), corner(1), level ? maxZ : minZ, 1.0), lightView);
+                if (fitFirst) {
+                    l = r = p(0); b = t = p(1); n = f = -p(2);
+                    fitFirst = false;
+                } else {
+                    l = std::min(l, p(0)); r = std::max(r, p(0));
+                    b = std::min(b, p(1)); t = std::max(t, p(1));
+                    n = std::min(n, -p(2)); f = std::max(f, -p(2));
+                }
             }
         }
         for (const TileId& tileId : casterTileIds) {
@@ -467,8 +770,7 @@ namespace carto::vt {
                 const ShaderProgram& shaderProgram = buildShaderProgram("shadowcaster", backgroundVsh, shadowCasterFsh, LightingMode::NONE, RasterFilterMode::NONE, TERRAIN_VTF_FLAG);
                 glUseProgram(shaderProgram.program);
                 glBindBuffer(GL_ARRAY_BUFFER, compiledTileSurface.vertexGeometryVBO);
-                glVertexAttribPointer(shaderProgram.attribs[A_VERTEXPOSITION], 3, GL_FLOAT, GL_FALSE, vertexGeomLayoutParams.vertexSize, bufferGLOffset(vertexGeomLayoutParams.coordOffset));
-                glEnableVertexAttribArray(shaderProgram.attribs[A_VERTEXPOSITION]);
+                enableVertexAttrib(shaderProgram.attribs[A_VERTEXPOSITION], 3, GL_FLOAT, GL_FALSE, vertexGeomLayoutParams.vertexSize, bufferGLOffset(vertexGeomLayoutParams.coordOffset));
                 glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, compiledTileSurface.indicesVBO);
 
                 for (const TileId& tileId : tileIds) {
@@ -480,7 +782,7 @@ namespace carto::vt {
                     draws++;
                 }
 
-                glDisableVertexAttribArray(shaderProgram.attribs[A_VERTEXPOSITION]);
+                disableVertexAttrib(shaderProgram.attribs[A_VERTEXPOSITION]);
                 glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
                 glBindBuffer(GL_ARRAY_BUFFER, 0);
                 checkGLError();
@@ -2436,8 +2738,7 @@ namespace carto::vt {
             createCompiledQuad(_screenQuad);
         }
         glBindBuffer(GL_ARRAY_BUFFER, _screenQuad.vbo);
-        glVertexAttribPointer(shaderProgram.attribs[A_VERTEXPOSITION], 2, GL_FLOAT, GL_FALSE, 0, 0);
-        glEnableVertexAttribArray(shaderProgram.attribs[A_VERTEXPOSITION]);
+        enableVertexAttrib(shaderProgram.attribs[A_VERTEXPOSITION], 2, GL_FLOAT, GL_FALSE, 0, 0);
         
         cglib::mat4x4<float> mvpMatrix = cglib::mat4x4<float>::identity();
         glUniformMatrix4fv(shaderProgram.uniforms[U_MVPMATRIX], 1, GL_FALSE, mvpMatrix.data());
@@ -2453,7 +2754,7 @@ namespace carto::vt {
 
         glBindTexture(GL_TEXTURE_2D, 0);
 
-        glDisableVertexAttribArray(shaderProgram.attribs[A_VERTEXPOSITION]);
+        disableVertexAttrib(shaderProgram.attribs[A_VERTEXPOSITION]);
 
         glBindBuffer(GL_ARRAY_BUFFER, 0);
 
@@ -2593,8 +2894,7 @@ namespace carto::vt {
             }
 
             glBindBuffer(GL_ARRAY_BUFFER, compiledTileSurface.vertexGeometryVBO);
-            glVertexAttribPointer(shaderProgram.attribs[A_VERTEXPOSITION], 3, GL_FLOAT, GL_FALSE, vertexGeomLayoutParams.vertexSize, bufferGLOffset(vertexGeomLayoutParams.coordOffset));
-            glEnableVertexAttribArray(shaderProgram.attribs[A_VERTEXPOSITION]);
+            enableVertexAttrib(shaderProgram.attribs[A_VERTEXPOSITION], 3, GL_FLOAT, GL_FALSE, vertexGeomLayoutParams.vertexSize, bufferGLOffset(vertexGeomLayoutParams.coordOffset));
 
             glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, compiledTileSurface.indicesVBO);
 
@@ -2607,7 +2907,7 @@ namespace carto::vt {
 
             glDrawElements(GL_TRIANGLES, tileSurface->getIndicesCount(), GL_UNSIGNED_SHORT, 0);
 
-            glDisableVertexAttribArray(shaderProgram.attribs[A_VERTEXPOSITION]);
+            disableVertexAttrib(shaderProgram.attribs[A_VERTEXPOSITION]);
 
             glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
             glBindBuffer(GL_ARRAY_BUFFER, 0);
@@ -2635,8 +2935,7 @@ namespace carto::vt {
             createCompiledQuad(_screenQuad);
         }
         glBindBuffer(GL_ARRAY_BUFFER, _screenQuad.vbo);
-        glVertexAttribPointer(shaderProgram.attribs[A_VERTEXPOSITION], 2, GL_FLOAT, GL_FALSE, 0, 0);
-        glEnableVertexAttribArray(shaderProgram.attribs[A_VERTEXPOSITION]);
+        enableVertexAttrib(shaderProgram.attribs[A_VERTEXPOSITION], 2, GL_FLOAT, GL_FALSE, 0, 0);
 
         cglib::mat4x4<float> mvpMatrix = cglib::mat4x4<float>::identity();
         glUniformMatrix4fv(shaderProgram.uniforms[U_MVPMATRIX], 1, GL_FALSE, mvpMatrix.data());
@@ -2666,7 +2965,7 @@ namespace carto::vt {
             glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         }
 
-        glDisableVertexAttribArray(shaderProgram.attribs[A_VERTEXPOSITION]);
+        disableVertexAttrib(shaderProgram.attribs[A_VERTEXPOSITION]);
         glBindBuffer(GL_ARRAY_BUFFER, 0);
         glStencilFunc(GL_ALWAYS, 0, 255);
 
@@ -2694,8 +2993,7 @@ namespace carto::vt {
             }
 
             glBindBuffer(GL_ARRAY_BUFFER, compiledTileSurface.vertexGeometryVBO);
-            glVertexAttribPointer(shaderProgram.attribs[A_VERTEXPOSITION], 3, GL_FLOAT, GL_FALSE, vertexGeomLayoutParams.vertexSize, bufferGLOffset(vertexGeomLayoutParams.coordOffset));
-            glEnableVertexAttribArray(shaderProgram.attribs[A_VERTEXPOSITION]);
+            enableVertexAttrib(shaderProgram.attribs[A_VERTEXPOSITION], 3, GL_FLOAT, GL_FALSE, vertexGeomLayoutParams.vertexSize, bufferGLOffset(vertexGeomLayoutParams.coordOffset));
 
             glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, compiledTileSurface.indicesVBO);
 
@@ -2707,7 +3005,7 @@ namespace carto::vt {
 
             glDrawElements(GL_TRIANGLES, tileSurface->getIndicesCount(), GL_UNSIGNED_SHORT, 0);
 
-            glDisableVertexAttribArray(shaderProgram.attribs[A_VERTEXPOSITION]);
+            disableVertexAttrib(shaderProgram.attribs[A_VERTEXPOSITION]);
 
             glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
             glBindBuffer(GL_ARRAY_BUFFER, 0);
@@ -3189,13 +3487,14 @@ namespace carto::vt {
 
             bool lit = _terrainLighting.enabled && _terrainMode && static_cast<bool>(_terrainTextureProvider);
             bool shadowed = lit && _terrainShadowTexture != 0 && _terrainShadowStrength > 0.0f;
+            bool hasElevation = true;
             unsigned int flags = (_terrainMode && _terrainTextureProvider ? TERRAIN_FLAG | TERRAIN_VTF_FLAG : 0) | DRAPE_FLAG | (lit ? TERRAIN_LIGHT_FLAG : 0) | (shadowed ? TERRAIN_SHADOW_FLAG | DERIVATIVES_FLAG : 0);
             const ShaderProgram& shaderProgram = buildShaderProgram("tilesurfacedrape", backgroundVsh, backgroundFsh, LightingMode::NONE, RasterFilterMode::NONE, flags | fogFlag());
             glUseProgram(shaderProgram.program);
             setupFogUniforms(shaderProgram);
             if (flags & TERRAIN_FLAG) {
                 glUniform1f(shaderProgram.uniforms[U_DEPTHBIAS], _terrainDrawDepthBias);
-                setupTerrainUniforms(shaderProgram, tileId, surfaceFrame);
+                hasElevation = setupTerrainUniforms(shaderProgram, tileId, surfaceFrame);
             }
             if (lit) {
                 setupTerrainLightingUniforms(shaderProgram, tileId, surfaceFrame);
@@ -3210,13 +3509,17 @@ namespace carto::vt {
                 glBindTexture(GL_TEXTURE_2D, _terrainShadowTexture);
                 glUniform1i(shaderProgram.uniforms[U_SHADOWTEXTURE], 2);
                 glActiveTexture(GL_TEXTURE0);
-                glUniform4f(shaderProgram.uniforms[U_SHADOWPARAMS], 1.0f / std::max(1, _terrainShadowMapSize), _terrainShadowStrength, _terrainShadowSoftness, 1.0f / _terrainShadowCascades);
+                // A tile whose elevation has not arrived is drawn FLAT, at zero. In the mountains
+                // that is a kilometre below everything around it, so the surrounding terrain
+                // shadows every texel of it and it reads as a solid dark block the exact shape of
+                // the tile - most visible far away, where elevation arrives last. It has no relief
+                // to shadow anyway, so it takes no shadow until its heights are there.
+                glUniform4f(shaderProgram.uniforms[U_SHADOWPARAMS], 1.0f / std::max(1, _terrainShadowMapSize), hasElevation ? _terrainShadowStrength : 0.0f, _terrainShadowSoftness, 1.0f / _terrainShadowCascades);
                 glUniform4f(shaderProgram.uniforms[U_SHADOWBIAS], _terrainShadowBiases[0], _terrainShadowBiases[1], _terrainShadowBiases[2], _terrainShadowBiases[3]);
             }
 
             glBindBuffer(GL_ARRAY_BUFFER, compiledTileSurface.vertexGeometryVBO);
-            glVertexAttribPointer(shaderProgram.attribs[A_VERTEXPOSITION], 3, GL_FLOAT, GL_FALSE, vertexGeomLayoutParams.vertexSize, bufferGLOffset(vertexGeomLayoutParams.coordOffset));
-            glEnableVertexAttribArray(shaderProgram.attribs[A_VERTEXPOSITION]);
+            enableVertexAttrib(shaderProgram.attribs[A_VERTEXPOSITION], 3, GL_FLOAT, GL_FALSE, vertexGeomLayoutParams.vertexSize, bufferGLOffset(vertexGeomLayoutParams.coordOffset));
 
             glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, compiledTileSurface.indicesVBO);
 
@@ -3234,7 +3537,7 @@ namespace carto::vt {
             surfaces++;
 
             glBindTexture(GL_TEXTURE_2D, 0);
-            glDisableVertexAttribArray(shaderProgram.attribs[A_VERTEXPOSITION]);
+            disableVertexAttrib(shaderProgram.attribs[A_VERTEXPOSITION]);
             glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
             glBindBuffer(GL_ARRAY_BUFFER, 0);
             checkGLError();
@@ -3277,8 +3580,7 @@ namespace carto::vt {
             }
 
             glBindBuffer(GL_ARRAY_BUFFER, compiledTileSurface.vertexGeometryVBO);
-            glVertexAttribPointer(shaderProgram.attribs[A_VERTEXPOSITION], 3, GL_FLOAT, GL_FALSE, vertexGeomLayoutParams.vertexSize, bufferGLOffset(vertexGeomLayoutParams.coordOffset));
-            glEnableVertexAttribArray(shaderProgram.attribs[A_VERTEXPOSITION]);
+            enableVertexAttrib(shaderProgram.attribs[A_VERTEXPOSITION], 3, GL_FLOAT, GL_FALSE, vertexGeomLayoutParams.vertexSize, bufferGLOffset(vertexGeomLayoutParams.coordOffset));
 
             glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, compiledTileSurface.wireframeIndicesVBO);
 
@@ -3291,7 +3593,7 @@ namespace carto::vt {
 
             glDrawElements(GL_LINES, compiledTileSurface.wireframeIndicesCount, GL_UNSIGNED_SHORT, 0);
 
-            glDisableVertexAttribArray(shaderProgram.attribs[A_VERTEXPOSITION]);
+            disableVertexAttrib(shaderProgram.attribs[A_VERTEXPOSITION]);
 
             glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
             glBindBuffer(GL_ARRAY_BUFFER, 0);
@@ -3333,18 +3635,15 @@ namespace carto::vt {
             }
 
             glBindBuffer(GL_ARRAY_BUFFER, compiledTileSurface.vertexGeometryVBO);
-            glVertexAttribPointer(shaderProgram.attribs[A_VERTEXPOSITION], 3, GL_FLOAT, GL_FALSE, vertexGeomLayoutParams.vertexSize, bufferGLOffset(vertexGeomLayoutParams.coordOffset));
-            glEnableVertexAttribArray(shaderProgram.attribs[A_VERTEXPOSITION]);
+            enableVertexAttrib(shaderProgram.attribs[A_VERTEXPOSITION], 3, GL_FLOAT, GL_FALSE, vertexGeomLayoutParams.vertexSize, bufferGLOffset(vertexGeomLayoutParams.coordOffset));
             if (background->getPattern()) {
-                glVertexAttribPointer(shaderProgram.attribs[A_VERTEXUV], 2, GL_SHORT, GL_TRUE, vertexGeomLayoutParams.vertexSize, bufferGLOffset(vertexGeomLayoutParams.texCoordOffset));
-                glEnableVertexAttribArray(shaderProgram.attribs[A_VERTEXUV]);
+                enableVertexAttrib(shaderProgram.attribs[A_VERTEXUV], 2, GL_SHORT, GL_TRUE, vertexGeomLayoutParams.vertexSize, bufferGLOffset(vertexGeomLayoutParams.texCoordOffset));
             }
             if (_lightingShader2D) {
                 if (vertexGeomLayoutParams.normalOffset >= 0) {
-                    glVertexAttribPointer(shaderProgram.attribs[A_VERTEXNORMAL], 3, GL_SHORT, GL_TRUE, vertexGeomLayoutParams.vertexSize, bufferGLOffset(vertexGeomLayoutParams.normalOffset));
-                    glEnableVertexAttribArray(shaderProgram.attribs[A_VERTEXNORMAL]);
+                    enableVertexAttrib(shaderProgram.attribs[A_VERTEXNORMAL], 3, GL_SHORT, GL_TRUE, vertexGeomLayoutParams.vertexSize, bufferGLOffset(vertexGeomLayoutParams.normalOffset));
                 } else {
-                    glVertexAttrib3f(shaderProgram.attribs[A_VERTEXNORMAL], 0, 0, 1);
+                    setConstVertexAttrib(shaderProgram.attribs[A_VERTEXNORMAL], 0, 0, 1);
                 }
                 _lightingShader2D->setupFunc(shaderProgram.program, _viewState);
             }
@@ -3372,15 +3671,15 @@ namespace carto::vt {
 
             if (_lightingShader2D) {
                 if (vertexGeomLayoutParams.normalOffset >= 0) {
-                    glDisableVertexAttribArray(shaderProgram.attribs[A_VERTEXNORMAL]);
+                    disableVertexAttrib(shaderProgram.attribs[A_VERTEXNORMAL]);
                 }
             }
             if (background->getPattern()) {
                 glBindTexture(GL_TEXTURE_2D, 0);
 
-                glDisableVertexAttribArray(shaderProgram.attribs[A_VERTEXUV]);
+                disableVertexAttrib(shaderProgram.attribs[A_VERTEXUV]);
             }
-            glDisableVertexAttribArray(shaderProgram.attribs[A_VERTEXPOSITION]);
+            disableVertexAttrib(shaderProgram.attribs[A_VERTEXPOSITION]);
 
             glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
             glBindBuffer(GL_ARRAY_BUFFER, 0);
@@ -3435,30 +3734,25 @@ namespace carto::vt {
             }
 
             glBindBuffer(GL_ARRAY_BUFFER, compiledTileSurface.vertexGeometryVBO);
-            glVertexAttribPointer(shaderProgram.attribs[A_VERTEXPOSITION], 3, GL_FLOAT, GL_FALSE, vertexGeomLayoutParams.vertexSize, bufferGLOffset(vertexGeomLayoutParams.coordOffset));
-            glEnableVertexAttribArray(shaderProgram.attribs[A_VERTEXPOSITION]);
-            glVertexAttribPointer(shaderProgram.attribs[A_VERTEXUV], 2, GL_SHORT, GL_TRUE, vertexGeomLayoutParams.vertexSize, bufferGLOffset(vertexGeomLayoutParams.texCoordOffset));
-            glEnableVertexAttribArray(shaderProgram.attribs[A_VERTEXUV]);
+            enableVertexAttrib(shaderProgram.attribs[A_VERTEXPOSITION], 3, GL_FLOAT, GL_FALSE, vertexGeomLayoutParams.vertexSize, bufferGLOffset(vertexGeomLayoutParams.coordOffset));
+            enableVertexAttrib(shaderProgram.attribs[A_VERTEXUV], 2, GL_SHORT, GL_TRUE, vertexGeomLayoutParams.vertexSize, bufferGLOffset(vertexGeomLayoutParams.texCoordOffset));
             if (bitmap->getType() == TileBitmap::Type::COLORMAP && _lightingShader2D) {
                 if (vertexGeomLayoutParams.normalOffset >= 0) {
-                    glVertexAttribPointer(shaderProgram.attribs[A_VERTEXNORMAL], 3, GL_SHORT, GL_TRUE, vertexGeomLayoutParams.vertexSize, bufferGLOffset(vertexGeomLayoutParams.normalOffset));
-                    glEnableVertexAttribArray(shaderProgram.attribs[A_VERTEXNORMAL]);
+                    enableVertexAttrib(shaderProgram.attribs[A_VERTEXNORMAL], 3, GL_SHORT, GL_TRUE, vertexGeomLayoutParams.vertexSize, bufferGLOffset(vertexGeomLayoutParams.normalOffset));
                 } else {
-                    glVertexAttrib3f(shaderProgram.attribs[A_VERTEXNORMAL], 0, 0, 1);
+                    setConstVertexAttrib(shaderProgram.attribs[A_VERTEXNORMAL], 0, 0, 1);
                 }
                 _lightingShader2D->setupFunc(shaderProgram.program, _viewState);
             } else if (bitmap->getType() == TileBitmap::Type::NORMALMAP && _lightingShaderNormalMap) {
                 if (vertexGeomLayoutParams.normalOffset >= 0) {
-                    glVertexAttribPointer(shaderProgram.attribs[A_VERTEXNORMAL], 3, GL_SHORT, GL_TRUE, vertexGeomLayoutParams.vertexSize, bufferGLOffset(vertexGeomLayoutParams.normalOffset));
-                    glEnableVertexAttribArray(shaderProgram.attribs[A_VERTEXNORMAL]);
+                    enableVertexAttrib(shaderProgram.attribs[A_VERTEXNORMAL], 3, GL_SHORT, GL_TRUE, vertexGeomLayoutParams.vertexSize, bufferGLOffset(vertexGeomLayoutParams.normalOffset));
                 } else {
-                    glVertexAttrib3f(shaderProgram.attribs[A_VERTEXNORMAL], 0, 0, 1);
+                    setConstVertexAttrib(shaderProgram.attribs[A_VERTEXNORMAL], 0, 0, 1);
                 }
                 if (vertexGeomLayoutParams.binormalOffset >= 0) {
-                    glVertexAttribPointer(shaderProgram.attribs[A_VERTEXBINORMAL], 3, GL_SHORT, GL_TRUE, vertexGeomLayoutParams.vertexSize, bufferGLOffset(vertexGeomLayoutParams.binormalOffset));
-                    glEnableVertexAttribArray(shaderProgram.attribs[A_VERTEXBINORMAL]);
+                    enableVertexAttrib(shaderProgram.attribs[A_VERTEXBINORMAL], 3, GL_SHORT, GL_TRUE, vertexGeomLayoutParams.vertexSize, bufferGLOffset(vertexGeomLayoutParams.binormalOffset));
                 } else {
-                    glVertexAttrib3f(shaderProgram.attribs[A_VERTEXBINORMAL], 0, 1, 0);
+                    setConstVertexAttrib(shaderProgram.attribs[A_VERTEXBINORMAL], 0, 1, 0);
                 }
                 _lightingShaderNormalMap->setupFunc(shaderProgram.program, _viewState);
             }
@@ -3486,18 +3780,18 @@ namespace carto::vt {
 
             if (bitmap->getType() == TileBitmap::Type::COLORMAP && _lightingShader2D) {
                 if (vertexGeomLayoutParams.normalOffset >= 0) {
-                    glDisableVertexAttribArray(shaderProgram.attribs[A_VERTEXNORMAL]);
+                    disableVertexAttrib(shaderProgram.attribs[A_VERTEXNORMAL]);
                 }
             } else if (bitmap->getType() == TileBitmap::Type::NORMALMAP && _lightingShaderNormalMap) {
                 if (vertexGeomLayoutParams.normalOffset >= 0) {
-                    glDisableVertexAttribArray(shaderProgram.attribs[A_VERTEXNORMAL]);
+                    disableVertexAttrib(shaderProgram.attribs[A_VERTEXNORMAL]);
                 }
                 if (vertexGeomLayoutParams.binormalOffset >= 0) {
-                    glDisableVertexAttribArray(shaderProgram.attribs[A_VERTEXBINORMAL]);
+                    disableVertexAttrib(shaderProgram.attribs[A_VERTEXBINORMAL]);
                 }
             }
-            glDisableVertexAttribArray(shaderProgram.attribs[A_VERTEXUV]);
-            glDisableVertexAttribArray(shaderProgram.attribs[A_VERTEXPOSITION]);
+            disableVertexAttrib(shaderProgram.attribs[A_VERTEXUV]);
+            disableVertexAttrib(shaderProgram.attribs[A_VERTEXPOSITION]);
 
             glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
             glBindBuffer(GL_ARRAY_BUFFER, 0);
@@ -3720,44 +4014,38 @@ namespace carto::vt {
             glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, compiledGeometry.indicesVBO);
             glBindBuffer(GL_ARRAY_BUFFER, compiledGeometry.vertexGeometryVBO);
 
-            glVertexAttribPointer(shaderProgram.attribs[A_VERTEXPOSITION], vertexGeomLayoutParams.dimensions, GL_SHORT, GL_FALSE, vertexGeomLayoutParams.vertexSize, bufferGLOffset(vertexGeomLayoutParams.coordOffset));
-            glEnableVertexAttribArray(shaderProgram.attribs[A_VERTEXPOSITION]);
+            enableVertexAttrib(shaderProgram.attribs[A_VERTEXPOSITION], vertexGeomLayoutParams.dimensions, GL_SHORT, GL_FALSE, vertexGeomLayoutParams.vertexSize, bufferGLOffset(vertexGeomLayoutParams.coordOffset));
 
             if (vertexGeomLayoutParams.attribsOffset >= 0) {
-                glVertexAttribPointer(shaderProgram.attribs[A_VERTEXATTRIBS], 4, GL_BYTE, GL_FALSE, vertexGeomLayoutParams.vertexSize, bufferGLOffset(vertexGeomLayoutParams.attribsOffset));
-                glEnableVertexAttribArray(shaderProgram.attribs[A_VERTEXATTRIBS]);
+                enableVertexAttrib(shaderProgram.attribs[A_VERTEXATTRIBS], 4, GL_BYTE, GL_FALSE, vertexGeomLayoutParams.vertexSize, bufferGLOffset(vertexGeomLayoutParams.attribsOffset));
             }
             
             if (vertexGeomLayoutParams.texCoordOffset >= 0) {
-                glVertexAttribPointer(shaderProgram.attribs[A_VERTEXUV], 2, GL_SHORT, GL_FALSE, vertexGeomLayoutParams.vertexSize, bufferGLOffset(vertexGeomLayoutParams.texCoordOffset));
-                glEnableVertexAttribArray(shaderProgram.attribs[A_VERTEXUV]);
+                enableVertexAttrib(shaderProgram.attribs[A_VERTEXUV], 2, GL_SHORT, GL_FALSE, vertexGeomLayoutParams.vertexSize, bufferGLOffset(vertexGeomLayoutParams.texCoordOffset));
             }
             
             if (_lightingShader2D || geometry->getType() == TileGeometry::Type::POLYGON3D) {
                 if (vertexGeomLayoutParams.normalOffset >= 0) {
-                    glVertexAttribPointer(shaderProgram.attribs[A_VERTEXNORMAL], vertexGeomLayoutParams.dimensions, GL_SHORT, GL_TRUE, vertexGeomLayoutParams.vertexSize, bufferGLOffset(vertexGeomLayoutParams.normalOffset));
-                    glEnableVertexAttribArray(shaderProgram.attribs[A_VERTEXNORMAL]);
+                    enableVertexAttrib(shaderProgram.attribs[A_VERTEXNORMAL], vertexGeomLayoutParams.dimensions, GL_SHORT, GL_TRUE, vertexGeomLayoutParams.vertexSize, bufferGLOffset(vertexGeomLayoutParams.normalOffset));
                 }
             }
 
             if (vertexGeomLayoutParams.binormalOffset >= 0) {
-                glVertexAttribPointer(shaderProgram.attribs[A_VERTEXBINORMAL], vertexGeomLayoutParams.dimensions, GL_SHORT, GL_FALSE, vertexGeomLayoutParams.vertexSize, bufferGLOffset(vertexGeomLayoutParams.binormalOffset));
-                glEnableVertexAttribArray(shaderProgram.attribs[A_VERTEXBINORMAL]);
+                enableVertexAttrib(shaderProgram.attribs[A_VERTEXBINORMAL], vertexGeomLayoutParams.dimensions, GL_SHORT, GL_FALSE, vertexGeomLayoutParams.vertexSize, bufferGLOffset(vertexGeomLayoutParams.binormalOffset));
             }
             
             if (vertexGeomLayoutParams.heightOffset >= 0) {
-                glVertexAttribPointer(shaderProgram.attribs[A_VERTEXHEIGHT], 1, GL_SHORT, GL_FALSE, vertexGeomLayoutParams.vertexSize, bufferGLOffset(vertexGeomLayoutParams.heightOffset));
-                glEnableVertexAttribArray(shaderProgram.attribs[A_VERTEXHEIGHT]);
+                enableVertexAttrib(shaderProgram.attribs[A_VERTEXHEIGHT], 1, GL_SHORT, GL_FALSE, vertexGeomLayoutParams.vertexSize, bufferGLOffset(vertexGeomLayoutParams.heightOffset));
             }
         }
 
         if (!(vertexGeomLayoutParams.attribsOffset >= 0)) {
-            glVertexAttrib4f(shaderProgram.attribs[A_VERTEXATTRIBS], 0, 0, 0, 0);
+            setConstVertexAttrib(shaderProgram.attribs[A_VERTEXATTRIBS], 0, 0, 0, 0);
         }
 
         if (_lightingShader2D || geometry->getType() == TileGeometry::Type::POLYGON3D) {
             if (!(vertexGeomLayoutParams.normalOffset >= 0)) {
-                glVertexAttrib3f(shaderProgram.attribs[A_VERTEXNORMAL], 0, 0, 1);
+                setConstVertexAttrib(shaderProgram.attribs[A_VERTEXNORMAL], 0, 0, 1);
             }
         }
 
@@ -3773,28 +4061,28 @@ namespace carto::vt {
             _glExtensions->glBindVertexArrayOES(0);
         } else {
             if (vertexGeomLayoutParams.heightOffset >= 0) {
-                glDisableVertexAttribArray(shaderProgram.attribs[A_VERTEXHEIGHT]);
+                disableVertexAttrib(shaderProgram.attribs[A_VERTEXHEIGHT]);
             }
             
             if (vertexGeomLayoutParams.binormalOffset >= 0) {
-                glDisableVertexAttribArray(shaderProgram.attribs[A_VERTEXBINORMAL]);
+                disableVertexAttrib(shaderProgram.attribs[A_VERTEXBINORMAL]);
             }
 
             if (_lightingShader2D || geometry->getType() == TileGeometry::Type::POLYGON3D) {
                 if (vertexGeomLayoutParams.normalOffset >= 0) {
-                    glDisableVertexAttribArray(shaderProgram.attribs[A_VERTEXNORMAL]);
+                    disableVertexAttrib(shaderProgram.attribs[A_VERTEXNORMAL]);
                 }
             }
             
             if (vertexGeomLayoutParams.texCoordOffset >= 0) {
-                glDisableVertexAttribArray(shaderProgram.attribs[A_VERTEXUV]);
+                disableVertexAttrib(shaderProgram.attribs[A_VERTEXUV]);
             }
 
             if (vertexGeomLayoutParams.attribsOffset >= 0) {
-                glDisableVertexAttribArray(shaderProgram.attribs[A_VERTEXATTRIBS]);
+                disableVertexAttrib(shaderProgram.attribs[A_VERTEXATTRIBS]);
             }
             
-            glDisableVertexAttribArray(shaderProgram.attribs[A_VERTEXPOSITION]);
+            disableVertexAttrib(shaderProgram.attribs[A_VERTEXPOSITION]);
         }
 
         if (compiledGeometry.geometryVAO == 0 || !compiledGeometry.geometryVAOInitialized) {
@@ -3846,27 +4134,23 @@ namespace carto::vt {
         
         glBindBuffer(GL_ARRAY_BUFFER, compiledLabelBatch.verticesVBO);
         glBufferData(GL_ARRAY_BUFFER, _labelVertices.size() * 3 * sizeof(float), _labelVertices.data(), GL_DYNAMIC_DRAW);
-        glVertexAttribPointer(shaderProgram.attribs[A_VERTEXPOSITION], 3, GL_FLOAT, GL_FALSE, 0, 0);
-        glEnableVertexAttribArray(shaderProgram.attribs[A_VERTEXPOSITION]);
+        enableVertexAttrib(shaderProgram.attribs[A_VERTEXPOSITION], 3, GL_FLOAT, GL_FALSE, 0, 0);
 
         if (_lightingShader2D) {
             glBindBuffer(GL_ARRAY_BUFFER, compiledLabelBatch.normalsVBO);
             glBufferData(GL_ARRAY_BUFFER, _labelNormals.size() * 3 * sizeof(float), _labelNormals.data(), GL_DYNAMIC_DRAW);
-            glVertexAttribPointer(shaderProgram.attribs[A_VERTEXNORMAL], 3, GL_FLOAT, GL_FALSE, 0, 0);
-            glEnableVertexAttribArray(shaderProgram.attribs[A_VERTEXNORMAL]);
+            enableVertexAttrib(shaderProgram.attribs[A_VERTEXNORMAL], 3, GL_FLOAT, GL_FALSE, 0, 0);
 
             _lightingShader2D->setupFunc(shaderProgram.program, _viewState);
         }
         
         glBindBuffer(GL_ARRAY_BUFFER, compiledLabelBatch.texCoordsVBO);
         glBufferData(GL_ARRAY_BUFFER, _labelTexCoords.size() * 2 * sizeof(std::int16_t), _labelTexCoords.data(), GL_DYNAMIC_DRAW);
-        glVertexAttribPointer(shaderProgram.attribs[A_VERTEXUV], 2, GL_SHORT, GL_FALSE, 0, 0);
-        glEnableVertexAttribArray(shaderProgram.attribs[A_VERTEXUV]);
+        enableVertexAttrib(shaderProgram.attribs[A_VERTEXUV], 2, GL_SHORT, GL_FALSE, 0, 0);
 
         glBindBuffer(GL_ARRAY_BUFFER, compiledLabelBatch.attribsVBO);
         glBufferData(GL_ARRAY_BUFFER, _labelAttribs.size() * 4 * sizeof(std::int8_t), _labelAttribs.data(), GL_DYNAMIC_DRAW);
-        glVertexAttribPointer(shaderProgram.attribs[A_VERTEXATTRIBS], 4, GL_BYTE, GL_FALSE, 0, 0);
-        glEnableVertexAttribArray(shaderProgram.attribs[A_VERTEXATTRIBS]);
+        enableVertexAttrib(shaderProgram.attribs[A_VERTEXATTRIBS], 4, GL_BYTE, GL_FALSE, 0, 0);
 
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, compiledLabelBatch.indicesVBO);
         glBufferData(GL_ELEMENT_ARRAY_BUFFER, _labelIndices.size() * sizeof(std::uint16_t), _labelIndices.data(), GL_DYNAMIC_DRAW);
@@ -3880,15 +4164,15 @@ namespace carto::vt {
 
         glBindTexture(GL_TEXTURE_2D, 0);
 
-        glDisableVertexAttribArray(shaderProgram.attribs[A_VERTEXATTRIBS]);
+        disableVertexAttrib(shaderProgram.attribs[A_VERTEXATTRIBS]);
         
-        glDisableVertexAttribArray(shaderProgram.attribs[A_VERTEXUV]);
+        disableVertexAttrib(shaderProgram.attribs[A_VERTEXUV]);
 
         if (_lightingShader2D) {
-            glDisableVertexAttribArray(shaderProgram.attribs[A_VERTEXNORMAL]);
+            disableVertexAttrib(shaderProgram.attribs[A_VERTEXNORMAL]);
         }
         
-        glDisableVertexAttribArray(shaderProgram.attribs[A_VERTEXPOSITION]);
+        disableVertexAttrib(shaderProgram.attribs[A_VERTEXPOSITION]);
 
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
         glBindBuffer(GL_ARRAY_BUFFER, 0);

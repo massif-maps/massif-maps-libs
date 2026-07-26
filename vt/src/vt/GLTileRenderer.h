@@ -259,7 +259,11 @@ namespace carto::vt {
         struct ShaderProgram {
             GLuint program;
             std::vector<GLuint> uniforms;
-            std::vector<GLuint> attribs;
+            // SIGNED: glGetAttribLocation returns -1 for an attribute the linker dropped, and an
+            // unsigned -1 handed to glVertexAttribPointer is GL_INVALID_VALUE, not a no-op the way
+            // uniform location -1 is. The shadow caster programs drop several attributes (their
+            // fragment shader only writes depth), which is where this bites.
+            std::vector<GLint> attribs;
 
             ShaderProgram() : program(0), uniforms(), attribs() { }
         };
