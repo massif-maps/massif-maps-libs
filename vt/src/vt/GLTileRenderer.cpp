@@ -124,13 +124,14 @@ namespace carto::vt {
         _terrainLighting = lighting;
     }
 
-    void GLTileRenderer::setTerrainShadowMap(GLuint texture, int mapSize, float depthBias, float strength, const cglib::mat4x4<double>& lightViewProj) {
+    void GLTileRenderer::setTerrainShadowMap(GLuint texture, int mapSize, float depthBias, float strength, float softness, const cglib::mat4x4<double>& lightViewProj) {
         std::lock_guard<std::mutex> lock(_mutex);
 
         _terrainShadowTexture = texture;
         _terrainShadowMapSize = mapSize;
         _terrainShadowBias = depthBias;
         _terrainShadowStrength = strength;
+        _terrainShadowSoftness = softness;
         _terrainShadowViewProj = lightViewProj;
     }
 
@@ -198,7 +199,7 @@ namespace carto::vt {
         return true;
     }
 
-    int GLTileRenderer::renderShadowCasters(const TileId& tileId, const cglib::mat4x4<double>& lightViewProj) {
+    int GLTileRenderer::renderShadowCasters(const TileId& tileId, const cglib::mat4x4<double>& lightViewProj, bool castGround) {
         std::lock_guard<std::mutex> lock(_mutex);
 
         if (!(_terrainRegularGrid && _terrainMode && _terrainTextureProvider)) {
@@ -207,7 +208,9 @@ namespace carto::vt {
         int draws = 0;
         cglib::mat4x4<double> surfaceFrame = calculateTileMatrix(tileId, 1.0f);
         cglib::mat4x4<float> mvpMatrix = cglib::mat4x4<float>::convert(lightViewProj * surfaceFrame);
-        for (const std::shared_ptr<TileSurface>& tileSurface : buildCompiledTerrainGridSurfaces()) {
+        // The ground surface is shared across layers, so only the layer that owns the drape draws
+        // it; the others contribute their 3D extrusions only.
+        for (const std::shared_ptr<TileSurface>& tileSurface : (castGround ? buildCompiledTerrainGridSurfaces() : std::vector<std::shared_ptr<TileSurface>>())) {
             const TileSurface::VertexGeometryLayoutParameters& vertexGeomLayoutParams = tileSurface->getVertexGeometryLayoutParameters();
             const CompiledSurface& compiledTileSurface = _compiledTileSurfaceMap[tileSurface];
 
@@ -2879,7 +2882,7 @@ namespace carto::vt {
                 glBindTexture(GL_TEXTURE_2D, _terrainShadowTexture);
                 glUniform1i(shaderProgram.uniforms[U_SHADOWTEXTURE], 2);
                 glActiveTexture(GL_TEXTURE0);
-                glUniform3f(shaderProgram.uniforms[U_SHADOWPARAMS], 1.0f / std::max(1, _terrainShadowMapSize), _terrainShadowBias, _terrainShadowStrength);
+                glUniform4f(shaderProgram.uniforms[U_SHADOWPARAMS], 1.0f / std::max(1, _terrainShadowMapSize), _terrainShadowBias, _terrainShadowStrength, _terrainShadowSoftness);
             }
 
             glBindBuffer(GL_ARRAY_BUFFER, compiledTileSurface.vertexGeometryVBO);
@@ -3245,7 +3248,7 @@ namespace carto::vt {
             glBindTexture(GL_TEXTURE_2D, _terrainShadowTexture);
             glUniform1i(shaderProgram.uniforms[U_SHADOWTEXTURE], 2);
             glActiveTexture(GL_TEXTURE0);
-            glUniform3f(shaderProgram.uniforms[U_SHADOWPARAMS], 1.0f / std::max(1, _terrainShadowMapSize), _terrainShadowBias, _terrainShadowStrength);
+            glUniform4f(shaderProgram.uniforms[U_SHADOWPARAMS], 1.0f / std::max(1, _terrainShadowMapSize), _terrainShadowBias, _terrainShadowStrength, _terrainShadowSoftness);
         }
         
         if (styleParams.translate) {

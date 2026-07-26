@@ -122,13 +122,13 @@ namespace carto::vt {
         // Directional shadows. The owner renders the caster pass (renderShadowCasters) into its
         // own framebuffer from the light, then hands the packed-depth texture and the same
         // light matrix back here so the draped surface can look itself up in it.
-        void setTerrainShadowMap(GLuint texture, int mapSize, float depthBias, float strength, const cglib::mat4x4<double>& lightViewProj);
+        void setTerrainShadowMap(GLuint texture, int mapSize, float depthBias, float strength, float softness, const cglib::mat4x4<double>& lightViewProj);
         // Light-space view-projection fitted to the given terrain tiles. Returns false when the
         // tile set is empty or no elevation data is available yet.
         bool calculateShadowViewProj(const std::vector<TileId>& tileIds, const cglib::vec3<float>& sunDir, cglib::mat4x4<double>& lightViewProj) const;
         // Draws this renderer's shadow casters for one terrain tile into the bound framebuffer.
         // Returns the number of draws issued.
-        int renderShadowCasters(const TileId& tileId, const cglib::mat4x4<double>& lightViewProj);
+        int renderShadowCasters(const TileId& tileId, const cglib::mat4x4<double>& lightViewProj, bool castGround);
 
         // Cross-layer drape (S3). When an external drape target is set, this renderer stops
         // owning drape textures and becomes a pure content baker: the owner collects the target
@@ -436,6 +436,7 @@ namespace carto::vt {
         int _terrainShadowMapSize = 0;
         float _terrainShadowBias = 0.0f;
         float _terrainShadowStrength = 0.0f;
+        float _terrainShadowSoftness = 1.0f;
         cglib::mat4x4<double> _terrainShadowViewProj = cglib::mat4x4<double>::identity();
         Color _terrainBackgroundColor; // opaque terrain base fill + depth pre-pass color; transparent = depth-only
         std::vector<std::pair<TileId, GLint>> _debugOrderedTileMasks;

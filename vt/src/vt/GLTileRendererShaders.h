@@ -340,7 +340,7 @@ namespace carto::vt {
         precision mediump float;
         #ifdef TERRAIN_SHADOW
         uniform sampler2D uShadowTexture;
-        uniform mediump vec3 uShadowParams; // x = 1/mapSize, y = depth bias, z = strength
+        uniform mediump vec4 uShadowParams; // x = 1/mapSize, y = depth bias, z = strength, w = PCF radius in texels
         varying highp vec3 vShadowPos;
 
         // The caster pass packs window-space depth into RGB; unpack and compare with a slope
@@ -350,17 +350,22 @@ namespace carto::vt {
             highp vec4 enc = texture2D(uShadowTexture, uv);
             return dot(enc.rgb, vec3(1.0, 1.0 / 255.0, 1.0 / 65025.0));
         }
+        // 3x3 PCF over a radius in shadow-map texels. One shadow texel covers many metres of
+        // ground, so a single tap gives hard stair-stepped edges; averaging over a small kernel is
+        // what makes a finite-resolution shadow map look like a shadow rather than a mask.
         mediump float shadowFactor() {
             if (vShadowPos.x < 0.0 || vShadowPos.x > 1.0 || vShadowPos.y < 0.0 || vShadowPos.y > 1.0 || vShadowPos.z > 1.0) {
                 return 1.0; // outside the light frustum: unshadowed rather than black
             }
             highp float ref = vShadowPos.z - uShadowParams.y;
-            highp float o = uShadowParams.x;
+            highp float o = uShadowParams.x * uShadowParams.w;
             mediump float lit = 0.0;
-            lit += ref <= shadowDepth(vShadowPos.xy + vec2(-o, -o)) ? 0.25 : 0.0;
-            lit += ref <= shadowDepth(vShadowPos.xy + vec2( o, -o)) ? 0.25 : 0.0;
-            lit += ref <= shadowDepth(vShadowPos.xy + vec2(-o,  o)) ? 0.25 : 0.0;
-            lit += ref <= shadowDepth(vShadowPos.xy + vec2( o,  o)) ? 0.25 : 0.0;
+            for (int j = -1; j <= 1; j++) {
+                for (int i = -1; i <= 1; i++) {
+                    lit += ref <= shadowDepth(vShadowPos.xy + vec2(float(i) * o, float(j) * o)) ? 1.0 : 0.0;
+                }
+            }
+            lit *= 1.0 / 9.0;
             return mix(1.0, lit, uShadowParams.z);
         }
         #endif
