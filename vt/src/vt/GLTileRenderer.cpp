@@ -135,7 +135,7 @@ namespace carto::vt {
         _terrainShadowViewProj = lightViewProj;
     }
 
-    bool GLTileRenderer::calculateShadowViewProj(const std::vector<TileId>& tileIds, const cglib::vec3<float>& sunDir, cglib::mat4x4<double>& lightViewProj) const {
+    bool GLTileRenderer::calculateShadowViewProj(const std::vector<TileId>& tileIds, const cglib::vec3<float>& sunDir, double minHeight, double maxHeight, cglib::mat4x4<double>& lightViewProj) const {
         std::lock_guard<std::mutex> lock(_mutex);
 
         if (tileIds.empty()) {
@@ -173,6 +173,10 @@ namespace carto::vt {
         }
         double minZ = -1000.0 * metersToInternal;
         double maxZ = 9000.0 * metersToInternal;
+        if (maxHeight > minHeight) {
+            minZ = minHeight;
+            maxZ = maxHeight;
+        }
 
         cglib::vec3<double> dir = cglib::unit(cglib::vec3<double>(sunDir(0), sunDir(1), sunDir(2)));
         if (dir(2) < 0.05) {
@@ -237,6 +241,12 @@ namespace carto::vt {
         // kind of tile content that is real 3D rather than a skin on the ground, so they are
         // exactly what the drape cannot represent and what a shadow map is for.
         if (_visibleRenderTiles) {
+            // Extrusions are closed volumes, so casting from their BACK faces stores the far side
+            // of the building. A lit facade is then never compared against its own depth, which is
+            // what produced the shadow acne crawling over the buildings. The terrain surface is
+            // not a closed volume and keeps casting unculled.
+            glEnable(GL_CULL_FACE);
+            glCullFace(GL_FRONT);
             _shadowCasterViewProj = &lightViewProj;
             for (const RenderTile& renderTile : *_visibleRenderTiles) {
                 if (!renderTile.visible || !tileCovers(renderTile.targetTileId, tileId)) {
@@ -256,6 +266,7 @@ namespace carto::vt {
                 }
             }
             _shadowCasterViewProj = nullptr;
+            glDisable(GL_CULL_FACE);
         }
         return draws;
     }
