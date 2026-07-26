@@ -135,7 +135,7 @@ namespace carto::vt {
         _terrainShadowViewProj = lightViewProj;
     }
 
-    bool GLTileRenderer::calculateShadowViewProj(const std::vector<TileId>& tileIds, const cglib::vec3<float>& sunDir, double minHeight, double maxHeight, cglib::mat4x4<double>& lightViewProj) const {
+    bool GLTileRenderer::calculateShadowViewProj(const std::vector<TileId>& tileIds, const cglib::vec3<float>& sunDir, double minHeight, double maxHeight, float maxDistanceMeters, cglib::mat4x4<double>& lightViewProj) const {
         std::lock_guard<std::mutex> lock(_mutex);
 
         if (tileIds.empty()) {
@@ -176,6 +176,22 @@ namespace carto::vt {
         if (maxHeight > minHeight) {
             minZ = minHeight;
             maxZ = maxHeight;
+        }
+        // Clamp the covered ground to a radius around the camera. The map has a fixed resolution,
+        // so its texel size is the ground it spans divided by that resolution: looking down the
+        // cover is a few tiles and the shadows are sharp, but at a low tilt the visible ground
+        // reaches to the horizon and the same map has to stretch over it - which is the
+        // "shadows get pixelated as I tilt down". Beyond the radius there are simply no shadows.
+        if (maxDistanceMeters > 0 && metersToInternal > 0) {
+            double radius = maxDistanceMeters * metersToInternal;
+            const cglib::vec3<double>& focus = _viewState.origin; // camera position in world units
+            minX = std::max(minX, focus(0) - radius);
+            maxX = std::min(maxX, focus(0) + radius);
+            minY = std::max(minY, focus(1) - radius);
+            maxY = std::min(maxY, focus(1) + radius);
+            if (maxX <= minX || maxY <= minY) {
+                return false;
+            }
         }
 
         cglib::vec3<double> dir = cglib::unit(cglib::vec3<double>(sunDir(0), sunDir(1), sunDir(2)));
