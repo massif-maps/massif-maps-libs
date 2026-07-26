@@ -91,6 +91,20 @@ namespace carto::vt {
 
         using TerrainTextureProvider = std::function<bool(const TileId&, TerrainTexture&)>;
 
+        /**
+         * Directional lighting applied to the draped terrain surface. The surface is the only
+         * lit ground geometry in the scene once every 2D layer is baked into the drape texture,
+         * so this one struct replaces per-style lighting and the pre-baked hillshade raster.
+         * sunDir is a unit vector in the tile frame: x east, y north, z up.
+         */
+        struct TerrainLighting {
+            bool enabled = false;
+            cglib::vec3<float> sunDir = cglib::vec3<float>(0, 0, 1);
+            cglib::vec3<float> sunColor = cglib::vec3<float>(1, 1, 1);
+            float sunIntensity = 1.0f;
+            float ambientIntensity = 0.35f;
+        };
+
         explicit GLTileRenderer(std::shared_ptr<GLExtensions> glExtensions, std::shared_ptr<const TileTransformer> transformer, float scale);
 
         void setLightingShader2D(const std::optional<LightingShader>& lightingShader2D);
@@ -104,6 +118,7 @@ namespace carto::vt {
         void setTerrainSlackScale(float slackScale);
         void setTerrainDrapeFills(bool enabled, bool includeLines);
         void setTerrainDrapeResolution(int resolution);
+        void setTerrainLighting(const TerrainLighting& lighting);
 
         // Cross-layer drape (S3). When an external drape target is set, this renderer stops
         // owning drape textures and becomes a pure content baker: the owner collects the target
@@ -307,6 +322,7 @@ namespace carto::vt {
         void blendScreenTexture(float opacity, GLuint texture);
         void updateTerrainSkirts();
         bool setupTerrainUniforms(const ShaderProgram& shaderProgram, const TileId& tileId, const cglib::mat4x4<double>& vertexFrameMatrix);
+        void setupTerrainLightingUniforms(const ShaderProgram& shaderProgram, const TileId& tileId, const cglib::mat4x4<double>& vertexFrameMatrix);
         void renderTileMask(const TileId& tileId);
         void renderStencilDebugOverlay();
         void renderTileSurfaceFill(const TileId& tileId, const Color& color);
@@ -394,6 +410,7 @@ namespace carto::vt {
         const cglib::mat4x4<float>* _drapeMVPOverride = nullptr; // when set, renderTileGeometry draws flat into the drape FBO
         bool _debugWireframe = false;
         bool _debugSurfacePrefill = false;
+        TerrainLighting _terrainLighting;
         Color _terrainBackgroundColor; // opaque terrain base fill + depth pre-pass color; transparent = depth-only
         std::vector<std::pair<TileId, GLint>> _debugOrderedTileMasks;
         TerrainTextureProvider _terrainTextureProvider;

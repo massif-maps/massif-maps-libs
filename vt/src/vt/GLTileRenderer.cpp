@@ -118,6 +118,12 @@ namespace carto::vt {
         }
     }
 
+    void GLTileRenderer::setTerrainLighting(const TerrainLighting& lighting) {
+        std::lock_guard<std::mutex> lock(_mutex);
+
+        _terrainLighting = lighting;
+    }
+
     void GLTileRenderer::setTerrainDepthWrite(bool enabled) {
         std::lock_guard<std::mutex> lock(_mutex);
 
@@ -2094,6 +2100,25 @@ namespace carto::vt {
         return true;
     }
 
+    void GLTileRenderer::setupTerrainLightingUniforms(const ShaderProgram& shaderProgram, const TileId& tileId, const cglib::mat4x4<double>& vertexFrameMatrix) {
+        // The slope scale converts a height difference in metres into world units per unit of
+        // elevation-uv, so the fragment shader's central difference reproduces the slope of the
+        // surface that the vertex stage actually displaced (exaggeration included, because it is
+        // baked into metersToInternal). The mercator 1/cos(latitude) stretch is applied per
+        // fragment through vElevCosh.
+        TerrainTexture terrainTexture;
+        bool valid = _terrainTextureProvider && _terrainTextureProvider(tileId, terrainTexture);
+        float slopeX = 0.0f, slopeY = 0.0f;
+        if (valid && terrainTexture.internalSize(0) > 0 && terrainTexture.internalSize(1) > 0) {
+            slopeX = static_cast<float>(terrainTexture.metersToInternal / terrainTexture.internalSize(0));
+            slopeY = static_cast<float>(terrainTexture.metersToInternal / terrainTexture.internalSize(1));
+        }
+        glUniform2f(shaderProgram.uniforms[U_TERRAINSLOPESCALE], slopeX, slopeY);
+        glUniform3f(shaderProgram.uniforms[U_SUNDIR], _terrainLighting.sunDir(0), _terrainLighting.sunDir(1), _terrainLighting.sunDir(2));
+        glUniform4f(shaderProgram.uniforms[U_SUNCOLOR], _terrainLighting.sunColor(0), _terrainLighting.sunColor(1), _terrainLighting.sunColor(2), 1.0f);
+        glUniform2f(shaderProgram.uniforms[U_LIGHTPARAMS], _terrainLighting.sunIntensity, _terrainLighting.ambientIntensity);
+    }
+
     void GLTileRenderer::renderTileMask(const TileId& tileId) {
         bool gridMode = _terrainRegularGrid && _terrainMode && static_cast<bool>(_terrainTextureProvider);
         cglib::mat4x4<double> surfaceFrame = gridMode ? calculateTileMatrix(tileId, 1.0f) : cglib::translate4_matrix(_tileSurfaceBuilderOrigin);
@@ -2686,12 +2711,16 @@ namespace carto::vt {
             const TileSurface::VertexGeometryLayoutParameters& vertexGeomLayoutParams = tileSurface->getVertexGeometryLayoutParameters();
             const CompiledSurface& compiledTileSurface = _compiledTileSurfaceMap[tileSurface];
 
-            unsigned int flags = (_terrainMode && _terrainTextureProvider ? TERRAIN_FLAG | TERRAIN_VTF_FLAG : 0) | DRAPE_FLAG;
+            bool lit = _terrainLighting.enabled && _terrainMode && static_cast<bool>(_terrainTextureProvider);
+            unsigned int flags = (_terrainMode && _terrainTextureProvider ? TERRAIN_FLAG | TERRAIN_VTF_FLAG : 0) | DRAPE_FLAG | (lit ? TERRAIN_LIGHT_FLAG : 0);
             const ShaderProgram& shaderProgram = buildShaderProgram("tilesurfacedrape", backgroundVsh, backgroundFsh, LightingMode::NONE, RasterFilterMode::NONE, flags);
             glUseProgram(shaderProgram.program);
             if (flags & TERRAIN_FLAG) {
                 glUniform1f(shaderProgram.uniforms[U_DEPTHBIAS], _terrainDrawDepthBias);
                 setupTerrainUniforms(shaderProgram, tileId, surfaceFrame);
+            }
+            if (lit) {
+                setupTerrainLightingUniforms(shaderProgram, tileId, surfaceFrame);
             }
 
             glBindBuffer(GL_ARRAY_BUFFER, compiledTileSurface.vertexGeometryVBO);

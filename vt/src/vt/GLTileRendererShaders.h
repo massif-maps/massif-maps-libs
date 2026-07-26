@@ -49,7 +49,11 @@ namespace carto::vt {
         U_ELEVATIONLATTICECELL,
         U_LAYERDEPTHOFFSET,
         U_DEPTHSHIFT,
-        U_DRAPETEXTURE
+        U_DRAPETEXTURE,
+        U_SUNDIR,
+        U_SUNCOLOR,
+        U_LIGHTPARAMS,
+        U_TERRAINSLOPESCALE
     };
 
     enum : unsigned int {
@@ -59,7 +63,8 @@ namespace carto::vt {
         DERIVATIVES_FLAG = 8,
         TERRAIN_FLAG     = 16,
         TERRAIN_VTF_FLAG = 32,
-        DRAPE_FLAG       = 64
+        DRAPE_FLAG       = 64,
+        TERRAIN_LIGHT_FLAG = 128
     };
 
     static const std::map<std::string, int> attribMap = {
@@ -103,7 +108,11 @@ namespace carto::vt {
         { "uElevationLatticeCell", U_ELEVATIONLATTICECELL },
         { "uLayerDepthOffset",  U_LAYERDEPTHOFFSET },
         { "uDepthShift",        U_DEPTHSHIFT },
-        { "uDrapeTexture",      U_DRAPETEXTURE }
+        { "uDrapeTexture",      U_DRAPETEXTURE },
+        { "uSunDir",            U_SUNDIR },
+        { "uSunColor",          U_SUNCOLOR },
+        { "uLightParams",       U_LIGHTPARAMS },
+        { "uTerrainSlopeScale", U_TERRAINSLOPESCALE }
     };
 
     static const std::map<unsigned int, std::string> flagDefineMap = {
@@ -113,7 +122,8 @@ namespace carto::vt {
         { DERIVATIVES_FLAG, "DERIVATIVES" },
         { TERRAIN_FLAG,     "TERRAIN_DEPTH_BIAS" },
         { TERRAIN_VTF_FLAG, "TERRAIN" },
-        { DRAPE_FLAG,       "DRAPE" }
+        { DRAPE_FLAG,       "DRAPE" },
+        { TERRAIN_LIGHT_FLAG, "TERRAIN_LIGHT" }
     };
 
     static const std::string textureFiltersFsh = R"GLSL(
@@ -340,10 +350,21 @@ namespace carto::vt {
         #ifdef DRAPE
         varying highp_opt vec2 vDrapeUV;
         #endif
+        #if defined(TERRAIN_LIGHT) && defined(TERRAIN)
+        // Per-fragment terrain lighting needs the elevation uv of the fragment and the local
+        // mercator height stretch; both are linear in the vertex position, so they interpolate.
+        varying highp vec2 vElevUV;
+        varying mediump float vElevCosh;
+        #endif
 
         void main(void) {
         #ifdef PATTERN
             vUV = aVertexUV * uUVScale;
+        #endif
+        #if defined(TERRAIN_LIGHT) && defined(TERRAIN)
+            vElevUV = uElevationUV.xy + aVertexPosition.xy * uElevationUV.zw;
+            highp float lightMY = uElevationScale.y + aVertexPosition.y * uElevationScale.z;
+            vElevCosh = 0.5 * (exp(lightMY) + exp(-lightMY));
         #endif
         #ifdef DRAPE
             // The regular-grid surface vertex xy is the tile-local [0,1] parametrization;
@@ -372,6 +393,35 @@ namespace carto::vt {
         uniform sampler2D uDrapeTexture;
         varying highp_opt vec2 vDrapeUV;
         #endif
+        #if defined(TERRAIN_LIGHT) && defined(TERRAIN)
+        // Precision qualifiers must match the vertex-stage declarations exactly, or the
+        // program fails to LINK (same name, different precision is an error in GLSL ES 1.00).
+        uniform sampler2D uElevationTexture;
+        uniform highp vec4 uElevationDecode; // 'vec4' in the vertex stage means highp there
+        uniform highp vec4 uElevationTexelSize;
+        uniform mediump vec3 uSunDir;         // east, north, up - the same frame the tile mesh lives in
+        uniform lowp vec4 uSunColor;          // rgb = colour, a = unused
+        uniform mediump vec2 uLightParams;    // x = sun intensity, y = ambient intensity
+        uniform highp vec2 uTerrainSlopeScale; // metres of height -> world units, per elevation-uv unit
+        varying highp vec2 vElevUV;
+        varying mediump float vElevCosh;
+
+        // Central difference on the DEM, one texel each way. The surface is displaced by exactly
+        // this height field in the vertex stage, so the normal is the normal of what is drawn -
+        // no second DEM decode, no pre-baked normal map, and it follows the live sun.
+        mediump vec3 terrainNormal() {
+            // Heights are metres and reach several thousand: mediump would quantise them to
+            // whole metres and the central difference would be mostly rounding noise.
+            highp vec2 st = uElevationTexelSize.zw;
+            highp float hL = dot(texture2D(uElevationTexture, vElevUV - vec2(st.x, 0.0)), uElevationDecode);
+            highp float hR = dot(texture2D(uElevationTexture, vElevUV + vec2(st.x, 0.0)), uElevationDecode);
+            highp float hD = dot(texture2D(uElevationTexture, vElevUV - vec2(0.0, st.y)), uElevationDecode);
+            highp float hU = dot(texture2D(uElevationTexture, vElevUV + vec2(0.0, st.y)), uElevationDecode);
+            highp float dx = (hR - hL) * uTerrainSlopeScale.x * vElevCosh / (2.0 * st.x);
+            highp float dy = (hU - hD) * uTerrainSlopeScale.y * vElevCosh / (2.0 * st.y);
+            return normalize(vec3(-dx, -dy, 1.0));
+        }
+        #endif
         #ifdef LIGHTING_FSH
         varying mediump vec3 vNormal;
         #endif
@@ -387,6 +437,13 @@ namespace carto::vt {
             lowp vec4 color = uColor * (1.0 - patternColor.a) + patternColor;
         #else
             lowp vec4 color = uColor;
+        #endif
+        #if defined(TERRAIN_LIGHT) && defined(TERRAIN)
+            // The draped colour is premultiplied, so scaling rgb alone is a valid tint; clamp
+            // back to alpha so an intensity above 1 cannot break premultiplication.
+            mediump float ndl = max(0.0, dot(terrainNormal(), uSunDir));
+            mediump vec3 lit = vec3(uLightParams.y) + uSunColor.rgb * (ndl * uLightParams.x);
+            color = vec4(min(color.rgb * lit, vec3(color.a)), color.a);
         #endif
         #if defined(LIGHTING_VSH)
             gl_FragColor = vColor * color * uOpacity;
@@ -445,6 +502,13 @@ namespace carto::vt {
             lowp vec4 color = texture2D_bicubic(uBitmap, vUV, uUVScale);
         #else
             lowp vec4 color = texture2D_bilinear(uBitmap, vUV, uUVScale);
+        #endif
+        #if defined(TERRAIN_LIGHT) && defined(TERRAIN)
+            // The draped colour is premultiplied, so scaling rgb alone is a valid tint; clamp
+            // back to alpha so an intensity above 1 cannot break premultiplication.
+            mediump float ndl = max(0.0, dot(terrainNormal(), uSunDir));
+            mediump vec3 lit = vec3(uLightParams.y) + uSunColor.rgb * (ndl * uLightParams.x);
+            color = vec4(min(color.rgb * lit, vec3(color.a)), color.a);
         #endif
         #if defined(LIGHTING_VSH)
             gl_FragColor = vColor * color * uOpacity;
