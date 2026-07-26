@@ -380,6 +380,13 @@ namespace carto::vt {
                 // the comparison and punch holes in the shadow.
                 highp float limit = 2.0 * o == 0.0 ? 1.0 : 1.0 / max(1.0e-6, 2.0 * o);
                 dzduv = clamp(dzduv, vec2(-limit), vec2(limit));
+                // The stored depth belongs to the TEXEL CENTRE, up to half a texel away from this
+                // fragment; on a slope lit at a grazing angle that half texel is metres of height,
+                // so the surface shadows itself in regular stripes - the bands seen inside a long
+                // shadow stretched downhill. Subtracting the receiver plane's own rise over half a
+                // texel makes the bias exactly as large as the local slope demands and no larger,
+                // where a constant big enough for the worst slope would detach every shadow.
+                ref -= 0.5 * uShadowParams.x * (abs(dzduv.x) + abs(dzduv.y));
             }
         #endif
             mediump float lit = 0.0;

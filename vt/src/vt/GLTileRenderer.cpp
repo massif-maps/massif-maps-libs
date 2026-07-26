@@ -135,7 +135,7 @@ namespace carto::vt {
         _terrainShadowViewProj = lightViewProj;
     }
 
-    bool GLTileRenderer::calculateShadowViewProj(const std::vector<TileId>& tileIds, const std::vector<TileId>& casterTileIds, const cglib::vec3<float>& sunDir, double minHeight, double maxHeight, float maxDistanceMeters, double& depthRangeMeters, cglib::mat4x4<double>& lightViewProj) const {
+    bool GLTileRenderer::calculateShadowViewProj(const std::vector<TileId>& tileIds, const std::vector<TileId>& casterTileIds, const cglib::vec3<float>& sunDir, double minHeight, double maxHeight, float maxDistanceMeters, int mapSize, double& depthRangeMeters, double& texelMeters, cglib::mat4x4<double>& lightViewProj) const {
         std::lock_guard<std::mutex> lock(_mutex);
 
         if (tileIds.empty()) {
@@ -177,18 +177,62 @@ namespace carto::vt {
             minZ = minHeight;
             maxZ = maxHeight;
         }
-        // Clamp the covered ground to a radius around the camera. The map has a fixed resolution,
-        // so its texel size is the ground it spans divided by that resolution: looking down the
-        // cover is a few tiles and the shadows are sharp, but at a low tilt the visible ground
-        // reaches to the horizon and the same map has to stretch over it - which is the
-        // "shadows get pixelated as I tilt down". Beyond the radius there are simply no shadows.
-        if (maxDistanceMeters > 0 && metersToInternal > 0) {
-            double radius = maxDistanceMeters * metersToInternal;
-            const cglib::vec3<double>& focus = _viewState.origin; // camera position in world units
-            minX = std::max(minX, focus(0) - radius);
-            maxX = std::min(maxX, focus(0) + radius);
-            minY = std::max(minY, focus(1) - radius);
-            maxY = std::min(maxY, focus(1) + radius);
+        // Clamp the covered ground to what the camera can actually SEE, and to a radius around it.
+        // The map has a fixed resolution, so its texel size is the ground it spans divided by that
+        // resolution. Bounding the drawn tiles alone spends most of the map on ground that is
+        // behind the camera or outside its cone: at a tilt the visible ground is a narrow wedge,
+        // and fitting the box to that wedge instead of to its bounding square is worth several
+        // times the texel density - which is what a shadow edge and a stretched shadow's interior
+        // are limited by. Beyond the radius there are simply no shadows.
+        {
+            double visMinX = 0, visMinY = 0, visMaxX = 0, visMaxY = 0;
+            bool visFirst = true;
+            cglib::mat4x4<double> invCameraProj = cglib::inverse(_viewState.projectionMatrix * _viewState.cameraMatrix);
+            double maxDistance = (maxDistanceMeters > 0 ? maxDistanceMeters * metersToInternal : 0);
+            for (int corner = 0; corner < 4; corner++) {
+                double ndcX = (corner & 1 ? 1.0 : -1.0), ndcY = (corner & 2 ? 1.0 : -1.0);
+                cglib::vec3<double> p0 = cglib::proj_p(cglib::transform(cglib::vec4<double>(ndcX, ndcY, -1.0, 1.0), invCameraProj));
+                cglib::vec3<double> p1 = cglib::proj_p(cglib::transform(cglib::vec4<double>(ndcX, ndcY,  1.0, 1.0), invCameraProj));
+                cglib::vec3<double> delta = p1 - p0;
+                double t0 = 0, t1 = 1;
+                if (maxDistance > 0) {
+                    double len = cglib::length(delta);
+                    if (len > maxDistance) {
+                        t1 = maxDistance / len; // cap the far end at the shadow distance
+                    }
+                }
+                // The ground that this frustum edge can see is the part of it inside the height
+                // slab; outside it the edge is over the terrain (sky) or under it.
+                if (std::abs(delta(2)) > 1.0e-12) {
+                    double ta = (minZ - p0(2)) / delta(2), tb = (maxZ - p0(2)) / delta(2);
+                    t0 = std::max(t0, std::min(ta, tb));
+                    t1 = std::min(t1, std::max(ta, tb));
+                } else if (p0(2) < minZ || p0(2) > maxZ) {
+                    continue; // parallel to the slab and outside it
+                }
+                if (t1 < t0) {
+                    continue; // this edge never crosses the shadowed height range
+                }
+                for (int end = 0; end < 2; end++) {
+                    cglib::vec3<double> p = p0 + delta * (end ? t1 : t0);
+                    if (visFirst) {
+                        visMinX = visMaxX = p(0);
+                        visMinY = visMaxY = p(1);
+                        visFirst = false;
+                    } else {
+                        visMinX = std::min(visMinX, p(0)); visMaxX = std::max(visMaxX, p(0));
+                        visMinY = std::min(visMinY, p(1)); visMaxY = std::max(visMaxY, p(1));
+                    }
+                }
+            }
+            if (!visFirst) {
+                minX = std::max(minX, visMinX); maxX = std::min(maxX, visMaxX);
+                minY = std::max(minY, visMinY); maxY = std::min(maxY, visMaxY);
+            } else if (maxDistance > 0) {
+                const cglib::vec3<double>& focus = _viewState.origin; // camera position in world units
+                minX = std::max(minX, focus(0) - maxDistance); maxX = std::min(maxX, focus(0) + maxDistance);
+                minY = std::max(minY, focus(1) - maxDistance); maxY = std::min(maxY, focus(1) + maxDistance);
+            }
             if (maxX <= minX || maxY <= minY) {
                 return false;
             }
@@ -198,10 +242,13 @@ namespace carto::vt {
         if (dir(2) < 0.05) {
             return false; // sun at or below the horizon: nothing is meaningfully lit
         }
-        cglib::vec3<double> center((minX + maxX) * 0.5, (minY + maxY) * 0.5, (minZ + maxZ) * 0.5);
         cglib::vec3<double> up = std::abs(dir(2)) > 0.99 ? cglib::vec3<double>(0, 1, 0) : cglib::vec3<double>(0, 0, 1);
-        double radius = std::sqrt((maxX - minX) * (maxX - minX) + (maxY - minY) * (maxY - minY) + (maxZ - minZ) * (maxZ - minZ));
-        cglib::mat4x4<double> lightView = cglib::lookat4_matrix(center + dir * radius, center, up);
+        // The light view is a pure ROTATION about the world origin, not a look-at aimed at the
+        // current box centre. A view anchored on the box would move with the camera, and the whole
+        // light-space grid would slide under the terrain every frame - shadow edges then crawl and
+        // shimmer during a pan, and no two frames share a matrix, so the caster pass can never be
+        // reused. Anchored to the world, the texel lattice below is absolute.
+        cglib::mat4x4<double> lightView = cglib::lookat4_matrix(dir, cglib::vec3<double>(0, 0, 0), up);
 
         // Fit the box: the SIDES to the ground that receives shadows, the DEPTH range to the
         // ground that casts them. Fitting the sides to the casters too would mean every extra
@@ -229,12 +276,45 @@ namespace carto::vt {
                 n = std::min(n, -p(2)); f = std::max(f, -p(2));
             }
         }
+        // Snap the box to a world-anchored lattice of whole shadow texels, and quantise its size
+        // so the texel size itself only changes in steps. Fitted exactly, the box breathes with
+        // every camera movement: the same piece of ground falls in a different texel each frame,
+        // so every shadow edge crawls and the interior of a large shadow flickers. Snapped, the
+        // matrix is bit-identical while the camera moves inside one step - which both stabilises
+        // the image and lets the caller skip the caster pass entirely.
+        if (mapSize > 0) {
+            for (int axis = 0; axis < 3; axis++) {
+                double& lo = (axis == 0 ? l : axis == 1 ? b : n);
+                double& hi = (axis == 0 ? r : axis == 1 ? t : f);
+                double size = hi - lo;
+                if (!(size > 0)) {
+                    continue;
+                }
+                // A ladder of eighths of a power of two: at most 12.5% of the box is wasted, and
+                // the step changes rarely enough that the texel size is stable in practice.
+                double step = std::pow(2.0, std::floor(std::log2(size)) - 3.0);
+                double quantSize = std::ceil(size / step) * step;
+                // The depth axis has no texels; quantising it keeps the depth range - and with it
+                // the shader's normalised bias - constant while the camera moves.
+                double grid = (axis == 2 ? step : quantSize / mapSize);
+                if (quantSize - size < grid) {
+                    quantSize += step; // snapping moves the low edge down by up to one grid cell
+                    grid = (axis == 2 ? step : quantSize / mapSize);
+                }
+                lo = std::floor(lo / grid) * grid;
+                hi = lo + quantSize;
+            }
+        }
         lightViewProj = cglib::ortho4_matrix(l, r, b, t, n, f) * lightView;
         // The depth the box spans, in metres. The shader's bias is a fraction of the normalised
         // depth, so a bias that is constant there grows in WORLD terms as the box grows - which is
         // why a shadow drifted away from its own building as the view zoomed out or the caster
         // margin widened the box. The caller divides its metric bias by this to cancel that.
         depthRangeMeters = (f - n) / metersToInternal;
+        // The ground one shadow texel covers, in metres: the number that decides whether a shadow
+        // edge reads as an edge or as a staircase. Reported so the caller can log it instead of
+        // guessing from the picture.
+        texelMeters = std::max(r - l, t - b) / std::max(1, mapSize) / metersToInternal;
         return true;
     }
 
