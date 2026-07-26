@@ -514,7 +514,10 @@ namespace carto::vt {
         #ifdef TERRAIN_SHADOW
             ndl *= shadowFactor();
         #endif
-            mediump vec3 lit = vec3(uLightParams.y) + uSunColor.rgb * (ndl * uLightParams.x);
+            // Normalised Lambert: ambient is the floor, the sun fills the REMAINING headroom, so
+            // a surface facing the sun lands at 1 instead of ambient+1. Adding them blows the
+            // ground out to white at a high sun, and a clipped highlight cannot show a shadow.
+            mediump vec3 lit = vec3(uLightParams.y) + uSunColor.rgb * ((1.0 - uLightParams.y) * ndl * uLightParams.x);
             color = vec4(min(color.rgb * lit, vec3(color.a)), color.a);
         #endif
         #if defined(LIGHTING_VSH)
@@ -587,7 +590,10 @@ namespace carto::vt {
         #ifdef TERRAIN_SHADOW
             ndl *= shadowFactor();
         #endif
-            mediump vec3 lit = vec3(uLightParams.y) + uSunColor.rgb * (ndl * uLightParams.x);
+            // Normalised Lambert: ambient is the floor, the sun fills the REMAINING headroom, so
+            // a surface facing the sun lands at 1 instead of ambient+1. Adding them blows the
+            // ground out to white at a high sun, and a clipped highlight cannot show a shadow.
+            mediump vec3 lit = vec3(uLightParams.y) + uSunColor.rgb * ((1.0 - uLightParams.y) * ndl * uLightParams.x);
             color = vec4(min(color.rgb * lit, vec3(color.a)), color.a);
         #endif
         #if defined(LIGHTING_VSH)

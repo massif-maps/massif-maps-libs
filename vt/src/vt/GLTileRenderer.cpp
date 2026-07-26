@@ -241,12 +241,10 @@ namespace carto::vt {
         // kind of tile content that is real 3D rather than a skin on the ground, so they are
         // exactly what the drape cannot represent and what a shadow map is for.
         if (_visibleRenderTiles) {
-            // Extrusions are closed volumes, so casting from their BACK faces stores the far side
-            // of the building. A lit facade is then never compared against its own depth, which is
-            // what produced the shadow acne crawling over the buildings. The terrain surface is
-            // not a closed volume and keeps casting unculled.
-            glEnable(GL_CULL_FACE);
-            glCullFace(GL_FRONT);
+            // Cast from both faces: culling the front faces stored the far side of the building
+            // and detached its shadow from its own footprint. The acne that motivated it is
+            // handled by the slope-scaled caster offset, which the tightened light frustum made
+            // effective again.
             _shadowCasterViewProj = &lightViewProj;
             for (const RenderTile& renderTile : *_visibleRenderTiles) {
                 if (!renderTile.visible || !tileCovers(renderTile.targetTileId, tileId)) {
@@ -266,7 +264,6 @@ namespace carto::vt {
                 }
             }
             _shadowCasterViewProj = nullptr;
-            glDisable(GL_CULL_FACE);
         }
         return draws;
     }
