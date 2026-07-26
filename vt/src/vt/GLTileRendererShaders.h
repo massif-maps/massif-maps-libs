@@ -363,10 +363,30 @@ namespace carto::vt {
             }
             highp float ref = vShadowPos.z - uShadowParams.y / max(0.15, ndl);
             highp float o = uShadowParams.x * uShadowParams.w;
+            // Receiver-plane depth bias: how the receiver's own depth changes per unit of shadow
+            // uv, from screen-space derivatives. Each PCF tap then compares against the receiver's
+            // PLANE instead of against one point on it. Without it every off-centre tap needs the
+            // constant bias to cover a whole texel of slope, which is why the acne only cleared at
+            // a bias large enough to detach the shadows.
+            highp vec2 dzduv = vec2(0.0);
+        #ifdef DERIVATIVES
+            highp vec3 dpdx = dFdx(vShadowPos);
+            highp vec3 dpdy = dFdy(vShadowPos);
+            highp float det = dpdx.x * dpdy.y - dpdx.y * dpdy.x;
+            if (abs(det) > 1.0e-12) {
+                dzduv.x = ( dpdy.y * dpdx.z - dpdx.y * dpdy.z) / det;
+                dzduv.y = (-dpdy.x * dpdx.z + dpdx.x * dpdy.z) / det;
+                // A near-silhouette texel has an unbounded gradient; clamp it so it cannot invert
+                // the comparison and punch holes in the shadow.
+                highp float limit = 2.0 * o == 0.0 ? 1.0 : 1.0 / max(1.0e-6, 2.0 * o);
+                dzduv = clamp(dzduv, vec2(-limit), vec2(limit));
+            }
+        #endif
             mediump float lit = 0.0;
             for (int j = -1; j <= 1; j++) {
                 for (int i = -1; i <= 1; i++) {
-                    lit += ref <= shadowDepth(vShadowPos.xy + vec2(float(i) * o, float(j) * o)) ? 1.0 : 0.0;
+                    highp vec2 offset = vec2(float(i) * o, float(j) * o);
+                    lit += ref + dot(offset, dzduv) <= shadowDepth(vShadowPos.xy + offset) ? 1.0 : 0.0;
                 }
             }
             lit *= 1.0 / 9.0;
