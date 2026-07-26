@@ -53,7 +53,10 @@ namespace carto::vt {
         U_SUNDIR,
         U_SUNCOLOR,
         U_LIGHTPARAMS,
-        U_TERRAINSLOPESCALE
+        U_TERRAINSLOPESCALE,
+        U_SHADOWMATRIX,
+        U_SHADOWTEXTURE,
+        U_SHADOWPARAMS
     };
 
     enum : unsigned int {
@@ -64,7 +67,8 @@ namespace carto::vt {
         TERRAIN_FLAG     = 16,
         TERRAIN_VTF_FLAG = 32,
         DRAPE_FLAG       = 64,
-        TERRAIN_LIGHT_FLAG = 128
+        TERRAIN_LIGHT_FLAG = 128,
+        TERRAIN_SHADOW_FLAG = 256
     };
 
     static const std::map<std::string, int> attribMap = {
@@ -112,7 +116,10 @@ namespace carto::vt {
         { "uSunDir",            U_SUNDIR },
         { "uSunColor",          U_SUNCOLOR },
         { "uLightParams",       U_LIGHTPARAMS },
-        { "uTerrainSlopeScale", U_TERRAINSLOPESCALE }
+        { "uTerrainSlopeScale", U_TERRAINSLOPESCALE },
+        { "uShadowMatrix",      U_SHADOWMATRIX },
+        { "uShadowTexture",     U_SHADOWTEXTURE },
+        { "uShadowParams",      U_SHADOWPARAMS }
     };
 
     static const std::map<unsigned int, std::string> flagDefineMap = {
@@ -123,7 +130,8 @@ namespace carto::vt {
         { TERRAIN_FLAG,     "TERRAIN_DEPTH_BIAS" },
         { TERRAIN_VTF_FLAG, "TERRAIN" },
         { DRAPE_FLAG,       "DRAPE" },
-        { TERRAIN_LIGHT_FLAG, "TERRAIN_LIGHT" }
+        { TERRAIN_LIGHT_FLAG, "TERRAIN_LIGHT" },
+        { TERRAIN_SHADOW_FLAG, "TERRAIN_SHADOW" }
     };
 
     static const std::string textureFiltersFsh = R"GLSL(
@@ -356,6 +364,12 @@ namespace carto::vt {
         varying highp vec2 vElevUV;
         varying mediump float vElevCosh;
         #endif
+        #ifdef TERRAIN_SHADOW
+        // Tile-local -> light clip space. The matrix is built per tile so its input stays in
+        // [0,1] and float precision is never asked to hold a world coordinate.
+        uniform highp mat4 uShadowMatrix;
+        varying highp vec3 vShadowPos;
+        #endif
 
         void main(void) {
         #ifdef PATTERN
@@ -378,7 +392,25 @@ namespace carto::vt {
         #ifdef LIGHTING_FSH
             vNormal = aVertexNormal;
         #endif
-            gl_Position = applyDepthBias(uMVPMatrix * vec4(applyTerrain(aVertexPosition), 1.0));
+            highp vec3 terrainPos = applyTerrain(aVertexPosition);
+        #ifdef TERRAIN_SHADOW
+            highp vec4 shadowClip = uShadowMatrix * vec4(terrainPos, 1.0);
+            vShadowPos = shadowClip.xyz / shadowClip.w * 0.5 + 0.5;
+        #endif
+            gl_Position = applyDepthBias(uMVPMatrix * vec4(terrainPos, 1.0));
+        }
+    )GLSL";
+
+    // Caster pass: the light-space depth of the terrain surface, packed into RGB so no depth
+    // texture extension is needed. The vertex shader is backgroundVsh with the light matrix in
+    // uMVPMatrix, so the caster geometry is bit-identical to the geometry that is drawn.
+    static const std::string shadowCasterFsh = R"GLSL(
+        void main(void) {
+            highp float depth = gl_FragCoord.z;
+            highp vec3 enc = vec3(1.0, 255.0, 65025.0) * depth; // 'packed' is a reserved word
+            enc = fract(enc);
+            enc -= enc.yzz * vec3(1.0 / 255.0, 1.0 / 255.0, 0.0);
+            gl_FragColor = vec4(enc, 1.0);
         }
     )GLSL";
 
@@ -422,6 +454,32 @@ namespace carto::vt {
             return normalize(vec3(-dx, -dy, 1.0));
         }
         #endif
+        #ifdef TERRAIN_SHADOW
+        uniform sampler2D uShadowTexture;
+        uniform mediump vec3 uShadowParams; // x = 1/mapSize, y = depth bias, z = strength
+        varying highp vec3 vShadowPos;
+
+        // The caster pass packs window-space depth into RGB; unpack and compare with a slope
+        // independent constant plus the caller's bias. 4-tap PCF over one texel is enough to
+        // soften the terrain silhouettes without a second pass.
+        highp float shadowDepth(highp vec2 uv) {
+            highp vec4 enc = texture2D(uShadowTexture, uv);
+            return dot(enc.rgb, vec3(1.0, 1.0 / 255.0, 1.0 / 65025.0));
+        }
+        mediump float shadowFactor() {
+            if (vShadowPos.x < 0.0 || vShadowPos.x > 1.0 || vShadowPos.y < 0.0 || vShadowPos.y > 1.0 || vShadowPos.z > 1.0) {
+                return 1.0; // outside the light frustum: unshadowed rather than black
+            }
+            highp float ref = vShadowPos.z - uShadowParams.y;
+            highp float o = uShadowParams.x;
+            mediump float lit = 0.0;
+            lit += ref <= shadowDepth(vShadowPos.xy + vec2(-o, -o)) ? 0.25 : 0.0;
+            lit += ref <= shadowDepth(vShadowPos.xy + vec2( o, -o)) ? 0.25 : 0.0;
+            lit += ref <= shadowDepth(vShadowPos.xy + vec2(-o,  o)) ? 0.25 : 0.0;
+            lit += ref <= shadowDepth(vShadowPos.xy + vec2( o,  o)) ? 0.25 : 0.0;
+            return mix(1.0, lit, uShadowParams.z);
+        }
+        #endif
         #ifdef LIGHTING_FSH
         varying mediump vec3 vNormal;
         #endif
@@ -442,6 +500,9 @@ namespace carto::vt {
             // The draped colour is premultiplied, so scaling rgb alone is a valid tint; clamp
             // back to alpha so an intensity above 1 cannot break premultiplication.
             mediump float ndl = max(0.0, dot(terrainNormal(), uSunDir));
+        #ifdef TERRAIN_SHADOW
+            ndl *= shadowFactor();
+        #endif
             mediump vec3 lit = vec3(uLightParams.y) + uSunColor.rgb * (ndl * uLightParams.x);
             color = vec4(min(color.rgb * lit, vec3(color.a)), color.a);
         #endif
@@ -479,7 +540,12 @@ namespace carto::vt {
         #ifdef LIGHTING_FSH
             vNormal = aVertexNormal;
         #endif
-            gl_Position = applyDepthBias(uMVPMatrix * vec4(applyTerrain(aVertexPosition), 1.0));
+            highp vec3 terrainPos = applyTerrain(aVertexPosition);
+        #ifdef TERRAIN_SHADOW
+            highp vec4 shadowClip = uShadowMatrix * vec4(terrainPos, 1.0);
+            vShadowPos = shadowClip.xyz / shadowClip.w * 0.5 + 0.5;
+        #endif
+            gl_Position = applyDepthBias(uMVPMatrix * vec4(terrainPos, 1.0));
         }
     )GLSL";
 
@@ -507,6 +573,9 @@ namespace carto::vt {
             // The draped colour is premultiplied, so scaling rgb alone is a valid tint; clamp
             // back to alpha so an intensity above 1 cannot break premultiplication.
             mediump float ndl = max(0.0, dot(terrainNormal(), uSunDir));
+        #ifdef TERRAIN_SHADOW
+            ndl *= shadowFactor();
+        #endif
             mediump vec3 lit = vec3(uLightParams.y) + uSunColor.rgb * (ndl * uLightParams.x);
             color = vec4(min(color.rgb * lit, vec3(color.a)), color.a);
         #endif
@@ -539,7 +608,12 @@ namespace carto::vt {
             vNormal = aVertexNormal;
             vBinormal = aVertexBinormal;
         #endif
-            gl_Position = applyDepthBias(uMVPMatrix * vec4(applyTerrain(aVertexPosition), 1.0));
+            highp vec3 terrainPos = applyTerrain(aVertexPosition);
+        #ifdef TERRAIN_SHADOW
+            highp vec4 shadowClip = uShadowMatrix * vec4(terrainPos, 1.0);
+            vShadowPos = shadowClip.xyz / shadowClip.w * 0.5 + 0.5;
+        #endif
+            gl_Position = applyDepthBias(uMVPMatrix * vec4(terrainPos, 1.0));
         }
     )GLSL";
 

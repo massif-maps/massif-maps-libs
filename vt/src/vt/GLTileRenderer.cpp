@@ -124,6 +124,114 @@ namespace carto::vt {
         _terrainLighting = lighting;
     }
 
+    void GLTileRenderer::setTerrainShadowMap(GLuint texture, int mapSize, float depthBias, float strength, const cglib::mat4x4<double>& lightViewProj) {
+        std::lock_guard<std::mutex> lock(_mutex);
+
+        _terrainShadowTexture = texture;
+        _terrainShadowMapSize = mapSize;
+        _terrainShadowBias = depthBias;
+        _terrainShadowStrength = strength;
+        _terrainShadowViewProj = lightViewProj;
+    }
+
+    bool GLTileRenderer::calculateShadowViewProj(const std::vector<TileId>& tileIds, const cglib::vec3<float>& sunDir, cglib::mat4x4<double>& lightViewProj) const {
+        std::lock_guard<std::mutex> lock(_mutex);
+
+        if (tileIds.empty()) {
+            return false;
+        }
+        // World-space box of the shadowed ground. The height range comes from the elevation
+        // texture's metres-to-internal factor: a fixed metric slab is meaningless in internal
+        // units, which change scale with the projection.
+        double minX = 0, minY = 0, maxX = 0, maxY = 0;
+        bool first = true;
+        for (const TileId& tileId : tileIds) {
+            cglib::mat4x4<double> tileMatrix = calculateTileMatrix(tileId, 1.0f);
+            for (int corner = 0; corner < 4; corner++) {
+                cglib::vec4<double> p = cglib::transform(cglib::vec4<double>(corner & 1 ? 1.0 : 0.0, corner & 2 ? 1.0 : 0.0, 0.0, 1.0), tileMatrix);
+                if (first) {
+                    minX = maxX = p(0);
+                    minY = maxY = p(1);
+                    first = false;
+                } else {
+                    minX = std::min(minX, p(0)); maxX = std::max(maxX, p(0));
+                    minY = std::min(minY, p(1)); maxY = std::max(maxY, p(1));
+                }
+            }
+        }
+        if (first || maxX <= minX || maxY <= minY) {
+            return false;
+        }
+        double metersToInternal = 0;
+        TerrainTexture terrainTexture;
+        if (_terrainTextureProvider && _terrainTextureProvider(tileIds.front(), terrainTexture)) {
+            metersToInternal = terrainTexture.metersToInternal;
+        }
+        if (metersToInternal <= 0) {
+            return false;
+        }
+        double minZ = -1000.0 * metersToInternal;
+        double maxZ = 9000.0 * metersToInternal;
+
+        cglib::vec3<double> dir = cglib::unit(cglib::vec3<double>(sunDir(0), sunDir(1), sunDir(2)));
+        if (dir(2) < 0.05) {
+            return false; // sun at or below the horizon: nothing is meaningfully lit
+        }
+        cglib::vec3<double> center((minX + maxX) * 0.5, (minY + maxY) * 0.5, (minZ + maxZ) * 0.5);
+        cglib::vec3<double> up = std::abs(dir(2)) > 0.99 ? cglib::vec3<double>(0, 1, 0) : cglib::vec3<double>(0, 0, 1);
+        double radius = std::sqrt((maxX - minX) * (maxX - minX) + (maxY - minY) * (maxY - minY) + (maxZ - minZ) * (maxZ - minZ));
+        cglib::mat4x4<double> lightView = cglib::lookat4_matrix(center + dir * radius, center, up);
+
+        // Fit the orthographic box to the box corners in light space.
+        double l = 0, r = 0, b = 0, t = 0, n = 0, f = 0;
+        for (int corner = 0; corner < 8; corner++) {
+            cglib::vec4<double> p = cglib::transform(cglib::vec4<double>(corner & 1 ? maxX : minX, corner & 2 ? maxY : minY, corner & 4 ? maxZ : minZ, 1.0), lightView);
+            if (corner == 0) {
+                l = r = p(0); b = t = p(1); n = f = -p(2);
+            } else {
+                l = std::min(l, p(0)); r = std::max(r, p(0));
+                b = std::min(b, p(1)); t = std::max(t, p(1));
+                n = std::min(n, -p(2)); f = std::max(f, -p(2));
+            }
+        }
+        lightViewProj = cglib::ortho4_matrix(l, r, b, t, n, f) * lightView;
+        return true;
+    }
+
+    int GLTileRenderer::renderShadowCasters(const TileId& tileId, const cglib::mat4x4<double>& lightViewProj) {
+        std::lock_guard<std::mutex> lock(_mutex);
+
+        if (!(_terrainRegularGrid && _terrainMode && _terrainTextureProvider)) {
+            return 0;
+        }
+        int draws = 0;
+        cglib::mat4x4<double> surfaceFrame = calculateTileMatrix(tileId, 1.0f);
+        cglib::mat4x4<float> mvpMatrix = cglib::mat4x4<float>::convert(lightViewProj * surfaceFrame);
+        for (const std::shared_ptr<TileSurface>& tileSurface : buildCompiledTerrainGridSurfaces()) {
+            const TileSurface::VertexGeometryLayoutParameters& vertexGeomLayoutParams = tileSurface->getVertexGeometryLayoutParameters();
+            const CompiledSurface& compiledTileSurface = _compiledTileSurfaceMap[tileSurface];
+
+            const ShaderProgram& shaderProgram = buildShaderProgram("shadowcaster", backgroundVsh, shadowCasterFsh, LightingMode::NONE, RasterFilterMode::NONE, TERRAIN_VTF_FLAG);
+            glUseProgram(shaderProgram.program);
+            setupTerrainUniforms(shaderProgram, tileId, surfaceFrame);
+
+            glBindBuffer(GL_ARRAY_BUFFER, compiledTileSurface.vertexGeometryVBO);
+            glVertexAttribPointer(shaderProgram.attribs[A_VERTEXPOSITION], 3, GL_FLOAT, GL_FALSE, vertexGeomLayoutParams.vertexSize, bufferGLOffset(vertexGeomLayoutParams.coordOffset));
+            glEnableVertexAttribArray(shaderProgram.attribs[A_VERTEXPOSITION]);
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, compiledTileSurface.indicesVBO);
+            glUniformMatrix4fv(shaderProgram.uniforms[U_MVPMATRIX], 1, GL_FALSE, mvpMatrix.data());
+
+            glDrawElements(GL_TRIANGLES, tileSurface->getIndicesCount(), GL_UNSIGNED_SHORT, 0);
+            draws++;
+
+            glDisableVertexAttribArray(shaderProgram.attribs[A_VERTEXPOSITION]);
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+            glBindBuffer(GL_ARRAY_BUFFER, 0);
+            checkGLError();
+        }
+        return draws;
+    }
+
     void GLTileRenderer::setTerrainDepthWrite(bool enabled) {
         std::lock_guard<std::mutex> lock(_mutex);
 
@@ -2712,7 +2820,8 @@ namespace carto::vt {
             const CompiledSurface& compiledTileSurface = _compiledTileSurfaceMap[tileSurface];
 
             bool lit = _terrainLighting.enabled && _terrainMode && static_cast<bool>(_terrainTextureProvider);
-            unsigned int flags = (_terrainMode && _terrainTextureProvider ? TERRAIN_FLAG | TERRAIN_VTF_FLAG : 0) | DRAPE_FLAG | (lit ? TERRAIN_LIGHT_FLAG : 0);
+            bool shadowed = lit && _terrainShadowTexture != 0 && _terrainShadowStrength > 0.0f;
+            unsigned int flags = (_terrainMode && _terrainTextureProvider ? TERRAIN_FLAG | TERRAIN_VTF_FLAG : 0) | DRAPE_FLAG | (lit ? TERRAIN_LIGHT_FLAG : 0) | (shadowed ? TERRAIN_SHADOW_FLAG : 0);
             const ShaderProgram& shaderProgram = buildShaderProgram("tilesurfacedrape", backgroundVsh, backgroundFsh, LightingMode::NONE, RasterFilterMode::NONE, flags);
             glUseProgram(shaderProgram.program);
             if (flags & TERRAIN_FLAG) {
@@ -2721,6 +2830,15 @@ namespace carto::vt {
             }
             if (lit) {
                 setupTerrainLightingUniforms(shaderProgram, tileId, surfaceFrame);
+            }
+            if (shadowed) {
+                cglib::mat4x4<float> shadowMatrix = cglib::mat4x4<float>::convert(_terrainShadowViewProj * surfaceFrame);
+                glUniformMatrix4fv(shaderProgram.uniforms[U_SHADOWMATRIX], 1, GL_FALSE, shadowMatrix.data());
+                glActiveTexture(GL_TEXTURE2);
+                glBindTexture(GL_TEXTURE_2D, _terrainShadowTexture);
+                glUniform1i(shaderProgram.uniforms[U_SHADOWTEXTURE], 2);
+                glActiveTexture(GL_TEXTURE0);
+                glUniform3f(shaderProgram.uniforms[U_SHADOWPARAMS], 1.0f / std::max(1, _terrainShadowMapSize), _terrainShadowBias, _terrainShadowStrength);
             }
 
             glBindBuffer(GL_ARRAY_BUFFER, compiledTileSurface.vertexGeometryVBO);
