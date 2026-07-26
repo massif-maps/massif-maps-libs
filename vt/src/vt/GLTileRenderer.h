@@ -153,7 +153,13 @@ namespace carto::vt {
         // texture. Writes depth: the surface is the only depth-writing terrain geometry.
         // Returns the number of surface draws issued, or a negative reason code when nothing
         // was drawn (-1 no texture, -2 shared grid inactive, -3 tile not registered).
-        int renderDrapedSurface(const TileId& targetTileId, GLuint drapeTexture);
+        // uvOffset/uvScale select a sub-rect of the texture: identity when the tile draws its own
+        // drape texture, and the tile's rectangle inside an ancestor's texture when its own is not
+        // baked yet. Standing in on the ancestor is what keeps a budgeted bake from flashing.
+        int renderDrapedSurface(const TileId& targetTileId, GLuint drapeTexture, float uvOffsetX = 0.0f, float uvOffsetY = 0.0f, float uvScale = 1.0f);
+        // Draws the terrain surface for a tile whose drape texture has no content yet, in a flat
+        // colour. Keeps the depth buffer complete while bakes are still catching up.
+        int renderDrapedSurfaceFill(const TileId& targetTileId, const Color& color);
         void setTerrainDepthWrite(bool enabled);
         void setTerrainTextureProvider(TerrainTextureProvider provider);
         void setDebugWireframe(bool enabled);
@@ -337,7 +343,7 @@ namespace carto::vt {
         void renderStencilDebugOverlay();
         void renderTileSurfaceFill(const TileId& tileId, const Color& color);
         void renderDrapeTextures(const std::vector<RenderTile>& renderTiles);
-        int renderTileSurfaceDrape(const TileId& tileId);
+        int renderTileSurfaceDrape(const TileId& tileId, float uvOffsetX, float uvOffsetY, float uvScale);
         GLuint ensureDrapeTexture(const TileId& tileId);
         void releaseDrapeTexture(GLuint texture);
         void deleteDrapeResources();
@@ -358,6 +364,9 @@ namespace carto::vt {
         const CompiledGeometry& buildCompiledTileGeometry(const std::shared_ptr<TileGeometry>& tileGeometry);
         const ShaderProgram& buildShaderProgram(const std::string& id, const std::string& vsh, const std::string& fsh, LightingMode lightingMode, RasterFilterMode filterMode, unsigned int flags);
         const std::vector<std::shared_ptr<TileSurface>>& buildCompiledTerrainGridSurfaces();
+        // Two triangles covering the tile square. The drape bake is flat and orthographic, so the
+        // displaced grid's thousands of triangles buy nothing there and cost everything.
+        const std::vector<std::shared_ptr<TileSurface>>& buildCompiledFlatSurfaces();
         const std::vector<std::shared_ptr<TileSurface>>& buildCompiledTileSurfaces(const TileId& tileId);
 
         void createShaderProgram(ShaderProgram& shaderProgram, const std::string& vsh, const std::string& fsh, const std::set<std::string>& defs, const std::map<std::string, int>& uniformMap, const std::map<std::string, int>& attribMap);
@@ -403,7 +412,8 @@ namespace carto::vt {
         bool _terrainSkirtsEnabled = false;
         bool _terrainRegularGrid = false;        // shared unit-grid surfaces instead of per-tile tesselated meshes (planar terrain)
         int _terrainRegularGridResolution = 0;   // resolution of the currently built shared grid
-        std::vector<std::shared_ptr<TileSurface>> _terrainGridSurfaces; // the single shared unit-grid surface, drawn per tile
+        std::vector<std::shared_ptr<TileSurface>> _terrainGridSurfaces;
+        std::vector<std::shared_ptr<TileSurface>> _terrainFlatSurfaces; // 1x1 grid for the flat drape bake // the single shared unit-grid surface, drawn per tile
         bool _terrainPainterOrder = false;       // tangram painter-order depth model (no surface occluder / no slack); implies regular grid
         float _terrainDrawLayerOffset = 0.0f;    // painter-order per-draw (proxy - layer) offset
         bool _terrainDrapeFills = false;         // maplibre-style: bake polygon fills flat to a per-tile texture, sampled on the surface

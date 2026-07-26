@@ -56,7 +56,8 @@ namespace carto::vt {
         U_TERRAINSLOPESCALE,
         U_SHADOWMATRIX,
         U_SHADOWTEXTURE,
-        U_SHADOWPARAMS
+        U_SHADOWPARAMS,
+        U_DRAPEUVTRANSFORM
     };
 
     enum : unsigned int {
@@ -119,7 +120,8 @@ namespace carto::vt {
         { "uTerrainSlopeScale", U_TERRAINSLOPESCALE },
         { "uShadowMatrix",      U_SHADOWMATRIX },
         { "uShadowTexture",     U_SHADOWTEXTURE },
-        { "uShadowParams",      U_SHADOWPARAMS }
+        { "uShadowParams",      U_SHADOWPARAMS },
+        { "uDrapeUVTransform",  U_DRAPEUVTRANSFORM }
     };
 
     static const std::map<unsigned int, std::string> flagDefineMap = {
@@ -382,6 +384,10 @@ namespace carto::vt {
         varying lowp vec4 vColor;
         #endif
         #ifdef DRAPE
+        // xy = uv offset, zw = uv scale. Identity for a tile drawn with its own drape texture;
+        // a sub-rect when the tile is standing in on an ancestor's texture because its own is
+        // not baked yet.
+        uniform highp vec4 uDrapeUVTransform;
         varying highp_opt vec2 vDrapeUV;
         #endif
         #if defined(TERRAIN_LIGHT) && defined(TERRAIN)
@@ -410,7 +416,7 @@ namespace carto::vt {
             // The regular-grid surface vertex xy is the tile-local [0,1] parametrization;
             // it is exactly the uv the tile's fills were baked into the drape texture with.
             // If fills appear vertically mirrored on device, flip to vec2(x, 1.0 - y).
-            vDrapeUV = aVertexPosition.xy;
+            vDrapeUV = uDrapeUVTransform.xy + aVertexPosition.xy * uDrapeUVTransform.zw;
         #endif
         #ifdef LIGHTING_VSH
             vColor = applyLighting(vec4(1.0, 1.0, 1.0, 1.0), aVertexNormal);

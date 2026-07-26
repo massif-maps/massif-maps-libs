@@ -677,7 +677,7 @@ namespace carto::vt {
                     _terrainDrawDepthClipUnits = 0.0f;
                     for (const RenderTile& renderTile : *_visibleRenderTiles) {
                         if (renderTile.visible) {
-                            renderTileSurfaceDrape(renderTile.targetTileId);
+                            renderTileSurfaceDrape(renderTile.targetTileId, 0.0f, 0.0f, 1.0f);
                         }
                     }
                     glDepthMask(GL_FALSE);
@@ -2533,7 +2533,7 @@ namespace carto::vt {
         return bakedPrimitives;
     }
 
-    int GLTileRenderer::renderDrapedSurface(const TileId& targetTileId, GLuint drapeTexture) {
+    int GLTileRenderer::renderDrapedSurface(const TileId& targetTileId, GLuint drapeTexture, float uvOffsetX, float uvOffsetY, float uvScale) {
         std::lock_guard<std::mutex> lock(_mutex);
 
         if (drapeTexture == 0) {
@@ -2549,7 +2549,7 @@ namespace carto::vt {
         bool wasDraped = _drapeTilesThisFrame.count(targetTileId) > 0;
         _drapeTextures[targetTileId] = drapeTexture;
         _drapeTilesThisFrame.insert(targetTileId);
-        int surfaces = renderTileSurfaceDrape(targetTileId);
+        int surfaces = renderTileSurfaceDrape(targetTileId, uvOffsetX, uvOffsetY, uvScale);
         if (previous != 0) {
             _drapeTextures[targetTileId] = previous;
         } else {
@@ -2559,6 +2559,22 @@ namespace carto::vt {
             _drapeTilesThisFrame.erase(targetTileId);
         }
         return surfaces;
+    }
+
+    int GLTileRenderer::renderDrapedSurfaceFill(const TileId& targetTileId, const Color& color) {
+        std::lock_guard<std::mutex> lock(_mutex);
+
+        if (!(_terrainRegularGrid && _terrainMode && _terrainTextureProvider)) {
+            return -2;
+        }
+        // Stand-in for a tile whose drape texture is not baked yet: the SAME surface mesh, in the
+        // terrain background colour. Drawing it matters more than its colour does - the surface is
+        // the terrain's only depth writer, and a tile skipped here leaves a depth hole that vector
+        // elements and billboards behind the terrain immediately show through.
+        _terrainDrawDepthBias = 0.0f;
+        _terrainDrawDepthClipUnits = 0.0f;
+        renderTileSurfaceFill(targetTileId, color);
+        return 1;
     }
 
     void GLTileRenderer::deleteDrapeResources() {
@@ -2832,7 +2848,7 @@ namespace carto::vt {
         checkGLError();
     }
 
-    int GLTileRenderer::renderTileSurfaceDrape(const TileId& tileId) {
+    int GLTileRenderer::renderTileSurfaceDrape(const TileId& tileId, float uvOffsetX, float uvOffsetY, float uvScale) {
         auto texIt = _drapeTextures.find(tileId);
         if (texIt == _drapeTextures.end() || !_drapeTilesThisFrame.count(tileId)) {
             return -3;
@@ -2878,6 +2894,7 @@ namespace carto::vt {
             glActiveTexture(GL_TEXTURE0);
             glBindTexture(GL_TEXTURE_2D, texIt->second);
             glUniform1i(shaderProgram.uniforms[U_DRAPETEXTURE], 0);
+            glUniform4f(shaderProgram.uniforms[U_DRAPEUVTRANSFORM], uvOffsetX, uvOffsetY, uvScale, uvScale);
             glUniform4f(shaderProgram.uniforms[U_COLOR], 0.0f, 0.0f, 0.0f, 0.0f);
             glUniform1f(shaderProgram.uniforms[U_OPACITY], 1.0f);
 
@@ -2964,7 +2981,10 @@ namespace carto::vt {
         bool terrainVTF = _terrainMode && (bool) _terrainTextureProvider;
         bool gridMode = _terrainRegularGrid && terrainVTF;
         cglib::mat4x4<double> surfaceFrame = gridMode ? calculateTileMatrix(tileId, 1.0f) : cglib::translate4_matrix(_tileSurfaceBuilderOrigin);
-        for (const std::shared_ptr<TileSurface>& tileSurface : (gridMode ? buildCompiledTerrainGridSurfaces() : buildCompiledTileSurfaces(tileId))) {
+        // The bake is flat and orthographic: two triangles reproduce it exactly, and drawing the
+        // displaced grid instead means tens of thousands of triangles per layer per tile - which
+        // is what made a zoom step cost hundreds of milliseconds.
+        for (const std::shared_ptr<TileSurface>& tileSurface : (flatDrape ? buildCompiledFlatSurfaces() : (gridMode ? buildCompiledTerrainGridSurfaces() : buildCompiledTileSurfaces(tileId)))) {
             const TileSurface::VertexGeometryLayoutParameters& vertexGeomLayoutParams = tileSurface->getVertexGeometryLayoutParameters();
             const CompiledSurface& compiledTileSurface = _compiledTileSurfaceMap[tileSurface];
 
@@ -3055,7 +3075,8 @@ namespace carto::vt {
         bool terrainVTF = _terrainMode && (bool) _terrainTextureProvider;
         bool gridMode = _terrainRegularGrid && terrainVTF;
         cglib::mat4x4<double> surfaceFrame = gridMode ? calculateTileMatrix(targetTileId, 1.0f) : cglib::translate4_matrix(_tileSurfaceBuilderOrigin);
-        for (const std::shared_ptr<TileSurface>& tileSurface : (gridMode ? buildCompiledTerrainGridSurfaces() : buildCompiledTileSurfaces(targetTileId))) {
+        // Two triangles for the flat bake; see renderTileBackground.
+        for (const std::shared_ptr<TileSurface>& tileSurface : (flatDrape ? buildCompiledFlatSurfaces() : (gridMode ? buildCompiledTerrainGridSurfaces() : buildCompiledTileSurfaces(targetTileId)))) {
             const TileSurface::VertexGeometryLayoutParameters& vertexGeomLayoutParams = tileSurface->getVertexGeometryLayoutParameters();
             const CompiledSurface& compiledTileSurface = _compiledTileSurfaceMap[tileSurface];
 
@@ -3211,6 +3232,10 @@ namespace carto::vt {
             glUniform1f(shaderProgram.uniforms[U_DEPTHBIAS], terrainVTF ? _terrainDrawDepthBias : _terrainDepthBias);
         }
         if (terrainVTF) {
+            // The vertex frame is the TARGET tile, not the source: geometry of an overzoomed tile
+            // is drawn over the target tile's ground, and this matrix is what the elevation lookup
+            // resolves against. Switching it to the source tile was tried and renders wrong
+            // (hillshade and vector fills disappear behind the raster) - do not "fix" it again.
             setupTerrainUniforms(shaderProgram, sourceTileId, calculateTileMatrix(targetTileId, 1.0f / vertexGeomLayoutParams.coordScale));
         }
         if (shadowReceiver) {
@@ -3683,6 +3708,25 @@ namespace carto::vt {
             it = _shaderProgramMap.emplace(shaderProgramId, shaderProgram).first;
         }
         return it->second;
+    }
+
+    const std::vector<std::shared_ptr<TileSurface>>& GLTileRenderer::buildCompiledFlatSurfaces() {
+        if (_terrainFlatSurfaces.empty()) {
+            if (std::shared_ptr<TileSurface> surface = _tileSurfaceBuilder.buildRegularGridSurface(1)) {
+                _terrainFlatSurfaces.push_back(std::move(surface));
+            }
+        }
+        for (const std::shared_ptr<TileSurface>& tileSurface : _terrainFlatSurfaces) {
+            CompiledSurface& compiledSurface = _compiledTileSurfaceMap[tileSurface];
+            if (compiledSurface.indicesVBO == 0) {
+                createCompiledSurface(compiledSurface);
+                glBindBuffer(GL_ARRAY_BUFFER, compiledSurface.vertexGeometryVBO);
+                glBufferData(GL_ARRAY_BUFFER, tileSurface->getVertexGeometry().size() * sizeof(std::uint8_t), tileSurface->getVertexGeometry().data(), GL_STATIC_DRAW);
+                glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, compiledSurface.indicesVBO);
+                glBufferData(GL_ELEMENT_ARRAY_BUFFER, tileSurface->getIndices().size() * sizeof(std::uint16_t), tileSurface->getIndices().data(), GL_STATIC_DRAW);
+            }
+        }
+        return _terrainFlatSurfaces;
     }
 
     const std::vector<std::shared_ptr<TileSurface>>& GLTileRenderer::buildCompiledTerrainGridSurfaces() {
