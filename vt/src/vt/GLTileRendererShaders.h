@@ -336,6 +336,32 @@ namespace carto::vt {
         #endif
 
         precision mediump float;
+        #ifdef TERRAIN_SHADOW
+        uniform sampler2D uShadowTexture;
+        uniform mediump vec3 uShadowParams; // x = 1/mapSize, y = depth bias, z = strength
+        varying highp vec3 vShadowPos;
+
+        // The caster pass packs window-space depth into RGB; unpack and compare with a slope
+        // independent constant plus the caller's bias. 4-tap PCF over one texel is enough to
+        // soften the terrain silhouettes without a second pass.
+        highp float shadowDepth(highp vec2 uv) {
+            highp vec4 enc = texture2D(uShadowTexture, uv);
+            return dot(enc.rgb, vec3(1.0, 1.0 / 255.0, 1.0 / 65025.0));
+        }
+        mediump float shadowFactor() {
+            if (vShadowPos.x < 0.0 || vShadowPos.x > 1.0 || vShadowPos.y < 0.0 || vShadowPos.y > 1.0 || vShadowPos.z > 1.0) {
+                return 1.0; // outside the light frustum: unshadowed rather than black
+            }
+            highp float ref = vShadowPos.z - uShadowParams.y;
+            highp float o = uShadowParams.x;
+            mediump float lit = 0.0;
+            lit += ref <= shadowDepth(vShadowPos.xy + vec2(-o, -o)) ? 0.25 : 0.0;
+            lit += ref <= shadowDepth(vShadowPos.xy + vec2( o, -o)) ? 0.25 : 0.0;
+            lit += ref <= shadowDepth(vShadowPos.xy + vec2(-o,  o)) ? 0.25 : 0.0;
+            lit += ref <= shadowDepth(vShadowPos.xy + vec2( o,  o)) ? 0.25 : 0.0;
+            return mix(1.0, lit, uShadowParams.z);
+        }
+        #endif
     )GLSL";
 
     static const std::string backgroundVsh = R"GLSL(
@@ -452,32 +478,6 @@ namespace carto::vt {
             highp float dx = (hR - hL) * uTerrainSlopeScale.x * vElevCosh / (2.0 * st.x);
             highp float dy = (hU - hD) * uTerrainSlopeScale.y * vElevCosh / (2.0 * st.y);
             return normalize(vec3(-dx, -dy, 1.0));
-        }
-        #endif
-        #ifdef TERRAIN_SHADOW
-        uniform sampler2D uShadowTexture;
-        uniform mediump vec3 uShadowParams; // x = 1/mapSize, y = depth bias, z = strength
-        varying highp vec3 vShadowPos;
-
-        // The caster pass packs window-space depth into RGB; unpack and compare with a slope
-        // independent constant plus the caller's bias. 4-tap PCF over one texel is enough to
-        // soften the terrain silhouettes without a second pass.
-        highp float shadowDepth(highp vec2 uv) {
-            highp vec4 enc = texture2D(uShadowTexture, uv);
-            return dot(enc.rgb, vec3(1.0, 1.0 / 255.0, 1.0 / 65025.0));
-        }
-        mediump float shadowFactor() {
-            if (vShadowPos.x < 0.0 || vShadowPos.x > 1.0 || vShadowPos.y < 0.0 || vShadowPos.y > 1.0 || vShadowPos.z > 1.0) {
-                return 1.0; // outside the light frustum: unshadowed rather than black
-            }
-            highp float ref = vShadowPos.z - uShadowParams.y;
-            highp float o = uShadowParams.x;
-            mediump float lit = 0.0;
-            lit += ref <= shadowDepth(vShadowPos.xy + vec2(-o, -o)) ? 0.25 : 0.0;
-            lit += ref <= shadowDepth(vShadowPos.xy + vec2( o, -o)) ? 0.25 : 0.0;
-            lit += ref <= shadowDepth(vShadowPos.xy + vec2(-o,  o)) ? 0.25 : 0.0;
-            lit += ref <= shadowDepth(vShadowPos.xy + vec2( o,  o)) ? 0.25 : 0.0;
-            return mix(1.0, lit, uShadowParams.z);
         }
         #endif
         #ifdef LIGHTING_FSH
@@ -1091,6 +1091,10 @@ namespace carto::vt {
         uniform vec4 uColorTable[16];
         varying highp_opt vec2 vTilePos;
         varying lowp vec4 vColor;
+        #ifdef TERRAIN_SHADOW
+        uniform highp mat4 uShadowMatrix;
+        varying highp vec3 vShadowPos;
+        #endif
         #ifdef LIGHTING_FSH
         varying highp_opt float vHeight;
         varying lowp float vSideVertex;
@@ -1106,6 +1110,10 @@ namespace carto::vt {
             pos = vec3(uTransformMatrix * vec4(pos, 1.0));
         #endif
             pos = applyTerrain(pos) + aVertexNormal * (aVertexHeight * uHeightScale);
+        #ifdef TERRAIN_SHADOW
+            highp vec4 shadowClip3D = uShadowMatrix * vec4(pos, 1.0);
+            vShadowPos = shadowClip3D.xyz / shadowClip3D.w * 0.5 + 0.5;
+        #endif
             vec3 normal = normalize(sideVertex > 0.0 ? aVertexBinormal : aVertexNormal);
             vec4 color = uColorTable[styleIndex];
             vTilePos = (uTileMatrix * vec3(aVertexUV * uUVScale, 1.0)).xy;
@@ -1140,6 +1148,11 @@ namespace carto::vt {
             gl_FragColor = applyLighting(vColor, normalize(vNormal), vHeight, vSideVertex > 0.0);
         #else
             gl_FragColor = vColor;
+        #endif
+        #ifdef TERRAIN_SHADOW
+            // Extrusions receive as well as cast: a building in the shadow of a ridge, or of a
+            // taller neighbour, darkens the same way the ground does.
+            gl_FragColor.rgb *= shadowFactor();
         #endif
         }
     )GLSL";

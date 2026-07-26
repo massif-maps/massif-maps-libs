@@ -229,6 +229,31 @@ namespace carto::vt {
             glBindBuffer(GL_ARRAY_BUFFER, 0);
             checkGLError();
         }
+
+        // 3D extrusions cast too: buildings on the terrain, and on each other. They are the one
+        // kind of tile content that is real 3D rather than a skin on the ground, so they are
+        // exactly what the drape cannot represent and what a shadow map is for.
+        if (_visibleRenderTiles) {
+            _shadowCasterViewProj = &lightViewProj;
+            for (const RenderTile& renderTile : *_visibleRenderTiles) {
+                if (!renderTile.visible || !tileCovers(renderTile.targetTileId, tileId)) {
+                    continue;
+                }
+                for (auto it = renderTile.renderLayers.begin(); it != renderTile.renderLayers.end(); it++) {
+                    const RenderTileLayer& renderLayer = it->second;
+                    if (!renderLayer.layer) {
+                        continue;
+                    }
+                    for (const std::shared_ptr<TileGeometry>& geometry : renderLayer.layer->getGeometries()) {
+                        if (geometry->getType() == TileGeometry::Type::POLYGON3D) {
+                            renderTileGeometry(renderLayer.sourceTileId, renderLayer.targetTileId, 1.0f, 1.0f, renderLayer.tileSize, geometry);
+                            draws++;
+                        }
+                    }
+                }
+            }
+            _shadowCasterViewProj = nullptr;
+        }
         return draws;
     }
 
@@ -3141,6 +3166,9 @@ namespace carto::vt {
         // displacement, NO depth bias, and a tile-local orthographic MVP (set by the caller).
         bool flatDrape = (_drapeMVPOverride != nullptr);
         bool terrainVTF = _terrainMode && (bool) _terrainTextureProvider && !flatDrape;
+        // 3D extrusions are the only tile content that receives shadows directly - everything
+        // else 2D is inside the drape texture and is shadowed by the surface it is painted on.
+        bool shadowReceiver = terrainVTF && !_shadowCasterViewProj && _terrainShadowTexture != 0 && _terrainShadowStrength > 0.0f && geometry->getType() == TileGeometry::Type::POLYGON3D;
         unsigned int terrainFlag = flatDrape ? 0 : ((_terrainMode ? TERRAIN_FLAG : 0) | (terrainVTF ? TERRAIN_VTF_FLAG : 0));
         const ShaderProgram* shaderProgramPtr = nullptr;
         switch (geometry->getType()) {
@@ -3154,7 +3182,13 @@ namespace carto::vt {
             shaderProgramPtr = &buildShaderProgram("polygon", polygonVsh, polygonFsh, LightingMode::GEOMETRY2D, RasterFilterMode::NONE, (styleParams.pattern ? PATTERN_FLAG : 0) | (styleParams.translate ? TRANSFORM_FLAG : 0) | terrainFlag);
             break;
         case TileGeometry::Type::POLYGON3D:
-            shaderProgramPtr = &buildShaderProgram("polygon3d", polygon3DVsh, polygon3DFsh, LightingMode::GEOMETRY3D, RasterFilterMode::NONE, (styleParams.pattern ? PATTERN_FLAG : 0) | (styleParams.translate ? TRANSFORM_FLAG : 0) | (terrainVTF ? TERRAIN_VTF_FLAG : 0));
+            if (_shadowCasterViewProj) {
+                // Caster pass: same vertex shader (so the extrusion is identical to the drawn
+                // one), depth-packing fragment shader, no lighting.
+                shaderProgramPtr = &buildShaderProgram("polygon3dshadow", polygon3DVsh, shadowCasterFsh, LightingMode::NONE, RasterFilterMode::NONE, (styleParams.translate ? TRANSFORM_FLAG : 0) | (terrainVTF ? TERRAIN_VTF_FLAG : 0));
+                break;
+            }
+            shaderProgramPtr = &buildShaderProgram("polygon3d", polygon3DVsh, polygon3DFsh, LightingMode::GEOMETRY3D, RasterFilterMode::NONE, (styleParams.pattern ? PATTERN_FLAG : 0) | (styleParams.translate ? TRANSFORM_FLAG : 0) | (terrainVTF ? TERRAIN_VTF_FLAG : 0) | (shadowReceiver ? TERRAIN_SHADOW_FLAG : 0));
             break;
         default:
             return;
@@ -3163,7 +3197,9 @@ namespace carto::vt {
         glUseProgram(shaderProgram.program);
 
         cglib::mat4x4<float> mvpMatrix;
-        if (flatDrape) {
+        if (_shadowCasterViewProj) {
+            mvpMatrix = cglib::mat4x4<float>::convert((*_shadowCasterViewProj) * calculateTileMatrix(sourceTileId, 1.0f / vertexGeomLayoutParams.coordScale));
+        } else if (flatDrape) {
             // fill coords * (1/coordScale) = tile-local [0,1]; the override maps [0,1] -> clip.
             cglib::mat4x4<float> local = cglib::scale4_matrix(cglib::vec3<float>(1.0f / vertexGeomLayoutParams.coordScale, 1.0f / vertexGeomLayoutParams.coordScale, 1.0f));
             mvpMatrix = (*_drapeMVPOverride) * local;
@@ -3176,6 +3212,15 @@ namespace carto::vt {
         }
         if (terrainVTF) {
             setupTerrainUniforms(shaderProgram, sourceTileId, calculateTileMatrix(targetTileId, 1.0f / vertexGeomLayoutParams.coordScale));
+        }
+        if (shadowReceiver) {
+            cglib::mat4x4<float> shadowMatrix = cglib::mat4x4<float>::convert(_terrainShadowViewProj * calculateTileMatrix(sourceTileId, 1.0f / vertexGeomLayoutParams.coordScale));
+            glUniformMatrix4fv(shaderProgram.uniforms[U_SHADOWMATRIX], 1, GL_FALSE, shadowMatrix.data());
+            glActiveTexture(GL_TEXTURE2);
+            glBindTexture(GL_TEXTURE_2D, _terrainShadowTexture);
+            glUniform1i(shaderProgram.uniforms[U_SHADOWTEXTURE], 2);
+            glActiveTexture(GL_TEXTURE0);
+            glUniform3f(shaderProgram.uniforms[U_SHADOWPARAMS], 1.0f / std::max(1, _terrainShadowMapSize), _terrainShadowBias, _terrainShadowStrength);
         }
         
         if (styleParams.translate) {

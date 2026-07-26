@@ -417,6 +417,7 @@ namespace carto::vt {
         bool _externalDrapeTarget = false;       // drape textures are owned by the caller (cross-layer stacks)
         std::set<TileId> _drapeTilesThisFrame;   // target tiles that have a valid drape texture this frame
         std::vector<TileId> _externalDrapeTiles; // terrain tiles the owner drapes this frame
+        const cglib::mat4x4<double>* _shadowCasterViewProj = nullptr; // set during the shadow caster pass
         const cglib::mat4x4<float>* _drapeMVPOverride = nullptr; // when set, renderTileGeometry draws flat into the drape FBO
         bool _debugWireframe = false;
         bool _debugSurfacePrefill = false;
