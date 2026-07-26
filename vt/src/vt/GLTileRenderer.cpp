@@ -135,7 +135,7 @@ namespace carto::vt {
         _terrainShadowViewProj = lightViewProj;
     }
 
-    bool GLTileRenderer::calculateShadowViewProj(const std::vector<TileId>& tileIds, const std::vector<TileId>& casterTileIds, const cglib::vec3<float>& sunDir, double minHeight, double maxHeight, float maxDistanceMeters, cglib::mat4x4<double>& lightViewProj) const {
+    bool GLTileRenderer::calculateShadowViewProj(const std::vector<TileId>& tileIds, const std::vector<TileId>& casterTileIds, const cglib::vec3<float>& sunDir, double minHeight, double maxHeight, float maxDistanceMeters, double& depthRangeMeters, cglib::mat4x4<double>& lightViewProj) const {
         std::lock_guard<std::mutex> lock(_mutex);
 
         if (tileIds.empty()) {
@@ -230,6 +230,11 @@ namespace carto::vt {
             }
         }
         lightViewProj = cglib::ortho4_matrix(l, r, b, t, n, f) * lightView;
+        // The depth the box spans, in metres. The shader's bias is a fraction of the normalised
+        // depth, so a bias that is constant there grows in WORLD terms as the box grows - which is
+        // why a shadow drifted away from its own building as the view zoomed out or the caster
+        // margin widened the box. The caller divides its metric bias by this to cancel that.
+        depthRangeMeters = (f - n) / metersToInternal;
         return true;
     }
 
