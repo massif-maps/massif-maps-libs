@@ -134,16 +134,17 @@ namespace carto::vt {
         _terrainShadowStrength = strength;
         _terrainShadowSoftness = softness;
         _terrainShadowViewProjs = lightViewProjs;
-        // With a single cascade the second page does not exist: pointing its matrix at the first
-        // makes the fragment stage's "inside the next cascade?" test fail wherever the first one
-        // failed, so it can never sample outside the texture.
+        // Pages beyond the cascade count do not exist in the atlas. Their matrices are pushed
+        // clean out of the light box, so the fragment stage's "inside this cascade?" test always
+        // fails for them and it can never sample past the last real page - which with CLAMP_TO_EDGE
+        // would silently read the neighbouring cascade's edge column.
         for (int i = _terrainShadowCascades; i < MAX_SHADOW_CASCADES; i++) {
-            _terrainShadowViewProjs[i] = _terrainShadowViewProjs[0];
+            _terrainShadowViewProjs[i] = cglib::translate4_matrix(cglib::vec3<double>(4, 0, 0)) * _terrainShadowViewProjs[0];
             _terrainShadowBiases[i] = _terrainShadowBiases[0];
         }
     }
 
-    bool GLTileRenderer::calculateShadowViewProj(const std::vector<TileId>& tileIds, const std::vector<TileId>& casterTileIds, const cglib::vec3<float>& sunDir, const std::vector<std::pair<double, double> >& tileHeights, double minHeight, double maxHeight, float maxDistanceMeters, int mapSize, int cascade, int cascadeCount, double& depthRangeMeters, double& texelMeters, cglib::mat4x4<double>& lightViewProj) const {
+    bool GLTileRenderer::calculateShadowViewProj(const std::vector<TileId>& tileIds, const std::vector<TileId>& casterTileIds, const cglib::vec3<float>& sunDir, const std::vector<std::pair<double, double> >& tileHeights, double minHeight, double maxHeight, float maxDistanceMeters, int mapSize, int cascade, int cascadeCount, std::vector<TileId>& boxCasterTileIds, double& depthRangeMeters, double& texelMeters, cglib::mat4x4<double>& lightViewProj) const {
         std::lock_guard<std::mutex> lock(_mutex);
 
         if (tileIds.empty()) {
@@ -375,11 +376,16 @@ namespace carto::vt {
             // Light-space xy is constant along a light ray, so a tile whose xy does not overlap
             // the box cannot cast into it however tall it is. Skipping those keeps the depth range
             // - and with it the resolution of the normalised bias - tied to what really casts,
-            // instead of to the whole tile cover.
-            if (tileR < l || tileL > r || tileT < b || tileB > t) {
+            // instead of to the whole tile cover, and it is also the list of tiles the caster pass
+            // has to draw for this cascade: a near cascade covers a fraction of the tiles, and
+            // drawing the rest into it is pure cost. The margin covers the box growth from the
+            // texel snapping below.
+            double marginX = (r - l) * 0.2, marginY = (t - b) * 0.2;
+            if (tileR < l - marginX || tileL > r + marginX || tileT < b - marginY || tileB > t + marginY) {
                 continue;
             }
             n = std::min(n, tileN); f = std::max(f, tileF);
+            boxCasterTileIds.push_back(tileId);
         }
         // Snap the box to a world-anchored lattice of whole shadow texels, and quantise its size
         // so the texel size itself only changes in steps. Fitted exactly, the box breathes with

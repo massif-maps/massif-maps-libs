@@ -139,7 +139,7 @@ namespace carto::vt {
         // view distance, so the near slice gets a box small enough for its texels to be about the
         // size of a screen pixel, while the far slice - where a screen pixel is tens of metres of
         // ground anyway - keeps the coarse one.
-        bool calculateShadowViewProj(const std::vector<TileId>& tileIds, const std::vector<TileId>& casterTileIds, const cglib::vec3<float>& sunDir, const std::vector<std::pair<double, double> >& tileHeights, double minHeight, double maxHeight, float maxDistanceMeters, int mapSize, int cascade, int cascadeCount, double& depthRangeMeters, double& texelMeters, cglib::mat4x4<double>& lightViewProj) const;
+        bool calculateShadowViewProj(const std::vector<TileId>& tileIds, const std::vector<TileId>& casterTileIds, const cglib::vec3<float>& sunDir, const std::vector<std::pair<double, double> >& tileHeights, double minHeight, double maxHeight, float maxDistanceMeters, int mapSize, int cascade, int cascadeCount, std::vector<TileId>& boxCasterTileIds, double& depthRangeMeters, double& texelMeters, cglib::mat4x4<double>& lightViewProj) const;
         // Draws this renderer's shadow casters for one terrain tile into the bound framebuffer.
         // Returns the number of draws issued.
         int renderShadowCasters(const TileId& tileId, const cglib::mat4x4<double>& lightViewProj, bool castGround);
