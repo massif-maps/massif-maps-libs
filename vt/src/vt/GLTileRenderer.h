@@ -121,11 +121,14 @@ namespace carto::vt {
         void collectDrapeTiles(std::map<TileId, std::size_t>& drapeTiles) const;
         // Bakes this renderer's drapeable content for one target tile into the currently bound
         // framebuffer and viewport. Does not clear - the owner clears once per tile before the
-        // first renderer bakes, so later layers composite over earlier ones.
-        void bakeDrapeTile(const TileId& targetTileId);
+        // first renderer bakes, so later layers composite over earlier ones. Returns the number
+        // of primitives drawn, so the owner can tell "nothing to bake" from "bake did nothing".
+        int bakeDrapeTile(const TileId& targetTileId);
         // Draws the terrain surface for one target tile, textured with an externally owned drape
         // texture. Writes depth: the surface is the only depth-writing terrain geometry.
-        void renderDrapedSurface(const TileId& targetTileId, GLuint drapeTexture);
+        // Returns the number of surface draws issued, or a negative reason code when nothing
+        // was drawn (-1 no texture, -2 shared grid inactive, -3 tile not registered).
+        int renderDrapedSurface(const TileId& targetTileId, GLuint drapeTexture);
         void setTerrainDepthWrite(bool enabled);
         void setTerrainTextureProvider(TerrainTextureProvider provider);
         void setDebugWireframe(bool enabled);
@@ -308,7 +311,7 @@ namespace carto::vt {
         void renderStencilDebugOverlay();
         void renderTileSurfaceFill(const TileId& tileId, const Color& color);
         void renderDrapeTextures(const std::vector<RenderTile>& renderTiles);
-        void renderTileSurfaceDrape(const TileId& tileId);
+        int renderTileSurfaceDrape(const TileId& tileId);
         GLuint ensureDrapeTexture(const TileId& tileId);
         void releaseDrapeTexture(GLuint texture);
         void deleteDrapeResources();

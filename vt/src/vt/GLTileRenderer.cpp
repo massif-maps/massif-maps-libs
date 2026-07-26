@@ -2298,14 +2298,28 @@ namespace carto::vt {
         }
     }
 
-    void GLTileRenderer::bakeDrapeTile(const TileId& targetTileId) {
+    int GLTileRenderer::bakeDrapeTile(const TileId& targetTileId) {
         std::lock_guard<std::mutex> lock(_mutex);
 
         if (!_visibleRenderTiles) {
-            return;
+            return 0;
         }
+        int bakedPrimitives = 0;
         cglib::mat4x4<float> drapeOrtho;
         _drapeMVPOverride = &drapeOrtho;
+
+        // The bake owns its GL state. It runs from the owner (MapRenderer) BEFORE any layer's
+        // own render pass, so nothing has established the state the per-layer drape path used to
+        // inherit. Culling in particular must be OFF: the bake matrix maps tile-local xy straight
+        // to clip space with no y flip, while the on-screen matrix goes through a projection that
+        // does flip y - so every triangle bakes with the opposite winding and back-face culling
+        // silently discards the whole tile's fills.
+        glDisable(GL_CULL_FACE);
+        glDisable(GL_DEPTH_TEST);
+        glDepthMask(GL_FALSE);
+        glDisable(GL_STENCIL_TEST);
+        glStencilMask(0);
+        glEnable(GL_BLEND);
         setCompOp(CompOp::SRC_OVER);
 
         // Accept render tiles that COVER the terrain tile, not just exact matches: the terrain
@@ -2340,14 +2354,17 @@ namespace carto::vt {
                 drapeOrtho = calculateDrapeMVPMatrix(renderLayer.targetTileId, targetTileId);
                 for (const std::shared_ptr<TileBackground>& background : renderLayer.layer->getBackgrounds()) {
                     renderTileBackground(renderLayer.targetTileId, 1.0f, 1.0f, renderLayer.tileSize, background);
+                    bakedPrimitives++;
                 }
                 for (const std::shared_ptr<TileBitmap>& bitmap : renderLayer.layer->getBitmaps()) {
                     renderTileBitmap(renderLayer.sourceTileId, renderLayer.targetTileId, 1.0f, 1.0f, bitmap);
+                    bakedPrimitives++;
                 }
                 drapeOrtho = calculateDrapeMVPMatrix(renderLayer.sourceTileId, targetTileId);
                 for (const std::shared_ptr<TileGeometry>& geometry : renderLayer.layer->getGeometries()) {
                     if (isDrapeableGeometry(geometry->getType())) {
                         renderTileGeometry(renderLayer.sourceTileId, renderLayer.targetTileId, 1.0f, 1.0f, renderLayer.tileSize, geometry);
+                        bakedPrimitives++;
                     }
                 }
             }
@@ -2355,13 +2372,17 @@ namespace carto::vt {
 
         _drapeMVPOverride = nullptr;
         checkGLError();
+        return bakedPrimitives;
     }
 
-    void GLTileRenderer::renderDrapedSurface(const TileId& targetTileId, GLuint drapeTexture) {
+    int GLTileRenderer::renderDrapedSurface(const TileId& targetTileId, GLuint drapeTexture) {
         std::lock_guard<std::mutex> lock(_mutex);
 
         if (drapeTexture == 0) {
-            return;
+            return -1;
+        }
+        if (!(_terrainRegularGrid && _terrainMode && _terrainTextureProvider)) {
+            return -2; // the shared grid the drape UV depends on is not active
         }
         // renderTileSurfaceDrape reads the texture from the map; swap the external one in for the
         // duration of the draw so the two paths share one surface implementation.
@@ -2370,7 +2391,7 @@ namespace carto::vt {
         bool wasDraped = _drapeTilesThisFrame.count(targetTileId) > 0;
         _drapeTextures[targetTileId] = drapeTexture;
         _drapeTilesThisFrame.insert(targetTileId);
-        renderTileSurfaceDrape(targetTileId);
+        int surfaces = renderTileSurfaceDrape(targetTileId);
         if (previous != 0) {
             _drapeTextures[targetTileId] = previous;
         } else {
@@ -2379,6 +2400,7 @@ namespace carto::vt {
         if (!wasDraped) {
             _drapeTilesThisFrame.erase(targetTileId);
         }
+        return surfaces;
     }
 
     void GLTileRenderer::deleteDrapeResources() {
@@ -2652,11 +2674,12 @@ namespace carto::vt {
         checkGLError();
     }
 
-    void GLTileRenderer::renderTileSurfaceDrape(const TileId& tileId) {
+    int GLTileRenderer::renderTileSurfaceDrape(const TileId& tileId) {
         auto texIt = _drapeTextures.find(tileId);
         if (texIt == _drapeTextures.end() || !_drapeTilesThisFrame.count(tileId)) {
-            return;
+            return -3;
         }
+        int surfaces = 0;
         bool gridMode = _terrainRegularGrid && _terrainMode && static_cast<bool>(_terrainTextureProvider);
         cglib::mat4x4<double> surfaceFrame = gridMode ? calculateTileMatrix(tileId, 1.0f) : cglib::translate4_matrix(_tileSurfaceBuilderOrigin);
         for (const std::shared_ptr<TileSurface>& tileSurface : (gridMode ? buildCompiledTerrainGridSurfaces() : buildCompiledTileSurfaces(tileId))) {
@@ -2687,6 +2710,7 @@ namespace carto::vt {
             glUniform1f(shaderProgram.uniforms[U_OPACITY], 1.0f);
 
             glDrawElements(GL_TRIANGLES, tileSurface->getIndicesCount(), GL_UNSIGNED_SHORT, 0);
+            surfaces++;
 
             glBindTexture(GL_TEXTURE_2D, 0);
             glDisableVertexAttribArray(shaderProgram.attribs[A_VERTEXPOSITION]);
@@ -2694,6 +2718,7 @@ namespace carto::vt {
             glBindBuffer(GL_ARRAY_BUFFER, 0);
             checkGLError();
         }
+        return surfaces;
     }
 
     void GLTileRenderer::renderTileWireframe(const TileId& tileId) {
