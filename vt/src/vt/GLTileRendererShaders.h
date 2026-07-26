@@ -462,8 +462,12 @@ namespace carto::vt {
                 dzduv.x = ( dpdy.y * dpdx.z - dpdx.y * dpdy.z) / det;
                 dzduv.y = (-dpdy.x * dpdx.z + dpdx.x * dpdy.z) / det;
                 // A near-silhouette texel has an unbounded gradient; clamp it so it cannot invert
-                // the comparison and punch holes in the shadow.
-                highp float limit = 2.0 * o == 0.0 ? 1.0 : 1.0 / max(1.0e-6, 2.0 * o);
+                // the comparison and punch holes in the shadow. The limit is a cap on how much
+                // depth the receiver plane may rise over ONE texel, as a fraction of the box
+                // depth. Derived from the PCF radius instead, it allowed a single texel to be
+                // worth half the whole light box - which does not bias the comparison so much as
+                // delete it, and is what left holes in the shadow on steep ground.
+                highp float limit = 0.02 / max(1.0e-6, uShadowParams.x);
                 dzduv = clamp(dzduv, vec2(-limit), vec2(limit));
                 // The stored depth belongs to the TEXEL CENTRE, up to half a texel away from this
                 // fragment; on a slope lit at a grazing angle that half texel is metres of height,
@@ -475,9 +479,16 @@ namespace carto::vt {
             }
         #endif
             if (pos.x < 0.0 || pos.x > 1.0 || pos.y < 0.0 || pos.y > 1.0 || pos.z < 0.0 || pos.z > 1.0) {
-                return 1.0; // outside every cascade: unshadowed rather than black
+                // Outside every cascade: unshadowed rather than black - but the back-face rule
+                // below still applies, or the ground would brighten along a hard ring exactly where
+                // the last cascade ends.
+                return mix(1.0, smoothstep(0.0, 0.15, ndl), uShadowParams.y);
             }
-            ref -= bias / max(0.15, ndl);
+            // The constant bias grows as the surface turns away from the light, but only up to a
+            // point: divided by N.L it runs away exactly where the shadows are - the slopes facing
+            // away from the sun - and lifts the reference depth in front of every caster there,
+            // which is the second source of holes. Beyond this the back-face rule below takes over.
+            ref -= bias / max(0.5, ndl);
             // Page space -> atlas space. The offsets stay in page space so the kernel is square in
             // the map, and the bias terms above stay in the units the derivatives produced.
             highp vec2 atlasScale = vec2(uShadowParams.w, 1.0);
@@ -490,6 +501,21 @@ namespace carto::vt {
                 }
             }
             lit *= 1.0 / 9.0;
+            // The outermost cascade ends somewhere - at the shadow distance, or at the point where
+            // covering more ground would only coarsen every texel. Ending it abruptly draws a line
+            // across the terrain, so the shadow fades out over the outer margin of the LAST page.
+            // Earlier pages must not fade: a fragment leaving one of those is picked up by the next
+            // cascade, and fading there would thin the shadow along every cascade boundary.
+            mediump float lastPage = 1.0 / uShadowParams.w - 1.0;
+            if (page >= lastPage - 0.5) {
+                mediump float edge = min(min(pos.x, 1.0 - pos.x), min(pos.y, 1.0 - pos.y));
+                lit = mix(1.0, lit, smoothstep(0.0, 0.08, edge));
+            }
+            // A surface turned away from the sun is in its own shadow whatever the map says, and
+            // the map cannot say anything useful there anyway: its texels are seen edge-on, so the
+            // depth stored for one covers the whole face. Shadowing those outright is both correct
+            // and what makes it safe to keep the bias small everywhere else.
+            lit = min(lit, smoothstep(0.0, 0.15, ndl));
             return mix(1.0, lit, uShadowParams.y);
         }
         mediump float shadowFactor() {
