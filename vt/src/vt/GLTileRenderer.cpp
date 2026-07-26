@@ -441,38 +441,42 @@ namespace carto::vt {
         return true;
     }
 
-    int GLTileRenderer::renderShadowCasters(const TileId& tileId, const cglib::mat4x4<double>& lightViewProj, bool castGround) {
+    int GLTileRenderer::renderShadowCasters(const std::vector<TileId>& tileIds, const cglib::mat4x4<double>& lightViewProj, bool castGround) {
         std::lock_guard<std::mutex> lock(_mutex);
 
         if (!(_terrainRegularGrid && _terrainMode && _terrainTextureProvider)) {
             return 0;
         }
         int draws = 0;
-        cglib::mat4x4<double> surfaceFrame = calculateTileMatrix(tileId, 1.0f);
-        cglib::mat4x4<float> mvpMatrix = cglib::mat4x4<float>::convert(lightViewProj * surfaceFrame);
-        // The ground surface is shared across layers, so only the layer that owns the drape draws
-        // it; the others contribute their 3D extrusions only.
-        for (const std::shared_ptr<TileSurface>& tileSurface : (castGround ? buildCompiledTerrainGridSurfaces() : std::vector<std::shared_ptr<TileSurface>>())) {
-            const TileSurface::VertexGeometryLayoutParameters& vertexGeomLayoutParams = tileSurface->getVertexGeometryLayoutParameters();
-            const CompiledSurface& compiledTileSurface = _compiledTileSurfaceMap[tileSurface];
+        // ONE program and ONE vertex buffer for every tile's ground: the grid surface is shared,
+        // so binding it per tile was a hundred redundant state changes per pass - and on a
+        // translated GL (emulator, ANGLE) the call count, not the triangle count, is the cost.
+        if (castGround) {
+            for (const std::shared_ptr<TileSurface>& tileSurface : buildCompiledTerrainGridSurfaces()) {
+                const TileSurface::VertexGeometryLayoutParameters& vertexGeomLayoutParams = tileSurface->getVertexGeometryLayoutParameters();
+                const CompiledSurface& compiledTileSurface = _compiledTileSurfaceMap[tileSurface];
 
-            const ShaderProgram& shaderProgram = buildShaderProgram("shadowcaster", backgroundVsh, shadowCasterFsh, LightingMode::NONE, RasterFilterMode::NONE, TERRAIN_VTF_FLAG);
-            glUseProgram(shaderProgram.program);
-            setupTerrainUniforms(shaderProgram, tileId, surfaceFrame);
+                const ShaderProgram& shaderProgram = buildShaderProgram("shadowcaster", backgroundVsh, shadowCasterFsh, LightingMode::NONE, RasterFilterMode::NONE, TERRAIN_VTF_FLAG);
+                glUseProgram(shaderProgram.program);
+                glBindBuffer(GL_ARRAY_BUFFER, compiledTileSurface.vertexGeometryVBO);
+                glVertexAttribPointer(shaderProgram.attribs[A_VERTEXPOSITION], 3, GL_FLOAT, GL_FALSE, vertexGeomLayoutParams.vertexSize, bufferGLOffset(vertexGeomLayoutParams.coordOffset));
+                glEnableVertexAttribArray(shaderProgram.attribs[A_VERTEXPOSITION]);
+                glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, compiledTileSurface.indicesVBO);
 
-            glBindBuffer(GL_ARRAY_BUFFER, compiledTileSurface.vertexGeometryVBO);
-            glVertexAttribPointer(shaderProgram.attribs[A_VERTEXPOSITION], 3, GL_FLOAT, GL_FALSE, vertexGeomLayoutParams.vertexSize, bufferGLOffset(vertexGeomLayoutParams.coordOffset));
-            glEnableVertexAttribArray(shaderProgram.attribs[A_VERTEXPOSITION]);
-            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, compiledTileSurface.indicesVBO);
-            glUniformMatrix4fv(shaderProgram.uniforms[U_MVPMATRIX], 1, GL_FALSE, mvpMatrix.data());
+                for (const TileId& tileId : tileIds) {
+                    cglib::mat4x4<double> surfaceFrame = calculateTileMatrix(tileId, 1.0f);
+                    cglib::mat4x4<float> mvpMatrix = cglib::mat4x4<float>::convert(lightViewProj * surfaceFrame);
+                    setupTerrainUniforms(shaderProgram, tileId, surfaceFrame);
+                    glUniformMatrix4fv(shaderProgram.uniforms[U_MVPMATRIX], 1, GL_FALSE, mvpMatrix.data());
+                    glDrawElements(GL_TRIANGLES, tileSurface->getIndicesCount(), GL_UNSIGNED_SHORT, 0);
+                    draws++;
+                }
 
-            glDrawElements(GL_TRIANGLES, tileSurface->getIndicesCount(), GL_UNSIGNED_SHORT, 0);
-            draws++;
-
-            glDisableVertexAttribArray(shaderProgram.attribs[A_VERTEXPOSITION]);
-            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
-            glBindBuffer(GL_ARRAY_BUFFER, 0);
-            checkGLError();
+                glDisableVertexAttribArray(shaderProgram.attribs[A_VERTEXPOSITION]);
+                glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+                glBindBuffer(GL_ARRAY_BUFFER, 0);
+                checkGLError();
+            }
         }
 
         // 3D extrusions cast too: buildings on the terrain, and on each other. They are the one
@@ -485,7 +489,17 @@ namespace carto::vt {
             // effective again.
             _shadowCasterViewProj = &lightViewProj;
             for (const RenderTile& renderTile : *_visibleRenderTiles) {
-                if (!renderTile.visible || !tileCovers(renderTile.targetTileId, tileId)) {
+                if (!renderTile.visible) {
+                    continue;
+                }
+                bool covered = false;
+                for (const TileId& tileId : tileIds) {
+                    if (tileCovers(renderTile.targetTileId, tileId)) {
+                        covered = true;
+                        break;
+                    }
+                }
+                if (!covered) {
                     continue;
                 }
                 for (auto it = renderTile.renderLayers.begin(); it != renderTile.renderLayers.end(); it++) {
@@ -495,7 +509,11 @@ namespace carto::vt {
                     }
                     for (const std::shared_ptr<TileGeometry>& geometry : renderLayer.layer->getGeometries()) {
                         if (geometry->getType() == TileGeometry::Type::POLYGON3D) {
-                            renderTileGeometry(renderLayer.sourceTileId, renderLayer.targetTileId, 1.0f, 1.0f, renderLayer.tileSize, geometry);
+                            // The tile's OWN blend, not 1: an extrusion fades in by GROWING - blend
+                            // scales its height - so a caster drawn at full height throws the
+                            // shadow of a finished building from under a half-grown one, and the
+                            // shadow pops out of existence when the tile is finally dropped.
+                            renderTileGeometry(renderLayer.sourceTileId, renderLayer.targetTileId, renderLayer.blend, 1.0f, renderLayer.tileSize, geometry);
                             draws++;
                         }
                     }
@@ -504,6 +522,43 @@ namespace carto::vt {
             _shadowCasterViewProj = nullptr;
         }
         return draws;
+    }
+
+    float GLTileRenderer::shadowCasterFadeSignature() const {
+        std::lock_guard<std::mutex> lock(_mutex);
+
+        // A number that moves exactly as fast as the caster geometry does. An extrusion fades in
+        // by GROWING, so its blend IS its height: the owner refreshes the shadow map when this has
+        // moved far enough to see, instead of every frame of every fade (which costs a full caster
+        // pass each time) or never (which leaves the shadow of a building that is not that shape).
+        float signature = 0.0f;
+        int count = 0;
+        if (!_visibleRenderTiles) {
+            return signature;
+        }
+        for (const RenderTile& renderTile : *_visibleRenderTiles) {
+            if (!renderTile.visible) {
+                continue;
+            }
+            for (auto it = renderTile.renderLayers.begin(); it != renderTile.renderLayers.end(); it++) {
+                const RenderTileLayer& renderLayer = it->second;
+                if (!renderLayer.layer) {
+                    continue;
+                }
+                for (const std::shared_ptr<TileGeometry>& geometry : renderLayer.layer->getGeometries()) {
+                    if (geometry->getType() == TileGeometry::Type::POLYGON3D) {
+                        signature += renderLayer.blend;
+                        count++;
+                        break; // one contribution per layer, not per geometry batch
+                    }
+                }
+            }
+        }
+        // The MEAN, not the sum: twenty tiles fading in together move a sum twenty times as fast
+        // as one does, and the map would be redrawn on every frame of exactly the moment this is
+        // meant to protect. A single tile fading alone moves the mean by less than the step and
+        // rides on the age cap instead.
+        return count > 0 ? signature / count : 0.0f;
     }
 
     void GLTileRenderer::setTerrainDepthWrite(bool enabled) {

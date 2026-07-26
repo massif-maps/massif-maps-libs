@@ -140,9 +140,12 @@ namespace carto::vt {
         // size of a screen pixel, while the far slice - where a screen pixel is tens of metres of
         // ground anyway - keeps the coarse one.
         bool calculateShadowViewProj(const std::vector<TileId>& tileIds, const std::vector<TileId>& casterTileIds, const cglib::vec3<float>& sunDir, const std::vector<std::pair<double, double> >& tileHeights, double minHeight, double maxHeight, float maxDistanceMeters, int mapSize, int cascade, int cascadeCount, std::vector<TileId>& boxCasterTileIds, double& depthRangeMeters, double& texelMeters, cglib::mat4x4<double>& lightViewProj) const;
+        // Moves as the caster geometry does: 3D extrusions fade in by growing, so the sum of
+        // their blend factors says how far the shadow map has drifted from what is on screen.
+        float shadowCasterFadeSignature() const;
         // Draws this renderer's shadow casters for one terrain tile into the bound framebuffer.
         // Returns the number of draws issued.
-        int renderShadowCasters(const TileId& tileId, const cglib::mat4x4<double>& lightViewProj, bool castGround);
+        int renderShadowCasters(const std::vector<TileId>& tileIds, const cglib::mat4x4<double>& lightViewProj, bool castGround);
 
         // Cross-layer drape (S3). When an external drape target is set, this renderer stops
         // owning drape textures and becomes a pure content baker: the owner collects the target
