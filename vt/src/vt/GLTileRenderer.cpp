@@ -124,18 +124,26 @@ namespace carto::vt {
         _terrainLighting = lighting;
     }
 
-    void GLTileRenderer::setTerrainShadowMap(GLuint texture, int mapSize, float depthBias, float strength, float softness, const cglib::mat4x4<double>& lightViewProj) {
+    void GLTileRenderer::setTerrainShadowMap(GLuint texture, int mapSize, int cascades, const std::array<float, MAX_SHADOW_CASCADES>& depthBiases, float strength, float softness, const std::array<cglib::mat4x4<double>, MAX_SHADOW_CASCADES>& lightViewProjs) {
         std::lock_guard<std::mutex> lock(_mutex);
 
         _terrainShadowTexture = texture;
         _terrainShadowMapSize = mapSize;
-        _terrainShadowBias = depthBias;
+        _terrainShadowCascades = std::max(1, std::min(MAX_SHADOW_CASCADES, cascades));
+        _terrainShadowBiases = depthBiases;
         _terrainShadowStrength = strength;
         _terrainShadowSoftness = softness;
-        _terrainShadowViewProj = lightViewProj;
+        _terrainShadowViewProjs = lightViewProjs;
+        // With a single cascade the second page does not exist: pointing its matrix at the first
+        // makes the fragment stage's "inside the next cascade?" test fail wherever the first one
+        // failed, so it can never sample outside the texture.
+        for (int i = _terrainShadowCascades; i < MAX_SHADOW_CASCADES; i++) {
+            _terrainShadowViewProjs[i] = _terrainShadowViewProjs[0];
+            _terrainShadowBiases[i] = _terrainShadowBiases[0];
+        }
     }
 
-    bool GLTileRenderer::calculateShadowViewProj(const std::vector<TileId>& tileIds, const std::vector<TileId>& casterTileIds, const cglib::vec3<float>& sunDir, double minHeight, double maxHeight, float maxDistanceMeters, int mapSize, double& depthRangeMeters, double& texelMeters, cglib::mat4x4<double>& lightViewProj) const {
+    bool GLTileRenderer::calculateShadowViewProj(const std::vector<TileId>& tileIds, const std::vector<TileId>& casterTileIds, const cglib::vec3<float>& sunDir, const std::vector<std::pair<double, double> >& tileHeights, double minHeight, double maxHeight, float maxDistanceMeters, int mapSize, int cascade, int cascadeCount, double& depthRangeMeters, double& texelMeters, cglib::mat4x4<double>& lightViewProj) const {
         std::lock_guard<std::mutex> lock(_mutex);
 
         if (tileIds.empty()) {
@@ -189,20 +197,27 @@ namespace carto::vt {
             bool visFirst = true;
             cglib::mat4x4<double> invCameraProj = cglib::inverse(_viewState.projectionMatrix * _viewState.cameraMatrix);
             double maxDistance = (maxDistanceMeters > 0 ? maxDistanceMeters * metersToInternal : 0);
+            const cglib::vec3<double>& eye = _viewState.origin; // camera position in world units
+            // Each frustum edge, reduced to the piece of it that can see shadowed GROUND: the part
+            // inside the height slab, in front of the camera and no further than the shadow
+            // distance. Everything outside that is sky, or under the terrain.
+            struct GroundEdge { cglib::vec3<double> origin, delta; double t0, t1, d0, length; };
+            std::vector<GroundEdge> edges;
+            double groundNear = 0, groundFar = 0;
             for (int corner = 0; corner < 4; corner++) {
                 double ndcX = (corner & 1 ? 1.0 : -1.0), ndcY = (corner & 2 ? 1.0 : -1.0);
                 cglib::vec3<double> p0 = cglib::proj_p(cglib::transform(cglib::vec4<double>(ndcX, ndcY, -1.0, 1.0), invCameraProj));
                 cglib::vec3<double> p1 = cglib::proj_p(cglib::transform(cglib::vec4<double>(ndcX, ndcY,  1.0, 1.0), invCameraProj));
                 cglib::vec3<double> delta = p1 - p0;
-                double t0 = 0, t1 = 1;
-                if (maxDistance > 0) {
-                    double len = cglib::length(delta);
-                    if (len > maxDistance) {
-                        t1 = maxDistance / len; // cap the far end at the shadow distance
-                    }
+                double length = cglib::length(delta);
+                if (!(length > 0)) {
+                    continue;
                 }
-                // The ground that this frustum edge can see is the part of it inside the height
-                // slab; outside it the edge is over the terrain (sky) or under it.
+                double d0 = cglib::length(p0 - eye); // distance from the eye to the near plane
+                double t0 = 0, t1 = 1;
+                if (maxDistance > 0 && length > maxDistance) {
+                    t1 = maxDistance / length; // cap the far end at the shadow distance
+                }
                 if (std::abs(delta(2)) > 1.0e-12) {
                     double ta = (minZ - p0(2)) / delta(2), tb = (maxZ - p0(2)) / delta(2);
                     t0 = std::max(t0, std::min(ta, tb));
@@ -213,8 +228,41 @@ namespace carto::vt {
                 if (t1 < t0) {
                     continue; // this edge never crosses the shadowed height range
                 }
+                if (edges.empty()) {
+                    groundNear = d0 + t0 * length;
+                    groundFar = d0 + t1 * length;
+                } else {
+                    groundNear = std::min(groundNear, d0 + t0 * length);
+                    groundFar = std::max(groundFar, d0 + t1 * length);
+                }
+                edges.push_back(GroundEdge { p0, delta, t0, t1, d0, length });
+            }
+            // Split THAT distance range, not the raw frustum: a camera above a mountain spends the
+            // first kilometres of every edge in the air, and a cascade cut from the frustum alone
+            // would own only sky and then fall back to covering everything.
+            // The split is the usual mix of a geometric and a linear one: a screen pixel covers
+            // ground in proportion to its distance, so a geometric split keeps texels about the
+            // same size relative to the pixels that read them, while the linear term stops the
+            // near cascade from collapsing to nothing.
+            double sliceNear = groundNear, sliceFar = groundFar;
+            if (cascadeCount > 1 && groundFar > groundNear && groundNear > 0) {
+                auto splitDistance = [&](int index) {
+                    double part = static_cast<double>(index) / cascadeCount;
+                    double logSplit = groundNear * std::pow(groundFar / groundNear, part);
+                    double linearSplit = groundNear + (groundFar - groundNear) * part;
+                    return 0.7 * logSplit + 0.3 * linearSplit;
+                };
+                sliceNear = splitDistance(cascade);
+                sliceFar = splitDistance(cascade + 1);
+            }
+            for (auto it = edges.begin(); it != edges.end(); it++) {
+                double t0 = std::max(it->t0, (sliceNear - it->d0) / it->length);
+                double t1 = std::min(it->t1, (sliceFar - it->d0) / it->length);
+                if (t1 < t0) {
+                    continue; // this edge is not in this cascade's distance slice
+                }
                 for (int end = 0; end < 2; end++) {
-                    cglib::vec3<double> p = p0 + delta * (end ? t1 : t0);
+                    cglib::vec3<double> p = it->origin + it->delta * (end ? t1 : t0);
                     if (visFirst) {
                         visMinX = visMaxX = p(0);
                         visMinY = visMaxY = p(1);
@@ -228,13 +276,55 @@ namespace carto::vt {
             if (!visFirst) {
                 minX = std::max(minX, visMinX); maxX = std::min(maxX, visMaxX);
                 minY = std::max(minY, visMinY); maxY = std::min(maxY, visMaxY);
+            } else if (cascade > 0 || cascadeCount > 1) {
+                return false; // an empty cascade: nothing of the ground falls in its slice
             } else if (maxDistance > 0) {
-                const cglib::vec3<double>& focus = _viewState.origin; // camera position in world units
-                minX = std::max(minX, focus(0) - maxDistance); maxX = std::min(maxX, focus(0) + maxDistance);
-                minY = std::max(minY, focus(1) - maxDistance); maxY = std::min(maxY, focus(1) + maxDistance);
+                minX = std::max(minX, eye(0) - maxDistance); maxX = std::min(maxX, eye(0) + maxDistance);
+                minY = std::max(minY, eye(1) - maxDistance); maxY = std::min(maxY, eye(1) + maxDistance);
             }
             if (maxX <= minX || maxY <= minY) {
                 return false;
+            }
+        }
+
+        // Narrow the height slab to the ground THIS cascade covers. The slab is what the light
+        // box has to span along its vertical axis - at a low sun the whole scene's relief, three
+        // kilometres of it here, sets the box size no matter how small the near cascade's ground
+        // footprint is, and every cascade then ends up with the same coarse texels.
+        if (tileHeights.size() == tileIds.size()) {
+            double localMinZ = 0, localMaxZ = 0;
+            bool localFirst = true;
+            for (std::size_t i = 0; i < tileIds.size(); i++) {
+                cglib::mat4x4<double> tileMatrix = calculateTileMatrix(tileIds[i], 1.0f);
+                double tileMinX = 0, tileMinY = 0, tileMaxX = 0, tileMaxY = 0;
+                for (int corner = 0; corner < 4; corner++) {
+                    cglib::vec4<double> p = cglib::transform(cglib::vec4<double>(corner & 1 ? 1.0 : 0.0, corner & 2 ? 1.0 : 0.0, 0.0, 1.0), tileMatrix);
+                    if (corner == 0) {
+                        tileMinX = tileMaxX = p(0);
+                        tileMinY = tileMaxY = p(1);
+                    } else {
+                        tileMinX = std::min(tileMinX, p(0)); tileMaxX = std::max(tileMaxX, p(0));
+                        tileMinY = std::min(tileMinY, p(1)); tileMaxY = std::max(tileMaxY, p(1));
+                    }
+                }
+                if (tileMaxX < minX || tileMinX > maxX || tileMaxY < minY || tileMinY > maxY) {
+                    continue;
+                }
+                if (localFirst) {
+                    localMinZ = tileHeights[i].first;
+                    localMaxZ = tileHeights[i].second;
+                    localFirst = false;
+                } else {
+                    localMinZ = std::min(localMinZ, tileHeights[i].first);
+                    localMaxZ = std::max(localMaxZ, tileHeights[i].second);
+                }
+            }
+            if (!localFirst && localMaxZ > localMinZ) {
+                minZ = std::max(minZ, localMinZ);
+                maxZ = std::min(maxZ, localMaxZ);
+                if (maxZ <= minZ) {
+                    return false;
+                }
             }
         }
 
@@ -268,13 +358,28 @@ namespace carto::vt {
         }
         for (const TileId& tileId : casterTileIds) {
             cglib::mat4x4<double> tileMatrix = calculateTileMatrix(tileId, 1.0f);
+            double tileL = 0, tileR = 0, tileB = 0, tileT = 0, tileN = 0, tileF = 0;
             for (int corner = 0; corner < 8; corner++) {
                 cglib::vec4<double> local(corner & 1 ? 1.0 : 0.0, corner & 2 ? 1.0 : 0.0, 0.0, 1.0);
                 cglib::vec4<double> world = cglib::transform(local, tileMatrix);
                 world(2) = (corner & 4 ? maxZ : minZ);
                 cglib::vec4<double> p = cglib::transform(world, lightView);
-                n = std::min(n, -p(2)); f = std::max(f, -p(2));
+                if (corner == 0) {
+                    tileL = tileR = p(0); tileB = tileT = p(1); tileN = tileF = -p(2);
+                } else {
+                    tileL = std::min(tileL, p(0)); tileR = std::max(tileR, p(0));
+                    tileB = std::min(tileB, p(1)); tileT = std::max(tileT, p(1));
+                    tileN = std::min(tileN, -p(2)); tileF = std::max(tileF, -p(2));
+                }
             }
+            // Light-space xy is constant along a light ray, so a tile whose xy does not overlap
+            // the box cannot cast into it however tall it is. Skipping those keeps the depth range
+            // - and with it the resolution of the normalised bias - tied to what really casts,
+            // instead of to the whole tile cover.
+            if (tileR < l || tileL > r || tileT < b || tileB > t) {
+                continue;
+            }
+            n = std::min(n, tileN); f = std::max(f, tileF);
         }
         // Snap the box to a world-anchored lattice of whole shadow texels, and quantise its size
         // so the texel size itself only changes in steps. Fitted exactly, the box breathes with
@@ -2999,13 +3104,17 @@ namespace carto::vt {
                 setupTerrainLightingUniforms(shaderProgram, tileId, surfaceFrame);
             }
             if (shadowed) {
-                cglib::mat4x4<float> shadowMatrix = cglib::mat4x4<float>::convert(_terrainShadowViewProj * surfaceFrame);
-                glUniformMatrix4fv(shaderProgram.uniforms[U_SHADOWMATRIX], 1, GL_FALSE, shadowMatrix.data());
+                std::array<cglib::mat4x4<float>, MAX_SHADOW_CASCADES> shadowMatrices;
+                for (int i = 0; i < MAX_SHADOW_CASCADES; i++) {
+                    shadowMatrices[i] = cglib::mat4x4<float>::convert(_terrainShadowViewProjs[i] * surfaceFrame);
+                }
+                glUniformMatrix4fv(shaderProgram.uniforms[U_SHADOWMATRIX], MAX_SHADOW_CASCADES, GL_FALSE, shadowMatrices[0].data());
                 glActiveTexture(GL_TEXTURE2);
                 glBindTexture(GL_TEXTURE_2D, _terrainShadowTexture);
                 glUniform1i(shaderProgram.uniforms[U_SHADOWTEXTURE], 2);
                 glActiveTexture(GL_TEXTURE0);
-                glUniform4f(shaderProgram.uniforms[U_SHADOWPARAMS], 1.0f / std::max(1, _terrainShadowMapSize), _terrainShadowBias, _terrainShadowStrength, _terrainShadowSoftness);
+                glUniform4f(shaderProgram.uniforms[U_SHADOWPARAMS], 1.0f / std::max(1, _terrainShadowMapSize), _terrainShadowStrength, _terrainShadowSoftness, 1.0f / _terrainShadowCascades);
+                glUniform4f(shaderProgram.uniforms[U_SHADOWBIAS], _terrainShadowBiases[0], _terrainShadowBiases[1], _terrainShadowBiases[2], _terrainShadowBiases[3]);
             }
 
             glBindBuffer(GL_ARRAY_BUFFER, compiledTileSurface.vertexGeometryVBO);
@@ -3371,13 +3480,18 @@ namespace carto::vt {
             setupTerrainUniforms(shaderProgram, targetTileId, calculateTileMatrix(sourceTileId, 1.0f / vertexGeomLayoutParams.coordScale));
         }
         if (shadowReceiver) {
-            cglib::mat4x4<float> shadowMatrix = cglib::mat4x4<float>::convert(_terrainShadowViewProj * calculateTileMatrix(sourceTileId, 1.0f / vertexGeomLayoutParams.coordScale));
-            glUniformMatrix4fv(shaderProgram.uniforms[U_SHADOWMATRIX], 1, GL_FALSE, shadowMatrix.data());
+            cglib::mat4x4<double> shadowFrame = calculateTileMatrix(sourceTileId, 1.0f / vertexGeomLayoutParams.coordScale);
+            std::array<cglib::mat4x4<float>, MAX_SHADOW_CASCADES> shadowMatrices;
+            for (int i = 0; i < MAX_SHADOW_CASCADES; i++) {
+                shadowMatrices[i] = cglib::mat4x4<float>::convert(_terrainShadowViewProjs[i] * shadowFrame);
+            }
+            glUniformMatrix4fv(shaderProgram.uniforms[U_SHADOWMATRIX], MAX_SHADOW_CASCADES, GL_FALSE, shadowMatrices[0].data());
             glActiveTexture(GL_TEXTURE2);
             glBindTexture(GL_TEXTURE_2D, _terrainShadowTexture);
             glUniform1i(shaderProgram.uniforms[U_SHADOWTEXTURE], 2);
             glActiveTexture(GL_TEXTURE0);
-            glUniform4f(shaderProgram.uniforms[U_SHADOWPARAMS], 1.0f / std::max(1, _terrainShadowMapSize), _terrainShadowBias, _terrainShadowStrength, _terrainShadowSoftness);
+            glUniform4f(shaderProgram.uniforms[U_SHADOWPARAMS], 1.0f / std::max(1, _terrainShadowMapSize), _terrainShadowStrength, _terrainShadowSoftness, 1.0f / _terrainShadowCascades);
+            glUniform4f(shaderProgram.uniforms[U_SHADOWBIAS], _terrainShadowBiases[0], _terrainShadowBiases[1], _terrainShadowBiases[2], _terrainShadowBiases[3]);
         }
         
         if (styleParams.translate) {

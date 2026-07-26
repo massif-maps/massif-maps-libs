@@ -41,6 +41,11 @@ namespace carto::vt {
 
     class GLTileRenderer final {
     public:
+        // Shadow cascades: pages of one shadow texture, near first. The count is a uniform, not a
+        // shader define, so a change does not recompile every terrain program - but the shader
+        // declares this many matrices and varyings, so raising it means touching the shader too.
+        static constexpr int MAX_SHADOW_CASCADES = 4;
+
         struct LightingShader {
             bool perVertex;
             std::string shader;
@@ -122,7 +127,7 @@ namespace carto::vt {
         // Directional shadows. The owner renders the caster pass (renderShadowCasters) into its
         // own framebuffer from the light, then hands the packed-depth texture and the same
         // light matrix back here so the draped surface can look itself up in it.
-        void setTerrainShadowMap(GLuint texture, int mapSize, float depthBias, float strength, float softness, const cglib::mat4x4<double>& lightViewProj);
+        void setTerrainShadowMap(GLuint texture, int mapSize, int cascades, const std::array<float, MAX_SHADOW_CASCADES>& depthBiases, float strength, float softness, const std::array<cglib::mat4x4<double>, MAX_SHADOW_CASCADES>& lightViewProjs);
         // Light-space view-projection fitted to the given terrain tiles. Returns false when the
         // tile set is empty or no elevation data is available yet.
         // minHeight/maxHeight bound the shadowed volume in world z units. A generous slab is
@@ -130,7 +135,11 @@ namespace carto::vt {
         // angle a 10 km slab stretches the box to tens of kilometres across.
         // mapSize is the shadow map resolution: the box is snapped to a world-anchored lattice of
         // whole texels, so the matrix repeats exactly while the camera moves inside one step.
-        bool calculateShadowViewProj(const std::vector<TileId>& tileIds, const std::vector<TileId>& casterTileIds, const cglib::vec3<float>& sunDir, double minHeight, double maxHeight, float maxDistanceMeters, int mapSize, double& depthRangeMeters, double& texelMeters, cglib::mat4x4<double>& lightViewProj) const;
+        // One call per cascade: cascade c of cascadeCount covers its own slice of the camera's
+        // view distance, so the near slice gets a box small enough for its texels to be about the
+        // size of a screen pixel, while the far slice - where a screen pixel is tens of metres of
+        // ground anyway - keeps the coarse one.
+        bool calculateShadowViewProj(const std::vector<TileId>& tileIds, const std::vector<TileId>& casterTileIds, const cglib::vec3<float>& sunDir, const std::vector<std::pair<double, double> >& tileHeights, double minHeight, double maxHeight, float maxDistanceMeters, int mapSize, int cascade, int cascadeCount, double& depthRangeMeters, double& texelMeters, cglib::mat4x4<double>& lightViewProj) const;
         // Draws this renderer's shadow casters for one terrain tile into the bound framebuffer.
         // Returns the number of draws issued.
         int renderShadowCasters(const TileId& tileId, const cglib::mat4x4<double>& lightViewProj, bool castGround);
@@ -439,10 +448,11 @@ namespace carto::vt {
         TerrainLighting _terrainLighting;
         GLuint _terrainShadowTexture = 0;
         int _terrainShadowMapSize = 0;
-        float _terrainShadowBias = 0.0f;
+        int _terrainShadowCascades = 1;
+        std::array<float, MAX_SHADOW_CASCADES> _terrainShadowBiases = { { 0.0f, 0.0f, 0.0f, 0.0f } };
         float _terrainShadowStrength = 0.0f;
         float _terrainShadowSoftness = 1.0f;
-        cglib::mat4x4<double> _terrainShadowViewProj = cglib::mat4x4<double>::identity();
+        std::array<cglib::mat4x4<double>, MAX_SHADOW_CASCADES> _terrainShadowViewProjs;
         Color _terrainBackgroundColor; // opaque terrain base fill + depth pre-pass color; transparent = depth-only
         std::vector<std::pair<TileId, GLint>> _debugOrderedTileMasks;
         TerrainTextureProvider _terrainTextureProvider;

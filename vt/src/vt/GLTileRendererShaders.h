@@ -57,6 +57,7 @@ namespace carto::vt {
         U_SHADOWMATRIX,
         U_SHADOWTEXTURE,
         U_SHADOWPARAMS,
+        U_SHADOWBIAS,
         U_DRAPEUVTRANSFORM
     };
 
@@ -121,6 +122,7 @@ namespace carto::vt {
         { "uShadowMatrix",      U_SHADOWMATRIX },
         { "uShadowTexture",     U_SHADOWTEXTURE },
         { "uShadowParams",      U_SHADOWPARAMS },
+        { "uShadowBias",        U_SHADOWBIAS },
         { "uDrapeUVTransform",  U_DRAPEUVTRANSFORM }
     };
 
@@ -235,6 +237,31 @@ namespace carto::vt {
             return clipPos;
         }
         #endif
+        #ifdef TERRAIN_SHADOW
+        // Tile-local -> light clip space, one matrix per cascade. The matrices are built per tile
+        // so their input stays in [0,1] and float precision is never asked to hold a world
+        // coordinate. EVERY cascade is computed here: which one a fragment ends up using is
+        // decided in the fragment stage from the result, and a varying cannot be written
+        // conditionally on something only the fragment stage knows.
+        uniform highp mat4 uShadowMatrix[4];
+        varying highp vec3 vShadowPos0;
+        varying highp vec3 vShadowPos1;
+        varying highp vec3 vShadowPos2;
+        varying highp vec3 vShadowPos3;
+        void applyShadowPos(highp vec3 pos) {
+            highp vec4 clip0 = uShadowMatrix[0] * vec4(pos, 1.0);
+            vShadowPos0 = clip0.xyz / clip0.w * 0.5 + 0.5;
+            highp vec4 clip1 = uShadowMatrix[1] * vec4(pos, 1.0);
+            vShadowPos1 = clip1.xyz / clip1.w * 0.5 + 0.5;
+            highp vec4 clip2 = uShadowMatrix[2] * vec4(pos, 1.0);
+            vShadowPos2 = clip2.xyz / clip2.w * 0.5 + 0.5;
+            highp vec4 clip3 = uShadowMatrix[3] * vec4(pos, 1.0);
+            vShadowPos3 = clip3.xyz / clip3.w * 0.5 + 0.5;
+        }
+        #else
+        void applyShadowPos(highp vec3 pos) {
+        }
+        #endif
         #ifdef TERRAIN
         uniform sampler2D uElevationTexture;
         uniform highp vec4 uElevationUV;     // elevation texture uv = uv.xy + pos.xy * uv.zw
@@ -340,12 +367,22 @@ namespace carto::vt {
         precision mediump float;
         #ifdef TERRAIN_SHADOW
         uniform sampler2D uShadowTexture;
-        uniform mediump vec4 uShadowParams; // x = 1/mapSize, y = depth bias, z = strength, w = PCF radius in texels
-        varying highp vec3 vShadowPos;
+        uniform mediump vec4 uShadowParams; // x = 1/mapSize within one cascade, y = strength, z = PCF radius in texels, w = 1/cascade count
+        uniform mediump vec4 uShadowBias;   // normalised depth bias, per cascade
+        varying highp vec3 vShadowPos0;
+        varying highp vec3 vShadowPos1;
+        varying highp vec3 vShadowPos2;
+        varying highp vec3 vShadowPos3;
+
+        // True when a light-space position does not land inside its cascade's page, with room for
+        // the PCF kernel: such a fragment has to fall back to the next, coarser cascade.
+        bool outsideShadowPage(highp vec3 pos, mediump float margin) {
+            return pos.x < margin || pos.x > 1.0 - margin || pos.y < margin || pos.y > 1.0 - margin || pos.z < 0.0 || pos.z > 1.0;
+        }
 
         // The caster pass packs window-space depth into RGB; unpack and compare with a slope
-        // independent constant plus the caller's bias. 4-tap PCF over one texel is enough to
-        // soften the terrain silhouettes without a second pass.
+        // independent constant plus the caller's bias. The uv is in ATLAS space: the cascades are
+        // pages of one texture, side by side, near page first.
         highp float shadowDepth(highp vec2 uv) {
             highp vec4 enc = texture2D(uShadowTexture, uv);
             return dot(enc.rgb, vec3(1.0, 1.0 / 255.0, 1.0 / 65025.0));
@@ -358,20 +395,41 @@ namespace carto::vt {
         // Left constant, the residual self-shadowing lands in bands of constant height - which on
         // a hillside reads as ripples following the contour lines.
         mediump float shadowFactorSlope(mediump float ndl) {
-            if (vShadowPos.x < 0.0 || vShadowPos.x > 1.0 || vShadowPos.y < 0.0 || vShadowPos.y > 1.0 || vShadowPos.z > 1.0) {
-                return 1.0; // outside the light frustum: unshadowed rather than black
+            // Cascades, near page first: a fragment takes the sharpest page it falls inside. The
+            // margin keeps the PCF taps of the chosen page off its border, where they would read
+            // the neighbouring cascade's texels.
+            mediump float margin = uShadowParams.x * (uShadowParams.z + 1.0);
+            highp vec3 pos = vShadowPos0;
+            mediump float page = 0.0;
+            mediump float bias = uShadowBias.x;
+            if (outsideShadowPage(pos, margin)) {
+                pos = vShadowPos1;
+                page = 1.0;
+                bias = uShadowBias.y;
             }
-            highp float ref = vShadowPos.z - uShadowParams.y / max(0.15, ndl);
-            highp float o = uShadowParams.x * uShadowParams.w;
+            if (outsideShadowPage(pos, margin)) {
+                pos = vShadowPos2;
+                page = 2.0;
+                bias = uShadowBias.z;
+            }
+            if (outsideShadowPage(pos, margin)) {
+                pos = vShadowPos3;
+                page = 3.0;
+                bias = uShadowBias.w;
+            }
+            // Derivatives are taken before any early return: a fragment that leaves the function
+            // early would leave its quad neighbours with an undefined gradient.
+            highp vec2 dzduv = vec2(0.0);
+            highp float o = uShadowParams.x * uShadowParams.z;
+            highp float ref = pos.z;
+        #ifdef DERIVATIVES
             // Receiver-plane depth bias: how the receiver's own depth changes per unit of shadow
             // uv, from screen-space derivatives. Each PCF tap then compares against the receiver's
             // PLANE instead of against one point on it. Without it every off-centre tap needs the
             // constant bias to cover a whole texel of slope, which is why the acne only cleared at
             // a bias large enough to detach the shadows.
-            highp vec2 dzduv = vec2(0.0);
-        #ifdef DERIVATIVES
-            highp vec3 dpdx = dFdx(vShadowPos);
-            highp vec3 dpdy = dFdy(vShadowPos);
+            highp vec3 dpdx = dFdx(pos);
+            highp vec3 dpdy = dFdy(pos);
             highp float det = dpdx.x * dpdy.y - dpdx.y * dpdy.x;
             if (abs(det) > 1.0e-12) {
                 dzduv.x = ( dpdy.y * dpdx.z - dpdx.y * dpdy.z) / det;
@@ -389,15 +447,23 @@ namespace carto::vt {
                 ref -= 0.5 * uShadowParams.x * (abs(dzduv.x) + abs(dzduv.y));
             }
         #endif
+            if (pos.x < 0.0 || pos.x > 1.0 || pos.y < 0.0 || pos.y > 1.0 || pos.z < 0.0 || pos.z > 1.0) {
+                return 1.0; // outside every cascade: unshadowed rather than black
+            }
+            ref -= bias / max(0.15, ndl);
+            // Page space -> atlas space. The offsets stay in page space so the kernel is square in
+            // the map, and the bias terms above stay in the units the derivatives produced.
+            highp vec2 atlasScale = vec2(uShadowParams.w, 1.0);
+            highp vec2 atlasBase = vec2(page * uShadowParams.w, 0.0);
             mediump float lit = 0.0;
             for (int j = -1; j <= 1; j++) {
                 for (int i = -1; i <= 1; i++) {
                     highp vec2 offset = vec2(float(i) * o, float(j) * o);
-                    lit += ref + dot(offset, dzduv) <= shadowDepth(vShadowPos.xy + offset) ? 1.0 : 0.0;
+                    lit += ref + dot(offset, dzduv) <= shadowDepth(atlasBase + (pos.xy + offset) * atlasScale) ? 1.0 : 0.0;
                 }
             }
             lit *= 1.0 / 9.0;
-            return mix(1.0, lit, uShadowParams.z);
+            return mix(1.0, lit, uShadowParams.y);
         }
         mediump float shadowFactor() {
             return shadowFactorSlope(1.0);
@@ -435,12 +501,6 @@ namespace carto::vt {
         varying highp vec2 vElevUV;
         varying mediump float vElevCosh;
         #endif
-        #ifdef TERRAIN_SHADOW
-        // Tile-local -> light clip space. The matrix is built per tile so its input stays in
-        // [0,1] and float precision is never asked to hold a world coordinate.
-        uniform highp mat4 uShadowMatrix;
-        varying highp vec3 vShadowPos;
-        #endif
 
         void main(void) {
         #ifdef PATTERN
@@ -464,10 +524,7 @@ namespace carto::vt {
             vNormal = aVertexNormal;
         #endif
             highp vec3 terrainPos = applyTerrain(aVertexPosition);
-        #ifdef TERRAIN_SHADOW
-            highp vec4 shadowClip = uShadowMatrix * vec4(terrainPos, 1.0);
-            vShadowPos = shadowClip.xyz / shadowClip.w * 0.5 + 0.5;
-        #endif
+            applyShadowPos(terrainPos);
             gl_Position = applyDepthBias(uMVPMatrix * vec4(terrainPos, 1.0));
         }
     )GLSL";
@@ -593,10 +650,7 @@ namespace carto::vt {
             vNormal = aVertexNormal;
         #endif
             highp vec3 terrainPos = applyTerrain(aVertexPosition);
-        #ifdef TERRAIN_SHADOW
-            highp vec4 shadowClip = uShadowMatrix * vec4(terrainPos, 1.0);
-            vShadowPos = shadowClip.xyz / shadowClip.w * 0.5 + 0.5;
-        #endif
+            applyShadowPos(terrainPos);
             gl_Position = applyDepthBias(uMVPMatrix * vec4(terrainPos, 1.0));
         }
     )GLSL";
@@ -668,10 +722,7 @@ namespace carto::vt {
             vBinormal = aVertexBinormal;
         #endif
             highp vec3 terrainPos = applyTerrain(aVertexPosition);
-        #ifdef TERRAIN_SHADOW
-            highp vec4 shadowClip = uShadowMatrix * vec4(terrainPos, 1.0);
-            vShadowPos = shadowClip.xyz / shadowClip.w * 0.5 + 0.5;
-        #endif
+            applyShadowPos(terrainPos);
             gl_Position = applyDepthBias(uMVPMatrix * vec4(terrainPos, 1.0));
         }
     )GLSL";
@@ -1150,10 +1201,6 @@ namespace carto::vt {
         uniform vec4 uColorTable[16];
         varying highp_opt vec2 vTilePos;
         varying lowp vec4 vColor;
-        #ifdef TERRAIN_SHADOW
-        uniform highp mat4 uShadowMatrix;
-        varying highp vec3 vShadowPos;
-        #endif
         #ifdef LIGHTING_FSH
         varying highp_opt float vHeight;
         varying lowp float vSideVertex;
@@ -1169,10 +1216,7 @@ namespace carto::vt {
             pos = vec3(uTransformMatrix * vec4(pos, 1.0));
         #endif
             pos = applyTerrain(pos) + aVertexNormal * (aVertexHeight * uHeightScale);
-        #ifdef TERRAIN_SHADOW
-            highp vec4 shadowClip3D = uShadowMatrix * vec4(pos, 1.0);
-            vShadowPos = shadowClip3D.xyz / shadowClip3D.w * 0.5 + 0.5;
-        #endif
+            applyShadowPos(pos);
             vec3 normal = normalize(sideVertex > 0.0 ? aVertexBinormal : aVertexNormal);
             vec4 color = uColorTable[styleIndex];
             vTilePos = (uTileMatrix * vec3(aVertexUV * uUVScale, 1.0)).xy;
