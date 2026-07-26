@@ -144,6 +144,14 @@ namespace carto::vt {
         }
     }
 
+    void GLTileRenderer::setFog(const Color& color, float startDistance, float distance) {
+        std::lock_guard<std::mutex> lock(_mutex);
+
+        _fogColor = color;
+        _fogStartDistance = startDistance;
+        _fogDistance = distance;
+    }
+
     bool GLTileRenderer::calculateShadowViewProj(const std::vector<TileId>& tileIds, const std::vector<TileId>& casterTileIds, const cglib::vec3<float>& sunDir, const std::vector<std::pair<double, double> >& tileHeights, double minHeight, double maxHeight, float maxDistanceMeters, int mapSize, int cascade, int cascadeCount, std::vector<TileId>& boxCasterTileIds, double& depthRangeMeters, double& texelMeters, cglib::mat4x4<double>& lightViewProj) const {
         std::lock_guard<std::mutex> lock(_mutex);
 
@@ -1391,6 +1399,20 @@ namespace carto::vt {
         default:
             return true;
         }
+    }
+
+    unsigned int GLTileRenderer::fogFlag() const {
+        // Fully transparent fog, or a zero range, means the style/app did not ask for any: the
+        // programs are then built without it and cost nothing.
+        return (_fogColor[3] > 0.0f && _fogDistance > _fogStartDistance ? FOG_FLAG : 0);
+    }
+
+    void GLTileRenderer::setupFogUniforms(const ShaderProgram& shaderProgram) const {
+        if (!fogFlag()) {
+            return;
+        }
+        glUniform4f(shaderProgram.uniforms[U_FOGCOLOR], _fogColor[0], _fogColor[1], _fogColor[2], _fogColor[3]);
+        glUniform2f(shaderProgram.uniforms[U_FOGPARAMS], _fogStartDistance, 1.0f / std::max(1.0e-9f, _fogDistance - _fogStartDistance));
     }
 
     cglib::mat4x4<double> GLTileRenderer::calculateTileMatrix(const TileId& tileId, float coordScale) const {
@@ -2663,8 +2685,9 @@ namespace carto::vt {
             const CompiledSurface& compiledTileSurface = _compiledTileSurfaceMap[tileSurface];
 
             unsigned int terrainFlag = (_terrainMode && _terrainTextureProvider ? TERRAIN_FLAG | TERRAIN_VTF_FLAG : 0);
-            const ShaderProgram& shaderProgram = buildShaderProgram("tilesurfacefill", backgroundVsh, backgroundFsh, LightingMode::NONE, RasterFilterMode::NONE, terrainFlag);
+            const ShaderProgram& shaderProgram = buildShaderProgram("tilesurfacefill", backgroundVsh, backgroundFsh, LightingMode::NONE, RasterFilterMode::NONE, terrainFlag | fogFlag());
             glUseProgram(shaderProgram.program);
+            setupFogUniforms(shaderProgram);
             if (terrainFlag != 0) {
                 glUniform1f(shaderProgram.uniforms[U_DEPTHBIAS], _terrainDrawDepthBias);
                 setupTerrainUniforms(shaderProgram, tileId, surfaceFrame);
@@ -3167,8 +3190,9 @@ namespace carto::vt {
             bool lit = _terrainLighting.enabled && _terrainMode && static_cast<bool>(_terrainTextureProvider);
             bool shadowed = lit && _terrainShadowTexture != 0 && _terrainShadowStrength > 0.0f;
             unsigned int flags = (_terrainMode && _terrainTextureProvider ? TERRAIN_FLAG | TERRAIN_VTF_FLAG : 0) | DRAPE_FLAG | (lit ? TERRAIN_LIGHT_FLAG : 0) | (shadowed ? TERRAIN_SHADOW_FLAG | DERIVATIVES_FLAG : 0);
-            const ShaderProgram& shaderProgram = buildShaderProgram("tilesurfacedrape", backgroundVsh, backgroundFsh, LightingMode::NONE, RasterFilterMode::NONE, flags);
+            const ShaderProgram& shaderProgram = buildShaderProgram("tilesurfacedrape", backgroundVsh, backgroundFsh, LightingMode::NONE, RasterFilterMode::NONE, flags | fogFlag());
             glUseProgram(shaderProgram.program);
+            setupFogUniforms(shaderProgram);
             if (flags & TERRAIN_FLAG) {
                 glUniform1f(shaderProgram.uniforms[U_DEPTHBIAS], _terrainDrawDepthBias);
                 setupTerrainUniforms(shaderProgram, tileId, surfaceFrame);
@@ -3298,8 +3322,9 @@ namespace carto::vt {
 
             // Flat drape pass: bake the background onto the flat [0,1] grid (no displacement).
             unsigned int terrainFlag = flatDrape ? 0 : (terrainVTF ? TERRAIN_FLAG | TERRAIN_VTF_FLAG : (_terrainMode && !_terrainDepthWrite ? TERRAIN_FLAG : 0));
-            const ShaderProgram& shaderProgram = buildShaderProgram("tilebackground", backgroundVsh, backgroundFsh, LightingMode::GEOMETRY2D, RasterFilterMode::NONE, (background->getPattern() ? PATTERN_FLAG : 0) | terrainFlag);
+            const ShaderProgram& shaderProgram = buildShaderProgram("tilebackground", backgroundVsh, backgroundFsh, LightingMode::GEOMETRY2D, RasterFilterMode::NONE, (background->getPattern() ? PATTERN_FLAG : 0) | terrainFlag | fogFlag());
             glUseProgram(shaderProgram.program);
+            setupFogUniforms(shaderProgram);
             if ((terrainFlag & TERRAIN_FLAG) != 0) {
                 glUniform1f(shaderProgram.uniforms[U_DEPTHBIAS], terrainVTF ? _terrainDrawDepthBias : _terrainDepthBias);
             }
@@ -3392,10 +3417,10 @@ namespace carto::vt {
             const ShaderProgram* shaderProgramPtr = nullptr;
             switch (bitmap->getType()) {
             case TileBitmap::Type::COLORMAP:
-                shaderProgramPtr = &buildShaderProgram("tilecolormap", colormapVsh, colormapFsh, LightingMode::GEOMETRY2D, _rasterFilterMode, PATTERN_FLAG | terrainFlag);
+                shaderProgramPtr = &buildShaderProgram("tilecolormap", colormapVsh, colormapFsh, LightingMode::GEOMETRY2D, _rasterFilterMode, PATTERN_FLAG | terrainFlag | fogFlag());
                 break;
             case TileBitmap::Type::NORMALMAP:
-                shaderProgramPtr = &buildShaderProgram("tilenormalmap", normalmapVsh, normalmapFsh, LightingMode::NORMALMAP, _rasterFilterMode, PATTERN_FLAG | terrainFlag);
+                shaderProgramPtr = &buildShaderProgram("tilenormalmap", normalmapVsh, normalmapFsh, LightingMode::NORMALMAP, _rasterFilterMode, PATTERN_FLAG | terrainFlag | fogFlag());
                 break;
             default:
                 return;
@@ -3502,13 +3527,13 @@ namespace carto::vt {
         const ShaderProgram* shaderProgramPtr = nullptr;
         switch (geometry->getType()) {
         case TileGeometry::Type::POINT:
-            shaderProgramPtr = &buildShaderProgram("point", pointVsh, pointFsh, LightingMode::GEOMETRY2D, RasterFilterMode::NONE, (styleParams.pattern ? PATTERN_FLAG : 0) | (styleParams.translate ? TRANSFORM_FLAG : 0) | (styleOffsetting ? OFFSET_FLAG : 0) | terrainFlag);
+            shaderProgramPtr = &buildShaderProgram("point", pointVsh, pointFsh, LightingMode::GEOMETRY2D, RasterFilterMode::NONE, (styleParams.pattern ? PATTERN_FLAG : 0) | (styleParams.translate ? TRANSFORM_FLAG : 0) | (styleOffsetting ? OFFSET_FLAG : 0) | terrainFlag | fogFlag());
             break;
         case TileGeometry::Type::LINE:
-            shaderProgramPtr = &buildShaderProgram("line", lineVsh, lineFsh, LightingMode::GEOMETRY2D, RasterFilterMode::NONE, (styleParams.pattern ? PATTERN_FLAG : 0) | (styleParams.translate ? TRANSFORM_FLAG : 0) | (styleOffsetting ? OFFSET_FLAG : 0) | terrainFlag);
+            shaderProgramPtr = &buildShaderProgram("line", lineVsh, lineFsh, LightingMode::GEOMETRY2D, RasterFilterMode::NONE, (styleParams.pattern ? PATTERN_FLAG : 0) | (styleParams.translate ? TRANSFORM_FLAG : 0) | (styleOffsetting ? OFFSET_FLAG : 0) | terrainFlag | fogFlag());
             break;
         case TileGeometry::Type::POLYGON:
-            shaderProgramPtr = &buildShaderProgram("polygon", polygonVsh, polygonFsh, LightingMode::GEOMETRY2D, RasterFilterMode::NONE, (styleParams.pattern ? PATTERN_FLAG : 0) | (styleParams.translate ? TRANSFORM_FLAG : 0) | terrainFlag);
+            shaderProgramPtr = &buildShaderProgram("polygon", polygonVsh, polygonFsh, LightingMode::GEOMETRY2D, RasterFilterMode::NONE, (styleParams.pattern ? PATTERN_FLAG : 0) | (styleParams.translate ? TRANSFORM_FLAG : 0) | terrainFlag | fogFlag());
             break;
         case TileGeometry::Type::POLYGON3D:
             if (_shadowCasterViewProj) {
@@ -3517,13 +3542,16 @@ namespace carto::vt {
                 shaderProgramPtr = &buildShaderProgram("polygon3dshadow", polygon3DVsh, shadowCasterFsh, LightingMode::NONE, RasterFilterMode::NONE, (styleParams.translate ? TRANSFORM_FLAG : 0) | (terrainVTF ? TERRAIN_VTF_FLAG : 0));
                 break;
             }
-            shaderProgramPtr = &buildShaderProgram("polygon3d", polygon3DVsh, polygon3DFsh, LightingMode::GEOMETRY3D, RasterFilterMode::NONE, (styleParams.pattern ? PATTERN_FLAG : 0) | (styleParams.translate ? TRANSFORM_FLAG : 0) | (terrainVTF ? TERRAIN_VTF_FLAG : 0) | (shadowReceiver ? TERRAIN_SHADOW_FLAG | DERIVATIVES_FLAG : 0));
+            shaderProgramPtr = &buildShaderProgram("polygon3d", polygon3DVsh, polygon3DFsh, LightingMode::GEOMETRY3D, RasterFilterMode::NONE, (styleParams.pattern ? PATTERN_FLAG : 0) | (styleParams.translate ? TRANSFORM_FLAG : 0) | (terrainVTF ? TERRAIN_VTF_FLAG : 0) | (shadowReceiver ? TERRAIN_SHADOW_FLAG | DERIVATIVES_FLAG : 0) | fogFlag());
             break;
         default:
             return;
         }
         const ShaderProgram& shaderProgram = *shaderProgramPtr;
         glUseProgram(shaderProgram.program);
+        if (!_shadowCasterViewProj) {
+            setupFogUniforms(shaderProgram);
+        }
 
         cglib::mat4x4<float> mvpMatrix;
         if (_shadowCasterViewProj) {

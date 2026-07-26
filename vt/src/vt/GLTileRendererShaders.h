@@ -58,6 +58,8 @@ namespace carto::vt {
         U_SHADOWTEXTURE,
         U_SHADOWPARAMS,
         U_SHADOWBIAS,
+        U_FOGCOLOR,
+        U_FOGPARAMS,
         U_DRAPEUVTRANSFORM
     };
 
@@ -70,7 +72,8 @@ namespace carto::vt {
         TERRAIN_VTF_FLAG = 32,
         DRAPE_FLAG       = 64,
         TERRAIN_LIGHT_FLAG = 128,
-        TERRAIN_SHADOW_FLAG = 256
+        TERRAIN_SHADOW_FLAG = 256,
+        FOG_FLAG = 512
     };
 
     static const std::map<std::string, int> attribMap = {
@@ -123,6 +126,8 @@ namespace carto::vt {
         { "uShadowTexture",     U_SHADOWTEXTURE },
         { "uShadowParams",      U_SHADOWPARAMS },
         { "uShadowBias",        U_SHADOWBIAS },
+        { "uFogColor",          U_FOGCOLOR },
+        { "uFogParams",         U_FOGPARAMS },
         { "uDrapeUVTransform",  U_DRAPEUVTRANSFORM }
     };
 
@@ -135,7 +140,8 @@ namespace carto::vt {
         { TERRAIN_VTF_FLAG, "TERRAIN" },
         { DRAPE_FLAG,       "DRAPE" },
         { TERRAIN_LIGHT_FLAG, "TERRAIN_LIGHT" },
-        { TERRAIN_SHADOW_FLAG, "TERRAIN_SHADOW" }
+        { TERRAIN_SHADOW_FLAG, "TERRAIN_SHADOW" },
+        { FOG_FLAG, "FOG" }
     };
 
     static const std::string textureFiltersFsh = R"GLSL(
@@ -365,6 +371,27 @@ namespace carto::vt {
         #endif
 
         precision mediump float;
+        #ifdef FOG
+        uniform lowp vec4 uFogColor;    // rgb = fog colour, a = how opaque the fog gets at full distance
+        uniform highp vec2 uFogParams;  // x = distance where the fog starts, y = 1 / (end - start)
+
+        // Distance from the eye WITHOUT a varying: gl_FragCoord.w is 1/w_clip, and w_clip of a
+        // perspective projection is the eye-space depth. An orthographic pass - the drape bake -
+        // has w = 1, which is a whole world in internal units, so it never fogs: exactly right,
+        // since the bake is flat content that gets fogged later as part of the terrain surface.
+        lowp vec4 applyFog(lowp vec4 color) {
+            highp float dist = 1.0 / max(1.0e-9, gl_FragCoord.w);
+            lowp float amount = clamp((dist - uFogParams.x) * uFogParams.y, 0.0, 1.0) * uFogColor.a;
+            // Colours here are PREMULTIPLIED, so the fog colour has to be premultiplied by this
+            // fragment's own alpha; and the fog tints what is there rather than adding coverage,
+            // so alpha is left alone.
+            return vec4(mix(color.rgb, uFogColor.rgb * color.a, amount), color.a);
+        }
+        #else
+        lowp vec4 applyFog(lowp vec4 color) {
+            return color;
+        }
+        #endif
         #ifdef TERRAIN_SHADOW
         uniform sampler2D uShadowTexture;
         uniform mediump vec4 uShadowParams; // x = 1/mapSize within one cascade, y = strength, z = PCF radius in texels, w = 1/cascade count
@@ -616,11 +643,11 @@ namespace carto::vt {
             color = vec4(min(color.rgb * lit, vec3(color.a)), color.a);
         #endif
         #if defined(LIGHTING_VSH)
-            gl_FragColor = vColor * color * uOpacity;
+            gl_FragColor = applyFog(vColor * color * uOpacity);
         #elif defined(LIGHTING_FSH)
-            gl_FragColor = applyLighting(color, normalize(vNormal)) * uOpacity;
+            gl_FragColor = applyFog(applyLighting(color, normalize(vNormal)) * uOpacity);
         #else
-            gl_FragColor = color * uOpacity;
+            gl_FragColor = applyFog(color * uOpacity);
         #endif
         }
     )GLSL";
@@ -693,11 +720,11 @@ namespace carto::vt {
             color = vec4(min(color.rgb * lit, vec3(color.a)), color.a);
         #endif
         #if defined(LIGHTING_VSH)
-            gl_FragColor = vColor * color * uOpacity;
+            gl_FragColor = applyFog(vColor * color * uOpacity);
         #elif defined(LIGHTING_FSH)
-            gl_FragColor = applyLighting(color, normalize(vNormal)) * uOpacity;
+            gl_FragColor = applyFog(applyLighting(color, normalize(vNormal)) * uOpacity);
         #else
-            gl_FragColor = color * uOpacity;
+            gl_FragColor = applyFog(color * uOpacity);
         #endif
         }
     )GLSL";
@@ -813,9 +840,9 @@ namespace carto::vt {
                 shade.rgb = u_contourColor.rgb * cov + shade.rgb * (1.0 - cov);
                 shade.a = cov + shade.a * (1.0 - cov);
             }
-            gl_FragColor = shade * uOpacity;
+            gl_FragColor = applyFog(shade * uOpacity);
         #else
-            gl_FragColor = color * uOpacity;
+            gl_FragColor = applyFog(color * uOpacity);
         #endif
         }
     )GLSL";
@@ -1004,9 +1031,9 @@ namespace carto::vt {
             if (color.a < 0.004) discard;
         #endif
         #ifdef LIGHTING_FSH
-            gl_FragColor = applyLighting(color, normalize(vNormal));
+            gl_FragColor = applyFog(applyLighting(color, normalize(vNormal)));
         #else
-            gl_FragColor = color;
+            gl_FragColor = applyFog(color);
         #endif
         }
     )GLSL";
@@ -1102,9 +1129,9 @@ namespace carto::vt {
             if (color.a < 0.004) discard;
         #endif
         #ifdef LIGHTING_FSH
-            gl_FragColor = applyLighting(color, normalize(vNormal));
+            gl_FragColor = applyFog(applyLighting(color, normalize(vNormal)));
         #else
-            gl_FragColor = color;
+            gl_FragColor = applyFog(color);
         #endif
         }
     )GLSL";
@@ -1176,9 +1203,9 @@ namespace carto::vt {
             if (color.a < 0.004) discard;
         #endif
         #ifdef LIGHTING_FSH
-            gl_FragColor = applyLighting(color, normalize(vNormal));
+            gl_FragColor = applyFog(applyLighting(color, normalize(vNormal)));
         #else
-            gl_FragColor = color;
+            gl_FragColor = applyFog(color);
         #endif
         }
     )GLSL";
@@ -1248,9 +1275,9 @@ namespace carto::vt {
                 discard;
             }
         #ifdef LIGHTING_FSH
-            gl_FragColor = applyLighting(vColor, normalize(vNormal), vHeight, vSideVertex > 0.0);
+            gl_FragColor = applyFog(applyLighting(vColor, normalize(vNormal), vHeight, vSideVertex > 0.0));
         #else
-            gl_FragColor = vColor;
+            gl_FragColor = applyFog(vColor);
         #endif
         #ifdef TERRAIN_SHADOW
             // Extrusions receive as well as cast: a building in the shadow of a ridge, or of a

@@ -124,6 +124,12 @@ namespace carto::vt {
         void setTerrainDrapeFills(bool enabled, bool includeLines);
         void setTerrainDrapeResolution(int resolution);
         void setTerrainLighting(const TerrainLighting& lighting);
+        // Distance fog over the whole 3D scene, in world units: the terrain surface, rasters,
+        // 2D geometry and 3D extrusions all fade towards this colour between the two distances.
+        // A transparent colour or a zero range turns it off, and the programs are then built
+        // without it. The drape bake is orthographic and is never fogged - its content is fogged
+        // once, as part of the terrain surface it is painted on.
+        void setFog(const Color& color, float startDistance, float distance);
         // Directional shadows. The owner renders the caster pass (renderShadowCasters) into its
         // own framebuffer from the light, then hands the packed-depth texture and the same
         // light matrix back here so the draped surface can look itself up in it.
@@ -326,6 +332,8 @@ namespace carto::vt {
         bool isTileVisible(const TileId& tileId) const;
         bool isEmptyBlendRequired(CompOp compOp) const;
 
+        unsigned int fogFlag() const;
+        void setupFogUniforms(const ShaderProgram& shaderProgram) const;
         cglib::mat4x4<double> calculateTileMatrix(const TileId& tileId, float coordScale = 1.0f) const;
         cglib::mat3x3<double> calculateTileMatrix2D(const TileId& tileId, float coordScale = 1.0f) const;
         cglib::mat4x4<float> calculateTileMVPMatrix(const TileId& tileId, float coordScale = 1.0f) const;
@@ -455,6 +463,9 @@ namespace carto::vt {
         std::array<float, MAX_SHADOW_CASCADES> _terrainShadowBiases = { { 0.0f, 0.0f, 0.0f, 0.0f } };
         float _terrainShadowStrength = 0.0f;
         float _terrainShadowSoftness = 1.0f;
+        Color _fogColor;
+        float _fogStartDistance = 0.0f;
+        float _fogDistance = 0.0f;
         std::array<cglib::mat4x4<double>, MAX_SHADOW_CASCADES> _terrainShadowViewProjs;
         Color _terrainBackgroundColor; // opaque terrain base fill + depth pre-pass color; transparent = depth-only
         std::vector<std::pair<TileId, GLint>> _debugOrderedTileMasks;
