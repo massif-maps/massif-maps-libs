@@ -511,13 +511,17 @@ namespace carto::vt {
             // The draped colour is premultiplied, so scaling rgb alone is a valid tint; clamp
             // back to alpha so an intensity above 1 cannot break premultiplication.
             mediump float ndl = max(0.0, dot(terrainNormal(), uSunDir));
-        #ifdef TERRAIN_SHADOW
-            ndl *= shadowFactor();
-        #endif
             // Normalised Lambert: ambient is the floor, the sun fills the REMAINING headroom, so
             // a surface facing the sun lands at 1 instead of ambient+1. Adding them blows the
             // ground out to white at a high sun, and a clipped highlight cannot show a shadow.
             mediump vec3 lit = vec3(uLightParams.y) + uSunColor.rgb * ((1.0 - uLightParams.y) * ndl * uLightParams.x);
+        #ifdef TERRAIN_SHADOW
+            // The shadow multiplies the FINAL colour, exactly as it does on the 3D extrusions.
+            // Folding it into N.L instead made it vanish at ambient 1 (where N.L has no weight
+            // left), so ground and buildings disagreed about what a shadow is. Shadow depth is
+            // the strength parameter's job, not the ambient level's.
+            lit *= shadowFactor();
+        #endif
             color = vec4(min(color.rgb * lit, vec3(color.a)), color.a);
         #endif
         #if defined(LIGHTING_VSH)
@@ -587,13 +591,17 @@ namespace carto::vt {
             // The draped colour is premultiplied, so scaling rgb alone is a valid tint; clamp
             // back to alpha so an intensity above 1 cannot break premultiplication.
             mediump float ndl = max(0.0, dot(terrainNormal(), uSunDir));
-        #ifdef TERRAIN_SHADOW
-            ndl *= shadowFactor();
-        #endif
             // Normalised Lambert: ambient is the floor, the sun fills the REMAINING headroom, so
             // a surface facing the sun lands at 1 instead of ambient+1. Adding them blows the
             // ground out to white at a high sun, and a clipped highlight cannot show a shadow.
             mediump vec3 lit = vec3(uLightParams.y) + uSunColor.rgb * ((1.0 - uLightParams.y) * ndl * uLightParams.x);
+        #ifdef TERRAIN_SHADOW
+            // The shadow multiplies the FINAL colour, exactly as it does on the 3D extrusions.
+            // Folding it into N.L instead made it vanish at ambient 1 (where N.L has no weight
+            // left), so ground and buildings disagreed about what a shadow is. Shadow depth is
+            // the strength parameter's job, not the ambient level's.
+            lit *= shadowFactor();
+        #endif
             color = vec4(min(color.rgb * lit, vec3(color.a)), color.a);
         #endif
         #if defined(LIGHTING_VSH)

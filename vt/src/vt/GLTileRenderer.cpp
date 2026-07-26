@@ -3243,11 +3243,17 @@ namespace carto::vt {
             glUniform1f(shaderProgram.uniforms[U_DEPTHBIAS], terrainVTF ? _terrainDrawDepthBias : _terrainDepthBias);
         }
         if (terrainVTF) {
-            // The vertex frame is the TARGET tile, not the source: geometry of an overzoomed tile
-            // is drawn over the target tile's ground, and this matrix is what the elevation lookup
-            // resolves against. Switching it to the source tile was tried and renders wrong
-            // (hillshade and vector fills disappear behind the raster) - do not "fix" it again.
-            setupTerrainUniforms(shaderProgram, sourceTileId, calculateTileMatrix(targetTileId, 1.0f / vertexGeomLayoutParams.coordScale));
+            // Two separate things here, and they had swapped roles.
+            // The elevation TEXTURE must be the TARGET tile's: that is the tile whose surface this
+            // content stands on, and the terrain surface is drawn per target tile. Sampling the
+            // source tile's texture picks a different DEM level, so content sat at a different
+            // height than the ground beneath it and slid during a pan while tiles streamed in,
+            // settling only once source and target became the same tile again.
+            // The vertex FRAME must be the SOURCE tile's: the vertices are source-tile-local, and
+            // this matrix is what maps them to world for the uv. (An earlier attempt to change
+            // only the frame looked like it broke the raster stack; that comparison was against a
+            // demo that had silently switched to a different style, so it proved nothing.)
+            setupTerrainUniforms(shaderProgram, targetTileId, calculateTileMatrix(sourceTileId, 1.0f / vertexGeomLayoutParams.coordScale));
         }
         if (shadowReceiver) {
             cglib::mat4x4<float> shadowMatrix = cglib::mat4x4<float>::convert(_terrainShadowViewProj * calculateTileMatrix(sourceTileId, 1.0f / vertexGeomLayoutParams.coordScale));
