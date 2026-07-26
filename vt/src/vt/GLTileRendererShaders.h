@@ -353,11 +353,15 @@ namespace carto::vt {
         // 3x3 PCF over a radius in shadow-map texels. One shadow texel covers many metres of
         // ground, so a single tap gives hard stair-stepped edges; averaging over a small kernel is
         // what makes a finite-resolution shadow map look like a shadow rather than a mask.
-        mediump float shadowFactor() {
+        // ndl scales the bias with the angle between the surface and the light: at a grazing
+        // angle one shadow texel spans a large depth range, and a constant bias cannot cover it.
+        // Left constant, the residual self-shadowing lands in bands of constant height - which on
+        // a hillside reads as ripples following the contour lines.
+        mediump float shadowFactorSlope(mediump float ndl) {
             if (vShadowPos.x < 0.0 || vShadowPos.x > 1.0 || vShadowPos.y < 0.0 || vShadowPos.y > 1.0 || vShadowPos.z > 1.0) {
                 return 1.0; // outside the light frustum: unshadowed rather than black
             }
-            highp float ref = vShadowPos.z - uShadowParams.y;
+            highp float ref = vShadowPos.z - uShadowParams.y / max(0.15, ndl);
             highp float o = uShadowParams.x * uShadowParams.w;
             mediump float lit = 0.0;
             for (int j = -1; j <= 1; j++) {
@@ -367,6 +371,9 @@ namespace carto::vt {
             }
             lit *= 1.0 / 9.0;
             return mix(1.0, lit, uShadowParams.z);
+        }
+        mediump float shadowFactor() {
+            return shadowFactorSlope(1.0);
         }
         #endif
     )GLSL";
@@ -520,7 +527,7 @@ namespace carto::vt {
             // Folding it into N.L instead made it vanish at ambient 1 (where N.L has no weight
             // left), so ground and buildings disagreed about what a shadow is. Shadow depth is
             // the strength parameter's job, not the ambient level's.
-            lit *= shadowFactor();
+            lit *= shadowFactorSlope(ndl);
         #endif
             color = vec4(min(color.rgb * lit, vec3(color.a)), color.a);
         #endif
@@ -600,7 +607,7 @@ namespace carto::vt {
             // Folding it into N.L instead made it vanish at ambient 1 (where N.L has no weight
             // left), so ground and buildings disagreed about what a shadow is. Shadow depth is
             // the strength parameter's job, not the ambient level's.
-            lit *= shadowFactor();
+            lit *= shadowFactorSlope(ndl);
         #endif
             color = vec4(min(color.rgb * lit, vec3(color.a)), color.a);
         #endif

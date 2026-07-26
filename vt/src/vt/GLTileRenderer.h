@@ -128,7 +128,7 @@ namespace carto::vt {
         // minHeight/maxHeight bound the shadowed volume in world z units. A generous slab is
         // what makes a low sun pixelated: the light box is fitted around it, and at a grazing
         // angle a 10 km slab stretches the box to tens of kilometres across.
-        bool calculateShadowViewProj(const std::vector<TileId>& tileIds, const cglib::vec3<float>& sunDir, double minHeight, double maxHeight, float maxDistanceMeters, cglib::mat4x4<double>& lightViewProj) const;
+        bool calculateShadowViewProj(const std::vector<TileId>& tileIds, const std::vector<TileId>& casterTileIds, const cglib::vec3<float>& sunDir, double minHeight, double maxHeight, float maxDistanceMeters, cglib::mat4x4<double>& lightViewProj) const;
         // Draws this renderer's shadow casters for one terrain tile into the bound framebuffer.
         // Returns the number of draws issued.
         int renderShadowCasters(const TileId& tileId, const cglib::mat4x4<double>& lightViewProj, bool castGround);

@@ -135,7 +135,7 @@ namespace carto::vt {
         _terrainShadowViewProj = lightViewProj;
     }
 
-    bool GLTileRenderer::calculateShadowViewProj(const std::vector<TileId>& tileIds, const cglib::vec3<float>& sunDir, double minHeight, double maxHeight, float maxDistanceMeters, cglib::mat4x4<double>& lightViewProj) const {
+    bool GLTileRenderer::calculateShadowViewProj(const std::vector<TileId>& tileIds, const std::vector<TileId>& casterTileIds, const cglib::vec3<float>& sunDir, double minHeight, double maxHeight, float maxDistanceMeters, cglib::mat4x4<double>& lightViewProj) const {
         std::lock_guard<std::mutex> lock(_mutex);
 
         if (tileIds.empty()) {
@@ -203,7 +203,11 @@ namespace carto::vt {
         double radius = std::sqrt((maxX - minX) * (maxX - minX) + (maxY - minY) * (maxY - minY) + (maxZ - minZ) * (maxZ - minZ));
         cglib::mat4x4<double> lightView = cglib::lookat4_matrix(center + dir * radius, center, up);
 
-        // Fit the orthographic box to the box corners in light space.
+        // Fit the box: the SIDES to the ground that receives shadows, the DEPTH range to the
+        // ground that casts them. Fitting the sides to the casters too would mean every extra
+        // margin tile widens the box and coarsens every texel in it - which is why raising the
+        // caster margin blurred and displaced the building shadows. Extending only the depth
+        // range lets an off-screen mountain be rasterised into the same texels at no cost.
         double l = 0, r = 0, b = 0, t = 0, n = 0, f = 0;
         for (int corner = 0; corner < 8; corner++) {
             cglib::vec4<double> p = cglib::transform(cglib::vec4<double>(corner & 1 ? maxX : minX, corner & 2 ? maxY : minY, corner & 4 ? maxZ : minZ, 1.0), lightView);
@@ -212,6 +216,16 @@ namespace carto::vt {
             } else {
                 l = std::min(l, p(0)); r = std::max(r, p(0));
                 b = std::min(b, p(1)); t = std::max(t, p(1));
+                n = std::min(n, -p(2)); f = std::max(f, -p(2));
+            }
+        }
+        for (const TileId& tileId : casterTileIds) {
+            cglib::mat4x4<double> tileMatrix = calculateTileMatrix(tileId, 1.0f);
+            for (int corner = 0; corner < 8; corner++) {
+                cglib::vec4<double> local(corner & 1 ? 1.0 : 0.0, corner & 2 ? 1.0 : 0.0, 0.0, 1.0);
+                cglib::vec4<double> world = cglib::transform(local, tileMatrix);
+                world(2) = (corner & 4 ? maxZ : minZ);
+                cglib::vec4<double> p = cglib::transform(world, lightView);
                 n = std::min(n, -p(2)); f = std::max(f, -p(2));
             }
         }
