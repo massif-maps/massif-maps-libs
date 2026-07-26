@@ -245,16 +245,18 @@ namespace carto::vt {
             // ground in proportion to its distance, so a geometric split keeps texels about the
             // same size relative to the pixels that read them, while the linear term stops the
             // near cascade from collapsing to nothing.
+            // NESTED, not disjoint: every cascade starts at the nearest ground and only its far
+            // end moves out, so cascade N+1 contains cascade N and the coarsest one covers
+            // everything visible. With disjoint slices a fragment that just fails the near
+            // cascade's test - inside its PCF margin, or above its height slab - falls through to
+            // a cascade that does not cover it either and comes out UNSHADOWED, in patches with
+            // straight edges: the light box's own outline projected onto the tilted ground.
             double sliceNear = groundNear, sliceFar = groundFar;
             if (cascadeCount > 1 && groundFar > groundNear && groundNear > 0) {
-                auto splitDistance = [&](int index) {
-                    double part = static_cast<double>(index) / cascadeCount;
-                    double logSplit = groundNear * std::pow(groundFar / groundNear, part);
-                    double linearSplit = groundNear + (groundFar - groundNear) * part;
-                    return 0.7 * logSplit + 0.3 * linearSplit;
-                };
-                sliceNear = splitDistance(cascade);
-                sliceFar = splitDistance(cascade + 1);
+                double part = static_cast<double>(cascade + 1) / cascadeCount;
+                double logSplit = groundNear * std::pow(groundFar / groundNear, part);
+                double linearSplit = groundNear + (groundFar - groundNear) * part;
+                sliceFar = 0.7 * logSplit + 0.3 * linearSplit;
             }
             for (auto it = edges.begin(); it != edges.end(); it++) {
                 double t0 = std::max(it->t0, (sliceNear - it->d0) / it->length);
@@ -292,6 +294,8 @@ namespace carto::vt {
         // box has to span along its vertical axis - at a low sun the whole scene's relief, three
         // kilometres of it here, sets the box size no matter how small the near cascade's ground
         // footprint is, and every cascade then ends up with the same coarse texels.
+        double casterMinZ = minZ, casterMaxZ = maxZ; // the slab the CASTERS live in, before it is
+                                                     // narrowed to this cascade's own ground
         if (tileHeights.size() == tileIds.size()) {
             double localMinZ = 0, localMaxZ = 0;
             bool localFirst = true;
@@ -320,7 +324,11 @@ namespace carto::vt {
                     localMaxZ = std::max(localMaxZ, tileHeights[i].second);
                 }
             }
-            if (!localFirst && localMaxZ > localMinZ) {
+            // Never narrower than a fraction of the whole slab: a tile whose elevation has not
+            // loaded reports an empty range, and intersecting with that would collapse the box
+            // onto a height the terrain is not at.
+            double minThickness = (casterMaxZ - casterMinZ) * 0.1;
+            if (!localFirst && localMaxZ - localMinZ > minThickness) {
                 minZ = std::max(minZ, localMinZ);
                 maxZ = std::min(maxZ, localMaxZ);
                 if (maxZ <= minZ) {
@@ -363,7 +371,11 @@ namespace carto::vt {
             for (int corner = 0; corner < 8; corner++) {
                 cglib::vec4<double> local(corner & 1 ? 1.0 : 0.0, corner & 2 ? 1.0 : 0.0, 0.0, 1.0);
                 cglib::vec4<double> world = cglib::transform(local, tileMatrix);
-                world(2) = (corner & 4 ? maxZ : minZ);
+                // The CASTER slab, not this cascade's narrowed one: a mountain outside the
+                // cascade's own ground still casts into it, and measuring it against a slab it
+                // does not reach leaves the box's near plane in front of it - the caster is then
+                // clipped away and its shadow is missing over the whole cascade.
+                world(2) = (corner & 4 ? casterMaxZ : casterMinZ);
                 cglib::vec4<double> p = cglib::transform(world, lightView);
                 if (corner == 0) {
                     tileL = tileR = p(0); tileB = tileT = p(1); tileN = tileF = -p(2);
