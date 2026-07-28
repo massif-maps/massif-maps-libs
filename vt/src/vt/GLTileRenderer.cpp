@@ -1008,7 +1008,7 @@ namespace carto::vt {
         // All other operations must be synchronized
         std::lock_guard<std::mutex> lock(_mutex);
 
-        RenderStats::visibleTileSetChanges++;
+        VT_STAT_INC(visibleTileSetChanges);
         buildTileSurfaces(tileIds);
         buildLabelMaps(labelTiles);
         buildRenderTiles(tiles);
@@ -1064,7 +1064,7 @@ namespace carto::vt {
 
         // Drop built tile surfaces. They will be lazily rebuilt with the current
         // transformer state; the corresponding compiled VBOs are released in endFrame.
-        RenderStats::tileSurfacesInvalidated += static_cast<long long>(_tileSurfaceMap.size());
+        VT_STAT_ADD(tileSurfacesInvalidated, static_cast<long long>(_tileSurfaceMap.size()));
         _tileSurfaceMap.clear();
         _tileSurfaceBuilder.invalidateCaches();
     }
@@ -1089,7 +1089,7 @@ namespace carto::vt {
                 }
             }
             if (invalidate) {
-                RenderStats::tileSurfacesInvalidated++;
+                VT_STAT_INC(tileSurfacesInvalidated);
             }
             it = (invalidate ? _tileSurfaceMap.erase(it) : std::next(it));
         }
@@ -1995,7 +1995,7 @@ namespace carto::vt {
     }
 
     void GLTileRenderer::buildLabelMaps(const std::vector<std::shared_ptr<const Tile>>& labelTiles) {
-        RenderStats::labelMapRebuilds++;
+        VT_STAT_INC(labelMapRebuilds);
 
         // Pass 1: work out which tile geometries each label is built from, WITHOUT building
         // anything. A label is identified by the set of (tile object, local id) pairs
@@ -2048,7 +2048,7 @@ namespace carto::vt {
                         }
                         Label newLabel(*tileLabel, tile->getTileId(), layer->getLayerIndex(), tileMatrix, transformer);
                         label->mergeGeometries(newLabel);
-                        RenderStats::labelsAllocated++; // the merge copy costs the same geometry transform
+                        VT_STAT_INC(labelsAllocated); // the merge copy costs the same geometry transform
                         continue;
                     }
 
@@ -2061,12 +2061,12 @@ namespace carto::vt {
                     if (oldLabelIt != oldLabelMap.end() && oldLabelIt->second->hasGeometrySignature(signature.first, signature.second)) {
                         label = oldLabelIt->second;
                         reusedLabelIds.insert(globalId);
-                        RenderStats::labelsReused++;
+                        VT_STAT_INC(labelsReused);
                         continue;
                     }
 
                     label = std::make_shared<Label>(*tileLabel, tile->getTileId(), layer->getLayerIndex(), tileMatrix, transformer);
-                    RenderStats::labelsAllocated++;
+                    VT_STAT_INC(labelsAllocated);
                 }
             }
         }
@@ -2169,7 +2169,7 @@ namespace carto::vt {
         // Update built label lists and maps
         _labels = std::move(labels);
         _bitmapLabelMap = std::move(bitmapLabelMap);
-        RenderStats::labelsLive = static_cast<long long>(_labels.size());
+        VT_STAT_SET(labelsLive, static_cast<long long>(_labels.size()));
 
         // Tile geometry is built flat in GPU draping mode - newly built labels must be
         // re-anchored onto the terrain (startFrame applies the elevation provider)

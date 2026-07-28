@@ -100,7 +100,7 @@ namespace carto::vt {
     bool LabelCuller::process(const std::vector<std::shared_ptr<Label>>& labelList, std::mutex& labelMutex) {
         std::lock_guard<std::mutex> lock(_mutex);
 
-        RenderStats::cullerPasses++;
+        VT_STAT_INC(cullerPasses);
 
         // NOTE: the grid is intentionally NOT cleared here. One culler instance is shared
         // by all layers within a single placement pass (see VTLabelPlacementWorker), so
@@ -201,7 +201,7 @@ namespace carto::vt {
             }
             if (visible != label->isVisible()) {
                 label->setVisible(visible);
-                RenderStats::cullerVisibilityFlips++;
+                VT_STAT_INC(cullerVisibilityFlips);
                 changed = true;
             }
         }

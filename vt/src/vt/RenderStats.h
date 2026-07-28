@@ -7,16 +7,25 @@
 #ifndef _CARTO_VT_RENDERSTATS_H_
 #define _CARTO_VT_RENDERSTATS_H_
 
+/**
+ * Diagnostic counters for label and tile churn, and the single switch that turns them on.
+ *
+ * They live in hot paths - every label placement update, every label built, every culled
+ * label - so they must cost nothing when unused: with CARTO_VT_RENDER_STATS at 0 the
+ * counters do not exist, the VT_STAT_* macros expand to nothing, their arguments are never
+ * evaluated, and the SDK's per-second printout in MapRenderer is not compiled either.
+ *
+ * Set it to 1 here, or define it as a build flag, to get the printout back.
+ */
+#ifndef CARTO_VT_RENDER_STATS
+#define CARTO_VT_RENDER_STATS 0
+#endif
+
+#if CARTO_VT_RENDER_STATS
+
 #include <atomic>
 
 namespace carto::vt {
-    /**
-     * Diagnostic counters for the label/tile churn investigation. Free-standing inline
-     * atomics: they are incremented from the GL thread, the tile loading threads and the
-     * label placement worker, and read/reset by whoever prints them (MapRenderer).
-     * Header-only so that no build file has to know about them - delete the header and the
-     * increments together once the investigation is over.
-     */
     struct RenderStats {
         // Tile churn
         static inline std::atomic<long long> cullWorkerUpdates{0};     // CullWorker passes that pushed a cull state to the layers
@@ -53,5 +62,17 @@ namespace carto::vt {
         static inline std::atomic<long long> cullerVisibilityFlips{0}; // labels that appeared or disappeared
     };
 }
+
+#define VT_STAT_INC(name) (carto::vt::RenderStats::name++)
+#define VT_STAT_ADD(name, value) (carto::vt::RenderStats::name += (value))
+#define VT_STAT_SET(name, value) (carto::vt::RenderStats::name = (value))
+
+#else
+
+#define VT_STAT_INC(name) ((void)0)
+#define VT_STAT_ADD(name, value) ((void)0)
+#define VT_STAT_SET(name, value) ((void)0)
+
+#endif
 
 #endif

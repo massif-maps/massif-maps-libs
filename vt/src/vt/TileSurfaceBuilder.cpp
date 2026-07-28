@@ -89,7 +89,7 @@ namespace carto::vt {
         if (cacheIt != _tileSurfaceCache.end()) {
             return cacheIt->second;
         }
-        RenderStats::tileSurfacesBuilt++;
+        VT_STAT_INC(tileSurfacesBuilt);
 
         // Tesselate tile along edges to avoid T-vertices between neighbouring tiles.
         TileNeighbours tileNeighbours;

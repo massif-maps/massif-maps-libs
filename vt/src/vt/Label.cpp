@@ -129,8 +129,10 @@ namespace carto::vt {
         if (!_placement) {
             return;
         }
-        RenderStats::snapPlacements++;
+#if CARTO_VT_RENDER_STATS
+        VT_STAT_INC(snapPlacements);
         cglib::vec3<double> oldPosition = _placement->position;
+#endif
 
         // Prefer re-snapping onto the same source geometry (tile + feature) the placement
         // was attached to. The merged geometry lists contain one copy of the feature per
@@ -151,13 +153,15 @@ namespace carto::vt {
             _placement = findSnappedLinePlacement(_placement->position, _tileLines, oldPlacement);
         }
 
+#if CARTO_VT_RENDER_STATS
         if (_placement) {
             double dx = _placement->position(0) - oldPosition(0);
             double dy = _placement->position(1) - oldPosition(1);
             if (dx * dx + dy * dy > SNAP_MOVE_EPSILON * SNAP_MOVE_EPSILON) {
-                RenderStats::snapPlacementsMoved++;
+                VT_STAT_INC(snapPlacementsMoved);
             }
         }
+#endif
     }
 
     void Label::updateElevation(const std::function<double(const cglib::vec3<double>&)>& heightFunc) {
@@ -192,7 +196,7 @@ namespace carto::vt {
             return;
         }
         _geometryBBoxValid = false;
-        RenderStats::labelElevationReanchors++;
+        VT_STAT_INC(labelElevationReanchors);
         if (!_placement) {
             return;
         }
@@ -229,7 +233,7 @@ namespace carto::vt {
     }
 
     bool Label::updatePlacement(const ViewState& viewState) {
-        RenderStats::placementUpdates++;
+        VT_STAT_INC(placementUpdates);
         if (_placement) {
             std::array<cglib::vec3<float>, 4> envelope;
             calculateEnvelope(viewState, envelope);
@@ -250,13 +254,13 @@ namespace carto::vt {
         // both placed and visible can be seen as the label moving. The rest is a label the
         // user can not see, retrying a placement that keeps failing.
         if (!_placement) {
-            RenderStats::placementReanchorsNull++;
+            VT_STAT_INC(placementReanchorsNull);
         }
         else if (_visible) {
-            RenderStats::placementReanchorsVisible++;
+            VT_STAT_INC(placementReanchorsVisible);
         }
         else {
-            RenderStats::placementReanchorsHidden++;
+            VT_STAT_INC(placementReanchorsHidden);
         }
 
         // Nothing of this label's geometry is in view, so the clipped searches below can only
@@ -276,7 +280,7 @@ namespace carto::vt {
             _placement.reset();
             return true;
         }
-        RenderStats::placementSearches++;
+        VT_STAT_INC(placementSearches);
 
         _cachedFlippedPlacement.reset();
         if (!_tilePoints.empty()) {
