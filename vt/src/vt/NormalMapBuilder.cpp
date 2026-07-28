@@ -167,7 +167,10 @@ namespace carto::vt {
             float heights[3][3];
             for (int y = 0; y < height; y++) {
                 double y1 = boost::math::constants::pi<double>() * ((tileId.y + (height - y - 0.5) / height) / (1 << tileId.zoom) - 0.5);
-                double rz = std::tanh(y1);
+                // Web Mercator: sin(lat) = tanh(2 * y1), so ss = cos(lat). This is the Mercator
+                // scale correction MapLibre applies in the shader as 'scaleFactor'; here it is
+                // baked into the normal (dz), so the shader does not need a latitude range.
+                double rz = std::tanh(2.0 * y1);
                 double ss = std::sqrt(std::max(0.0, 1.0 - rz * rz));
 
                 for (int dy = 0; dy < 3; dy++) {
