@@ -190,6 +190,7 @@ namespace carto::vt {
         void buildPointVertexData(VertexArray<cglib::vec3<float>>& vertices, VertexArray<cglib::vec2<std::int16_t>>& texCoords, VertexArray<cglib::vec4<std::int8_t>>& attribs, VertexArray<std::uint16_t>& indices) const;
         bool buildLineVertexData(const std::shared_ptr<const Placement>& placement, float scale, VertexArray<cglib::vec3<float>>& vertices, VertexArray<cglib::vec2<std::int16_t>>& texCoords, VertexArray<cglib::vec4<std::int8_t>>& attribs, VertexArray<std::uint16_t>& indices) const;
 
+        cglib::bbox3<double> calculateGeometryBBox(const ViewState& viewState) const;
         std::shared_ptr<const Placement> buildLinePlacement(const TileLine& tileLine, std::size_t index, const cglib::vec3<double>& position) const;
         std::shared_ptr<const Placement> getPlacement(const ViewState& viewState) const;
         std::shared_ptr<const Placement> findSnappedPointPlacement(const cglib::vec3<double>& position, const std::list<TilePoint>& tilePoints, const Placement* oldPlacement = nullptr) const;
@@ -211,8 +212,12 @@ namespace carto::vt {
         const bool _sameFeatureIdDependent;
 
         cglib::bbox2<float> _glyphBBox;
+        float _maxGlyphExtent = 0; // largest distance a glyph reaches from the anchor, style transform included
         std::list<TilePoint> _tilePoints;
         std::list<TileLine> _tileLines;
+
+        mutable bool _geometryBBoxValid = false;
+        mutable cglib::bbox3<double> _geometryBBox = cglib::bbox3<double>::smallest();
 
         float _opacity = 0.0f;
         bool _visible = false;

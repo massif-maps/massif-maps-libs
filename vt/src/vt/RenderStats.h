@@ -40,6 +40,7 @@ namespace carto::vt {
         static inline std::atomic<long long> placementReanchorsNull{0};    // had no placement (off-screen / unplaceable)
         static inline std::atomic<long long> placementReanchorsHidden{0};  // had a placement, was not visible
         static inline std::atomic<long long> placementReanchorsVisible{0}; // had a placement AND was visible
+        static inline std::atomic<long long> placementSearches{0};         // re-anchors that ran a clipped search rather than being rejected on bounds
 
         // Re-snapping on tile-set change (buildLabelMaps -> snapPlacement). 'moved' is the
         // one that matters: a re-snap that lands the anchor somewhere else is a label

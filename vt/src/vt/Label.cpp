@@ -28,6 +28,25 @@ namespace carto::vt {
             pen += glyph.advance;
         }
 
+        // How far the glyphs reach from the anchor, with the style transform applied the same
+        // way findClippedPointPlacement applies it. updatePlacement grows the label's geometry
+        // bounds by this before testing them against the frustum, so an anchor that sits just
+        // outside the view but whose text reaches into it is not rejected.
+        cglib::bbox2<float> glyphBBox = _glyphBBox;
+        if (glyphBBox.min(0) <= glyphBBox.max(0)) {
+            if (_style->transform) {
+                cglib::mat2x2<float> transform = _style->transform->matrix2();
+                std::array<cglib::vec2<float>, 4> envelope;
+                envelope[0] = cglib::transform(cglib::vec2<float>(glyphBBox.min(0), glyphBBox.min(1)), transform);
+                envelope[1] = cglib::transform(cglib::vec2<float>(glyphBBox.min(0), glyphBBox.max(1)), transform);
+                envelope[2] = cglib::transform(cglib::vec2<float>(glyphBBox.max(0), glyphBBox.min(1)), transform);
+                envelope[3] = cglib::transform(cglib::vec2<float>(glyphBBox.max(0), glyphBBox.max(1)), transform);
+                glyphBBox = cglib::bbox2<float>::make_union(envelope.begin(), envelope.end());
+            }
+            _maxGlyphExtent = std::max(std::max(std::abs(glyphBBox.min(0)), std::abs(glyphBBox.max(0))),
+                                       std::max(std::abs(glyphBBox.min(1)), std::abs(glyphBBox.max(1))));
+        }
+
         if (tileLabel.getPosition()) {
             const cglib::vec2<float> pos = *tileLabel.getPosition();
             cglib::vec3<double> position = cglib::transform_point(cglib::vec3<double>::convert(transformer->calculatePoint(pos)), tileMatrix);
@@ -62,8 +81,32 @@ namespace carto::vt {
                 _tileLines.push_back(std::move(tileLine));
             }
         }
+
+        _geometryBBoxValid = false;
     }
     
+    cglib::bbox3<double> Label::calculateGeometryBBox(const ViewState& viewState) const {
+        if (!_geometryBBoxValid) {
+            _geometryBBox = cglib::bbox3<double>::smallest();
+            for (const TilePoint& tilePoint : _tilePoints) {
+                _geometryBBox.add(tilePoint.position);
+            }
+            for (const TileLine& tileLine : _tileLines) {
+                for (const cglib::vec3<double>& vertex : tileLine.vertices) {
+                    _geometryBBox.add(vertex);
+                }
+            }
+            _geometryBBoxValid = true;
+        }
+
+        // Line placements need no margin - findClippedLinePlacement clips the raw vertices -
+        // but point placements do, and growing a line label's bounds only makes the rejection
+        // more conservative.
+        double margin = _maxGlyphExtent * _style->scale * viewState.zoomScale;
+        cglib::vec3<double> marginVec(margin, margin, margin);
+        return cglib::bbox3<double>(_geometryBBox.min - marginVec, _geometryBBox.max + marginVec);
+    }
+
     std::shared_ptr<const Label::Placement> Label::buildLinePlacement(const TileLine& tileLine, std::size_t index, const cglib::vec3<double>& position) const {
         // Keeps the anchor where it is horizontally and takes its height from the line's
         // own chord, so the anchor sits exactly on the geometry the glyphs are laid out
@@ -148,6 +191,7 @@ namespace carto::vt {
         if (!changed) {
             return;
         }
+        _geometryBBoxValid = false;
         RenderStats::labelElevationReanchors++;
         if (!_placement) {
             return;
@@ -214,6 +258,25 @@ namespace carto::vt {
         else {
             RenderStats::placementReanchorsHidden++;
         }
+
+        // Nothing of this label's geometry is in view, so the clipped searches below can only
+        // walk all of it and return nothing - which is most of the placement work on a
+        // typical frame, because the loaded tile set extends well past the viewport. Decide
+        // it once against the cached geometry bounds instead.
+        //
+        // The placement still has to be dropped rather than kept: an invalid label is what
+        // excludes it from the culler, and a label that kept a placement while off screen
+        // would go on claiming grid cells (screen positions are clamped into the grid, so it
+        // would claim border cells) and hide labels that are actually visible.
+        if (!viewState.frustum.inside(calculateGeometryBBox(viewState))) {
+            _cachedFlippedPlacement.reset();
+            if (!_placement) {
+                return false; // already unplaced, nothing changed - do not reset the opacity
+            }
+            _placement.reset();
+            return true;
+        }
+        RenderStats::placementSearches++;
 
         _cachedFlippedPlacement.reset();
         if (!_tilePoints.empty()) {
