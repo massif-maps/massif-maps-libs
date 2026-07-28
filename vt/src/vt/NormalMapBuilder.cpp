@@ -242,9 +242,16 @@ namespace carto::vt {
             std::uint32_t u32;
             std::uint8_t u8[sizeof(std::uint32_t)];
         } packedNormal;
+        // Round instead of truncating: the components only have 8 bits, and truncating maps a flat
+        // normal to 127 rather than 127.5, a fixed -0.004 bias on every x and y that shows up as a
+        // systematic aspect shift on gentle terrain.
+        auto packComponent = [](float value) {
+            float scaled = (value + 1.0f) * 127.5f + 0.5f;
+            return static_cast<std::uint8_t>(scaled < 0.0f ? 0.0f : (scaled > 255.0f ? 255.0f : scaled));
+        };
         normal = cglib::unit(normal);
-        packedNormal.u8[0] = static_cast<std::uint8_t>((normal(0) + 1.0f) * 127.5f);
-        packedNormal.u8[1] = static_cast<std::uint8_t>((normal(1) + 1.0f) * 127.5f);
+        packedNormal.u8[0] = packComponent(normal(0));
+        packedNormal.u8[1] = packComponent(normal(1));
         if (_encodeElevation) {
             // R,G = normal.xy (z is reconstructed in the shader); B,A = 16-bit elevation.
             // Contrast is passed to the shader as a uniform instead of the alpha channel.
@@ -253,7 +260,7 @@ namespace carto::vt {
             packedNormal.u8[2] = static_cast<std::uint8_t>((elev16 >> 8) & 0xff);
             packedNormal.u8[3] = static_cast<std::uint8_t>(elev16 & 0xff);
         } else {
-            packedNormal.u8[2] = static_cast<std::uint8_t>((normal(2) + 1.0f) * 127.5f);
+            packedNormal.u8[2] = packComponent(normal(2));
             packedNormal.u8[3] = _alpha;
         }
         return packedNormal.u32;
