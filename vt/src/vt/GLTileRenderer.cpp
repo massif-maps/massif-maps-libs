@@ -3325,6 +3325,14 @@ namespace carto::vt {
             // fingerprint reflecting all of them.
             std::size_t& fingerprint = drapeTiles[renderTile.targetTileId];
             std::size_t contribution = calculateDrapeFingerprint(renderTile);
+            if (contribution == 0) {
+                continue; // reported for the cover, but nothing here to bake: the entry stays 0
+            }
+            // Mixing in a zero contribution would still leave a non-zero fingerprint, and the owner
+            // reads a non-zero fingerprint as "this layer HAS something for that tile". It then
+            // waits for a bake that can never deliver it, keeps the tile marked incomplete and goes
+            // on drawing the previous, finer generation's textures over it - a patch of stale map
+            // that survives a zoom out for as long as those textures stay cached.
             fingerprint ^= contribution + 0x9e3779b9 + (fingerprint << 6) + (fingerprint >> 2);
         }
     }
@@ -3636,7 +3644,11 @@ namespace carto::vt {
         // Identifies exactly what would be baked. When it changes - a style layer finishes
         // loading, a proxy is replaced by its native tile - the cached texture is stale and must
         // be re-baked, which the original bake-once cache had no way to notice.
+        // ZERO MEANS NOTHING TO BAKE, and callers rely on that: a tile with no drapeable content
+        // must be distinguishable from one that has some. Hence the explicit flag rather than
+        // "hash != 0" - the hash of real content can in principle land on zero.
         std::size_t hash = 0;
+        bool anyContent = false;
         auto combine = [&hash](std::size_t value) {
             hash ^= value + 0x9e3779b9 + (hash << 6) + (hash >> 2);
         };
@@ -3645,13 +3657,17 @@ namespace carto::vt {
             if (!hasDrapeableContent(renderLayer)) {
                 continue;
             }
+            anyContent = true;
             combine(static_cast<std::size_t>(it->first));
             combine(static_cast<std::size_t>(renderLayer.sourceTileId.zoom) * 2654435761u
                   ^ static_cast<std::size_t>(renderLayer.sourceTileId.x) * 40503u
                   ^ static_cast<std::size_t>(renderLayer.sourceTileId.y));
             combine(std::hash<const void*>()(renderLayer.layer.get()));
         }
-        return hash;
+        if (anyContent && hash == 0) {
+            hash = 1;
+        }
+        return anyContent ? hash : 0;
     }
 
     bool GLTileRenderer::hasDrapeableContent(const RenderTileLayer& renderLayer) const {
