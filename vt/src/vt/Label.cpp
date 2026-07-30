@@ -470,36 +470,30 @@ namespace carto::vt {
 
         bool valid = cglib::dot_product(viewState.orientation[2], placement->normal) > MIN_BILLBOARD_VIEW_NORMAL_DOTPRODUCT;
         if (_style->orientation == LabelOrientation::LINE) {
-            // For line orientation, we have to calculate vertex data and then project vertices to the principal axes
-            if (scale != _cachedScale || placement != _cachedPlacement) {
-                _cachedVertices.clear();
-                _cachedTexCoords.clear();
-                _cachedAttribs.clear();
-                _cachedIndices.clear();
-                _cachedValid = buildLineVertexData(placement, scale, _cachedVertices, _cachedTexCoords, _cachedAttribs, _cachedIndices);
-                _cachedScale = scale;
-                _cachedPlacement = placement;
-            }
+            // The run is laid out in glyph units on the camera axes (see buildLineVertexData), so
+            // its envelope is the bounds of that run put back on those axes - the same shape the
+            // renderer draws.
+            updateLineVertexData(placement, scale, viewState);
 
+            const cglib::vec3<float>& cameraXAxis = viewState.orientation[0];
+            const cglib::vec3<float>& cameraYAxis = viewState.orientation[1];
+            float glyphPadding = (scale > 0 ? padding / scale : 0);
             float minX = std::numeric_limits<float>::max(), maxX = -std::numeric_limits<float>::max();
             float minY = std::numeric_limits<float>::max(), maxY = -std::numeric_limits<float>::max();
             for (const cglib::vec3<float>& vertex : _cachedVertices) {
-                cglib::vec3<float> pos = origin + vertex;
-                float x = cglib::dot_product(xAxis, pos);
-                float y = cglib::dot_product(yAxis, pos);
-                minX = std::min(minX, x); maxX = std::max(maxX, x);
-                minY = std::min(minY, y); maxY = std::max(maxY, y);
+                minX = std::min(minX, vertex(0)); maxX = std::max(maxX, vertex(0));
+                minY = std::min(minY, vertex(1)); maxY = std::max(maxY, vertex(1));
             }
-            minX -= padding; maxX += padding;
-            minY -= padding; maxY += padding;
+            if (minX > maxX) {
+                minX = maxX = minY = maxY = 0;
+            }
+            minX -= glyphPadding; maxX += glyphPadding;
+            minY -= glyphPadding; maxY += glyphPadding;
 
-            cglib::vec3<float> zAxis = cglib::vector_product(xAxis, yAxis);
-            cglib::vec3<float> zOrigin = zAxis * cglib::dot_product(origin, zAxis);
-
-            envelope[0] = zOrigin + xAxis * minX + yAxis * minY;
-            envelope[1] = zOrigin + xAxis * maxX + yAxis * minY;
-            envelope[2] = zOrigin + xAxis * maxX + yAxis * maxY;
-            envelope[3] = zOrigin + xAxis * minX + yAxis * maxY;
+            envelope[0] = origin + cameraXAxis * (minX * scale) + cameraYAxis * (minY * scale);
+            envelope[1] = origin + cameraXAxis * (maxX * scale) + cameraYAxis * (minY * scale);
+            envelope[2] = origin + cameraXAxis * (maxX * scale) + cameraYAxis * (maxY * scale);
+            envelope[3] = origin + cameraXAxis * (minX * scale) + cameraYAxis * (maxY * scale);
 
             valid = valid && _cachedValid;
         }
@@ -541,23 +535,16 @@ namespace carto::vt {
         // Build vertex data cache
         bool valid = cglib::dot_product(viewState.orientation[2], placement->normal) > MIN_BILLBOARD_VIEW_NORMAL_DOTPRODUCT;
         if (_style->orientation == LabelOrientation::LINE) {
-            // Check if cached vertex data can be used
-            if (scale != _cachedScale || placement != _cachedPlacement) {
-                _cachedVertices.clear();
-                _cachedTexCoords.clear();
-                _cachedAttribs.clear();
-                _cachedIndices.clear();
-                _cachedValid = buildLineVertexData(placement, scale, _cachedVertices, _cachedTexCoords, _cachedAttribs, _cachedIndices);
-                _cachedScale = scale;
-                _cachedPlacement = placement;
-            }
+            updateLineVertexData(placement, scale, viewState);
             if (_cachedVertices.size() > MAX_LABEL_VERTICES) {
                 return false;
             }
 
             cglib::vec3<float> origin = cglib::vec3<float>::convert(placement->position - viewState.origin);
+            const cglib::vec3<float>& cameraXAxis = viewState.orientation[0];
+            const cglib::vec3<float>& cameraYAxis = viewState.orientation[1];
             for (const cglib::vec3<float>& vertex : _cachedVertices) {
-                vertices.append(origin + vertex);
+                vertices.append(origin + cameraXAxis * (vertex(0) * scale) + cameraYAxis * (vertex(1) * scale));
             }
 
             valid = valid && _cachedValid;
@@ -655,95 +642,104 @@ namespace carto::vt {
         }
     }
 
-    bool Label::buildLineVertexData(const std::shared_ptr<const Placement>& placement, float scale, VertexArray<cglib::vec3<float>>& vertices, VertexArray<cglib::vec2<std::int16_t>>& texCoords, VertexArray<cglib::vec4<std::int8_t>>& attribs, VertexArray<std::uint16_t>& indices) const {
+    bool Label::buildLineVertexData(const std::shared_ptr<const Placement>& placement, float scale, const ViewState& viewState, VertexArray<cglib::vec3<float>>& vertices, VertexArray<cglib::vec2<std::int16_t>>& texCoords, VertexArray<cglib::vec4<std::int8_t>>& attribs, VertexArray<std::uint16_t>& indices) const {
         const std::vector<Placement::Edge>& edges = placement->edges;
-        if (edges.empty()) {
+        if (edges.empty() || !(scale > 0)) {
             return false;
         }
-        std::size_t edgeIndex = placement->index;
-        cglib::vec2<float> pen(cglib::dot_product(-edges[edgeIndex].position0, edges[edgeIndex].xAxis), 0);
+
+        // The glyphs follow the line as it appears ON SCREEN, not as it lies on the ground: the
+        // line is projected onto the camera axes (and expressed in glyph units, like a point
+        // label), the run is laid out there, and the renderer puts the quads back on those same
+        // axes. Text then keeps its size and its shape whatever the tilt, where laying it out in
+        // the ground plane flattened it into a smear as soon as the surface was seen edge-on.
+        const cglib::vec3<float>& cameraXAxis = viewState.orientation[0];
+        const cglib::vec3<float>& cameraYAxis = viewState.orientation[1];
+        float invScale = 1.0f / scale;
+        std::vector<cglib::vec2<float>> points;
+        points.reserve(edges.size() + 1);
+        for (const Placement::Edge& edge : edges) {
+            points.emplace_back(cglib::dot_product(cameraXAxis, edge.position0) * invScale, cglib::dot_product(cameraYAxis, edge.position0) * invScale);
+        }
+        points.emplace_back(cglib::dot_product(cameraXAxis, edges.back().position1) * invScale, cglib::dot_product(cameraYAxis, edges.back().position1) * invScale);
+
+        // Arc length along the projected line, so a glyph can be put at a distance rather than
+        // at a vertex: the pen advances by the glyph advances, not by whatever the line does.
+        std::vector<float> lengths(points.size(), 0.0f);
+        for (std::size_t i = 1; i < points.size(); i++) {
+            lengths[i] = lengths[i - 1] + cglib::length(points[i] - points[i - 1]);
+        }
+        float total = lengths.back();
+        if (!(total > 0)) {
+            return false;
+        }
+
+        auto pointAt = [&points, &lengths](float distance) {
+            if (distance <= 0) {
+                return points.front();
+            }
+            if (distance >= lengths.back()) {
+                return points.back();
+            }
+            std::size_t i = 0;
+            while (i + 2 < points.size() && lengths[i + 1] < distance) {
+                i++;
+            }
+            float segmentLength = lengths[i + 1] - lengths[i];
+            float t = (segmentLength > 0 ? (distance - lengths[i]) / segmentLength : 0.0f);
+            return points[i] + (points[i + 1] - points[i]) * t;
+        };
+
+        std::size_t segment = std::min(placement->index, points.size() - 2);
+        cglib::vec2<float> segmentVec = points[segment + 1] - points[segment];
+        if (cglib::norm(segmentVec) == 0) {
+            return false;
+        }
+        // The anchor is the origin of this space, so its distance along the line is where the pen
+        // starts.
+        float penStart = lengths[segment] + cglib::dot_product(-points[segment], cglib::unit(segmentVec));
+        penStart = std::min(std::max(penStart, 0.0f), total);
+        float offset = penStart;
 
         bool valid = true;
-        for (std::size_t i = 0; i < _glyphs.size(); i++) {
-            const Font::Glyph& glyph = _glyphs[i];
-
-            cglib::vec3<float> xAxis = edges[edgeIndex].xAxis;
-            cglib::vec3<float> yAxis = edges[edgeIndex].yAxis;
-            cglib::vec3<float> origin = edges[edgeIndex].position0 + xAxis * pen(0) + yAxis * pen(1);
-
-            // If carriage return, reposition pen and state to the initial position
+        cglib::vec2<float> anchorDir(0, 0);
+        for (const Font::Glyph& glyph : _glyphs) {
             if (glyph.codePoint == Font::CR_CODEPOINT) {
-                edgeIndex = placement->index;
-                pen = cglib::vec2<float>(cglib::dot_product(-edges[edgeIndex].position0, edges[edgeIndex].xAxis), 0);
+                offset = penStart;
+                continue;
             }
 
-            // Move pen
-            pen += glyph.advance * scale;
-
-            // Check if we the pen has gone 'over' line segment
-            if (glyph.advance(0) > 0) {
-                cglib::vec3<float> yAxisBase = yAxis;
-                cglib::vec3<float> originBase = origin;
-                while (true) {
-                    float edgeLen = cglib::length(edges[edgeIndex].position1 - edges[edgeIndex].position0);
-                    float offset1 = cglib::dot_product(edges[edgeIndex].binormal1 * pen(1), edges[edgeIndex].xAxis);
-                    if (pen(0) < edgeLen + offset1) {
-                        break;
-                    }
-                    if (edgeIndex + 1 >= edges.size()) {
-                        valid = false;
-                        break;
-                    }
-                    edgeIndex++;
-
-                    cglib::vec3<float> edgePos0 = edges[edgeIndex].position0 + edges[edgeIndex].binormal0 * pen(1);
-                    cglib::vec3<float> edgePos1 = edges[edgeIndex].position1 + edges[edgeIndex].binormal1 * pen(1);
-                    cglib::vec3<float> target = origin;
-
-                    // Do complex multi-iteration fitting
-                    for (unsigned int iter = 0; true; iter++) {
-                        cglib::vec3<float> dq = edgePos0 - origin;
-                        cglib::vec3<float> dp = edgePos1 - edgePos0;
-                        float a = cglib::dot_product(dp, dp);
-                        float b = cglib::dot_product(dp, dq);
-                        float c = cglib::dot_product(dq, dq) - (glyph.advance(0) * scale) * (glyph.advance(0) * scale);
-                        float d = b * b - a * c;
-                        if (d < 0) {
-                            d = 0;
-                            valid = false;
-                        }
-                        float t1 = (-b + std::sqrt(d)) / a;
-                        target = edgePos0 + dp * t1;
-                        xAxis = cglib::unit(target - origin);
-                        yAxis = cglib::unit(cglib::vector_product(placement->normal, xAxis));
-
-                        if (iter >= MAX_LINE_FITTING_ITERATIONS) {
-                            break;
-                        }
-
-                        float delta = 0;
-                        if (i > 0 && _glyphs[i - 1].codePoint != Font::CR_CODEPOINT) {
-                            float sin = cglib::dot_product(xAxis, yAxisBase);
-                            delta = sin * (sin < 0 ? -_style->descent * 0.5f : _style->ascent * 0.5f) * scale;
-                        }
-                        origin = originBase + xAxis * delta;
-                    }
-
-                    float delta = 0;
-                    if (i + 1 < _glyphs.size() && _glyphs[i + 1].codePoint != Font::CR_CODEPOINT) {
-                        float sin = -cglib::dot_product(xAxis, edges[edgeIndex].yAxis);
-                        delta = sin * (sin < 0 ? -_style->descent * 0.5f : _style->ascent * 0.5f) * scale;
-                    }
-                    pen(0) = cglib::dot_product(edges[edgeIndex].xAxis, target - edges[edgeIndex].position0) + delta;
-                }
-
-                if (cglib::dot_product(xAxis, placement->xAxis) < MIN_LINE_SEGMENT_DOTPRODUCT) {
-                    valid = false;
-                }
+            float advance = glyph.advance(0);
+            if (offset + advance > total) {
+                valid = false;
             }
 
-            // Render glyph
-            if (glyph.codePoint != Font::SPACE_CODEPOINT && glyph.codePoint != Font::CR_CODEPOINT) {
+            // Direction over the glyph's OWN span, not the direction of whatever tiny segment it
+            // happens to start on: a line that shakes at a scale below the glyphs would otherwise
+            // rotate every one of them on its own and tear the word apart.
+            cglib::vec2<float> pen = pointAt(offset);
+            cglib::vec2<float> next = pointAt(offset + std::max(advance, MIN_LINE_GLYPH_SPAN));
+            cglib::vec2<float> spanVec = next - pen;
+            if (cglib::norm(spanVec) == 0) {
+                valid = false;
+                break;
+            }
+            cglib::vec2<float> xAxis = cglib::unit(spanVec);
+            cglib::vec2<float> yAxis(-xAxis(1), xAxis(0));
+            if (anchorDir == cglib::vec2<float>(0, 0)) {
+                anchorDir = xAxis;
+            }
+            else if (cglib::dot_product(xAxis, anchorDir) < MIN_LINE_SEGMENT_DOTPRODUCT) {
+                valid = false;
+            }
+
+            if (glyph.codePoint != Font::SPACE_CODEPOINT) {
+                cglib::vec2<float> base = pen + xAxis * glyph.offset(0) + yAxis * glyph.offset(1);
+                cglib::vec2<float> p0 = base;
+                cglib::vec2<float> p1 = base + xAxis * glyph.size(0);
+                cglib::vec2<float> p2 = base + xAxis * glyph.size(0) + yAxis * glyph.size(1);
+                cglib::vec2<float> p3 = base + yAxis * glyph.size(1);
+
                 std::uint16_t i0 = static_cast<std::uint16_t>(vertices.size());
                 indices.append(i0 + 0, i0 + 1, i0 + 2);
                 indices.append(i0 + 0, i0 + 2, i0 + 3);
@@ -755,31 +751,29 @@ namespace carto::vt {
                 cglib::vec4<std::int8_t> attrib(0, static_cast<std::int8_t>(glyph.baseGlyph.mode), 0, 0);
                 attribs.append(attrib, attrib, attrib, attrib);
 
-                cglib::vec2<float> p0 = glyph.offset * scale;
-                cglib::vec2<float> p3 = (glyph.offset + glyph.size) * scale;
-                vertices.append(origin + xAxis * p0(0) + yAxis * p0(1), origin + xAxis * p3(0) + yAxis * p0(1), origin + xAxis * p3(0) + yAxis * p3(1), origin + xAxis * p0(0) + yAxis * p3(1));
+                vertices.append(cglib::vec3<float>(p0(0), p0(1), 0), cglib::vec3<float>(p1(0), p1(1), 0), cglib::vec3<float>(p2(0), p2(1), 0), cglib::vec3<float>(p3(0), p3(1), 0));
             }
 
-            // Handle backwards moving
-            if (glyph.advance(0) < 0) {
-                while (true) {
-                    float offset0 = cglib::dot_product(edges[edgeIndex].binormal0 * pen(1), edges[edgeIndex].xAxis);
-                    if (pen(0) >= offset0) {
-                        break;
-                    }
-                    if (edgeIndex == 0) {
-                        valid = false;
-                        break;
-                    }
-                    edgeIndex--;
-
-                    float offset1 = cglib::dot_product(edges[edgeIndex].binormal1 * pen(1), edges[edgeIndex].xAxis);
-                    pen(0) += cglib::length(edges[edgeIndex].position1 - edges[edgeIndex].position0) + offset1 - offset0;
-                }
-            }
+            offset += advance;
         }
-
         return valid;
+    }
+
+    void Label::updateLineVertexData(const std::shared_ptr<const Placement>& placement, float scale, const ViewState& viewState) const {
+        // The run is built on the camera axes, so it has to be rebuilt when they turn, not only
+        // when the scale or the placement change.
+        if (scale == _cachedScale && placement == _cachedPlacement && viewState.orientation[0] == _cachedCameraXAxis && viewState.orientation[1] == _cachedCameraYAxis) {
+            return;
+        }
+        _cachedVertices.clear();
+        _cachedTexCoords.clear();
+        _cachedAttribs.clear();
+        _cachedIndices.clear();
+        _cachedValid = buildLineVertexData(placement, scale, viewState, _cachedVertices, _cachedTexCoords, _cachedAttribs, _cachedIndices);
+        _cachedScale = scale;
+        _cachedPlacement = placement;
+        _cachedCameraXAxis = viewState.orientation[0];
+        _cachedCameraYAxis = viewState.orientation[1];
     }
 
     void Label::setupCoordinateSystem(const ViewState& viewState, const std::shared_ptr<const Placement>& placement, cglib::vec3<float>& origin, cglib::vec3<float>& xAxis, cglib::vec3<float>& yAxis) const {

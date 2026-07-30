@@ -84,8 +84,9 @@ namespace carto::vt {
         static constexpr float SUMMED_ANGLE_SPLIT_THRESHOLD = 2.09f; // maximum sum of segment angles, in radians
         static constexpr float SINGLE_ANGLE_SPLIT_THRESHOLD = 1.57f; // maximum single segment angle, in radians
         static constexpr float MIN_LINE_SEGMENT_DOTPRODUCT = 0.5f; // the minimum allowed dot product between consecutive segments
+        static constexpr float MIN_LINE_GLYPH_SPAN = 0.5f; // shortest span a glyph takes its direction from, in glyph units
         static constexpr double PLACEMENT_ROOM_FACTOR = 1.25; // room the glyph run is given on the line, relative to its own length
-        static constexpr double PLACEMENT_SMOOTH_TEXT_FRACTION = 1.0 / 6.0; // line detail below this fraction of the text length is smoothed away before laying out glyphs
+        static constexpr double PLACEMENT_SMOOTH_TEXT_FRACTION = 1.0 / 3.0; // line detail below this fraction of the text length is smoothed away before laying out glyphs
         static constexpr double SNAP_MOVE_EPSILON = 1.0e-9; // internal world units (1 unit ~ 38m); a 1px anchor drift is ~1e-4 at z15
         static constexpr float MIN_BILLBOARD_VIEW_NORMAL_DOTPRODUCT = 0.1f; // the minimum allowed dot product between view vector and surface normal (cos ~78.5deg -> labels valid down to ~tilt 11.5; was 0.49 = calibrated to the old 30deg tilt clamp)
 
@@ -193,7 +194,8 @@ namespace carto::vt {
         float calculateTerrainScaleFactor(const cglib::vec3<double>& position, const ViewState& viewState) const;
         void setupCoordinateSystem(const ViewState& viewState, const std::shared_ptr<const Placement>& placement, cglib::vec3<float>& origin, cglib::vec3<float>& xAxis, cglib::vec3<float>& yAxis) const;
         void buildPointVertexData(VertexArray<cglib::vec3<float>>& vertices, VertexArray<cglib::vec2<std::int16_t>>& texCoords, VertexArray<cglib::vec4<std::int8_t>>& attribs, VertexArray<std::uint16_t>& indices) const;
-        bool buildLineVertexData(const std::shared_ptr<const Placement>& placement, float scale, VertexArray<cglib::vec3<float>>& vertices, VertexArray<cglib::vec2<std::int16_t>>& texCoords, VertexArray<cglib::vec4<std::int8_t>>& attribs, VertexArray<std::uint16_t>& indices) const;
+        void updateLineVertexData(const std::shared_ptr<const Placement>& placement, float scale, const ViewState& viewState) const;
+        bool buildLineVertexData(const std::shared_ptr<const Placement>& placement, float scale, const ViewState& viewState, VertexArray<cglib::vec3<float>>& vertices, VertexArray<cglib::vec2<std::int16_t>>& texCoords, VertexArray<cglib::vec4<std::int8_t>>& attribs, VertexArray<std::uint16_t>& indices) const;
 
         cglib::bbox3<double> calculateGeometryBBox(const ViewState& viewState) const;
         static void smoothPlacementLine(const std::vector<cglib::vec3<double>>& vertices, std::size_t index, double minEdgeLength, std::vector<cglib::vec3<double>>& smoothedVertices, std::size_t& smoothedIndex);
@@ -242,6 +244,8 @@ namespace carto::vt {
 
         mutable bool _cachedValid = false;
         mutable float _cachedScale = 0;
+        mutable cglib::vec3<float> _cachedCameraXAxis = cglib::vec3<float>(0, 0, 0);
+        mutable cglib::vec3<float> _cachedCameraYAxis = cglib::vec3<float>(0, 0, 0);
         mutable std::shared_ptr<const Placement> _cachedPlacement;
         mutable VertexArray<cglib::vec3<float>> _cachedVertices;
         mutable VertexArray<cglib::vec2<std::int16_t>> _cachedTexCoords;
