@@ -655,13 +655,65 @@ namespace carto::vt {
         // the ground plane flattened it into a smear as soon as the surface was seen edge-on.
         const cglib::vec3<float>& cameraXAxis = viewState.orientation[0];
         const cglib::vec3<float>& cameraYAxis = viewState.orientation[1];
+
+        // Project through the view-projection, not just onto the camera axes: with a tilted view
+        // the far half of a line is compressed by the perspective divide, and glyphs laid out on
+        // an orthographic projection of it drift off the line and pick up the wrong angle. The
+        // basis is the anchor's own glyph unit, so the run stays in glyph units either way.
+        cglib::mat4x4<double> mvpMatrix = viewState.projectionMatrix * viewState.cameraMatrix;
+        cglib::vec3<double> anchorPos = placement->position;
+        auto projectPoint = [&mvpMatrix, &viewState](const cglib::vec3<double>& pos, cglib::vec2<float>& result) {
+            cglib::vec4<double> clipPos = cglib::transform(cglib::vec4<double>(pos(0), pos(1), pos(2), 1), mvpMatrix);
+            if (!(clipPos(3) > 0)) {
+                return false;
+            }
+            result = cglib::vec2<float>(static_cast<float>(clipPos(0) / clipPos(3) * viewState.aspect), static_cast<float>(clipPos(1) / clipPos(3)));
+            return true;
+        };
+
+        cglib::vec2<float> anchorScreen, xUnitScreen, yUnitScreen;
+        bool perspective = projectPoint(anchorPos, anchorScreen)
+            && projectPoint(anchorPos + cglib::vec3<double>::convert(cameraXAxis * scale), xUnitScreen)
+            && projectPoint(anchorPos + cglib::vec3<double>::convert(cameraYAxis * scale), yUnitScreen);
+        cglib::vec2<float> xUnit = xUnitScreen - anchorScreen;
+        cglib::vec2<float> yUnit = yUnitScreen - anchorScreen;
+        float determinant = xUnit(0) * yUnit(1) - xUnit(1) * yUnit(0);
+        perspective = perspective && determinant != 0;
+
         float invScale = 1.0f / scale;
+        auto toGlyphSpace = [&](const cglib::vec3<float>& offset, cglib::vec2<float>& result) {
+            if (!perspective) {
+                result = cglib::vec2<float>(cglib::dot_product(cameraXAxis, offset) * invScale, cglib::dot_product(cameraYAxis, offset) * invScale);
+                return true;
+            }
+            cglib::vec2<float> screenPos;
+            if (!projectPoint(anchorPos + cglib::vec3<double>::convert(offset), screenPos)) {
+                return false;
+            }
+            cglib::vec2<float> delta = screenPos - anchorScreen;
+            result = cglib::vec2<float>((delta(0) * yUnit(1) - delta(1) * yUnit(0)) / determinant,
+                                        (xUnit(0) * delta(1) - xUnit(1) * delta(0)) / determinant);
+            return true;
+        };
+
         std::vector<cglib::vec2<float>> points;
         points.reserve(edges.size() + 1);
         for (const Placement::Edge& edge : edges) {
-            points.emplace_back(cglib::dot_product(cameraXAxis, edge.position0) * invScale, cglib::dot_product(cameraYAxis, edge.position0) * invScale);
+            cglib::vec2<float> point;
+            if (!toGlyphSpace(edge.position0, point)) {
+                break; // behind the camera: the line ends here as far as the glyphs are concerned
+            }
+            points.push_back(point);
         }
-        points.emplace_back(cglib::dot_product(cameraXAxis, edges.back().position1) * invScale, cglib::dot_product(cameraYAxis, edges.back().position1) * invScale);
+        if (points.size() == edges.size()) {
+            cglib::vec2<float> point;
+            if (toGlyphSpace(edges.back().position1, point)) {
+                points.push_back(point);
+            }
+        }
+        if (points.size() < 2) {
+            return false;
+        }
 
         // Arc length along the projected line, so a glyph can be put at a distance rather than
         // at a vertex: the pen advances by the glyph advances, not by whatever the line does.
@@ -958,6 +1010,8 @@ namespace carto::vt {
             bbox = cglib::bbox2<float>::make_union(envelope.begin(), envelope.end());
         }
         
+        const TilePoint* bestTilePoint = nullptr;
+        double bestDistance = std::numeric_limits<double>::infinity();
         for (const TilePoint& tilePoint : tilePoints) {
             // Check that text is visible, calculate text distance from all frustum planes
             bool inside = true;
@@ -983,9 +1037,20 @@ namespace carto::vt {
                     break;
                 }
             }
+            // Take the candidate CLOSEST TO THE CAMERA rather than the first one that fits: the
+            // anchors of a line are spread over everything loaded, so the first fitting one is
+            // usually far away - the label then sits near the horizon, tiny, while the stretch of
+            // line the user is looking at carries nothing.
             if (inside) {
-                return std::make_shared<const Placement>(tilePoint.tileId, tilePoint.localId, tilePoint.position, tilePoint.normal, tilePoint.xAxis, tilePoint.yAxis);
+                double distance = cglib::length(tilePoint.position - viewState.origin);
+                if (distance < bestDistance) {
+                    bestDistance = distance;
+                    bestTilePoint = &tilePoint;
+                }
             }
+        }
+        if (bestTilePoint) {
+            return std::make_shared<const Placement>(bestTilePoint->tileId, bestTilePoint->localId, bestTilePoint->position, bestTilePoint->normal, bestTilePoint->xAxis, bestTilePoint->yAxis);
         }
         return std::shared_ptr<const Placement>();
     }
