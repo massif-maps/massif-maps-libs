@@ -107,6 +107,100 @@ namespace carto::vt {
         return cglib::bbox3<double>(_geometryBBox.min - marginVec, _geometryBBox.max + marginVec);
     }
 
+    void Label::smoothPlacementLine(const std::vector<cglib::vec3<double>>& vertices, std::size_t index, double minEdgeLength, std::vector<cglib::vec3<double>>& smoothedVertices, std::size_t& smoothedIndex) {
+        // Glyphs are laid out edge by edge, so a line whose edges are shorter than the glyphs
+        // turns every bit of its own noise into a turn of the text - and the direction test in
+        // buildLineVertexData then rejects the placement. That is what happens to a contour
+        // traced on a DEM grid: it runs along cell edges, so it zigzags by a whole cell on every
+        // step. Averaging the vertices over a window of the given length (rather than picking
+        // every n-th one, which samples the zigzag instead of removing it) leaves the direction
+        // the line actually takes. Only the placement is smoothed; the geometry keeps being
+        // drawn from its own vertices.
+        smoothedVertices.clear();
+        smoothedIndex = index;
+        if (vertices.size() < 2 || !(minEdgeLength > 0)) {
+            smoothedVertices = vertices;
+            return;
+        }
+
+        std::vector<std::size_t> sourceIndices;
+        cglib::vec3<double> sum = vertices.front();
+        std::size_t count = 1;
+        double length = 0;
+        for (std::size_t i = 1; i < vertices.size(); i++) {
+            length += cglib::length(vertices[i] - vertices[i - 1]);
+            sum += vertices[i];
+            count++;
+            if (length >= minEdgeLength || i + 1 == vertices.size()) {
+                smoothedVertices.push_back(sum * (1.0 / count));
+                sourceIndices.push_back(i);
+                sum = cglib::vec3<double>(0, 0, 0);
+                count = 0;
+                length = 0;
+            }
+        }
+        if (smoothedVertices.size() < 2) {
+            smoothedVertices = vertices;
+            smoothedIndex = index;
+            return;
+        }
+
+        // The anchor lies on source segment [index, index + 1]. Each smoothed vertex averages one
+        // window of source vertices ending at sourceIndices[i], so the anchor belongs to the first
+        // window reaching past it - and the edge to lay the glyphs along starts there.
+        smoothedIndex = smoothedVertices.size() - 2;
+        for (std::size_t i = 0; i < sourceIndices.size(); i++) {
+            if (index <= sourceIndices[i]) {
+                smoothedIndex = std::min(i, smoothedVertices.size() - 2);
+                break;
+            }
+        }
+    }
+
+    void Label::clampPlacementAnchor(const std::vector<cglib::vec3<double>>& vertices, double textLength, std::size_t& index, cglib::vec3<double>& position) {
+        // The glyphs are laid out FORWARD from the anchor (and backwards from it when the label is
+        // flipped to stay readable), so an anchor sitting near an end of the line has no room and
+        // the placement is dropped. Anchors are generated per segment without knowing how much
+        // line follows, and a line short enough to have no room anywhere - a contour ring cut into
+        // fragments, for instance - would never label at all. Slide the anchor along its own line
+        // until the run fits, staying as close to where it was as possible.
+        if (vertices.size() < 2 || !(textLength > 0)) {
+            return;
+        }
+
+        std::vector<double> lengths(vertices.size(), 0);
+        for (std::size_t i = 1; i < vertices.size(); i++) {
+            lengths[i] = lengths[i - 1] + cglib::length(vertices[i] - vertices[i - 1]);
+        }
+        double total = lengths.back();
+        if (!(total > 0)) {
+            return;
+        }
+
+        index = std::min(index, vertices.size() - 2);
+        double anchor = lengths[index] + cglib::length(position - vertices[index]);
+        // A line shorter than two runs can not have room on both sides; its middle is the best
+        // compromise, and the flipped placement then fails on the side that is too short.
+        // The run needs a little more room than its own length: the glyphs are fitted edge by
+        // edge and each fit consumes slightly more line than the advance it stands for.
+        double room = textLength * PLACEMENT_ROOM_FACTOR;
+        double minAnchor = std::min(room, total * 0.5);
+        double maxAnchor = std::max(total - room, total * 0.5);
+        double clamped = std::min(std::max(anchor, minAnchor), maxAnchor);
+        if (clamped == anchor) {
+            return;
+        }
+
+        std::size_t i = 0;
+        while (i + 2 < vertices.size() && lengths[i + 1] < clamped) {
+            i++;
+        }
+        double edgeLength = lengths[i + 1] - lengths[i];
+        double t = (edgeLength > 0 ? (clamped - lengths[i]) / edgeLength : 0);
+        index = i;
+        position = vertices[i] + (vertices[i + 1] - vertices[i]) * std::min(1.0, std::max(0.0, t));
+    }
+
     std::shared_ptr<const Label::Placement> Label::buildLinePlacement(const TileLine& tileLine, std::size_t index, const cglib::vec3<double>& position) const {
         // Keeps the anchor where it is horizontally and takes its height from the line's
         // own chord, so the anchor sits exactly on the geometry the glyphs are laid out
@@ -120,12 +214,20 @@ namespace carto::vt {
         double t = (len2 > 0 ? ((position(0) - vertex0(0)) * dx + (position(1) - vertex0(1)) * dy) / len2 : 0);
         t = std::max(0.0, std::min(1.0, t));
         cglib::vec3<double> pos = vertex0 + (vertex1 - vertex0) * t;
-        return std::make_shared<const Placement>(tileLine.tileId, tileLine.localId, tileLine.vertices, index, pos, tileLine.normal);
+        std::vector<cglib::vec3<double>> smoothedVertices;
+        std::size_t smoothedIndex = index;
+        smoothPlacementLine(tileLine.vertices, index, _placementTextLength * PLACEMENT_SMOOTH_TEXT_FRACTION, smoothedVertices, smoothedIndex);
+        clampPlacementAnchor(smoothedVertices, _placementTextLength, smoothedIndex, pos);
+        return std::make_shared<const Placement>(tileLine.tileId, tileLine.localId, smoothedVertices, smoothedIndex, index, pos, tileLine.normal);
     }
 
     void Label::snapPlacement(const Label& label) {
         _placement = label._placement;
         _cachedFlippedPlacement = label._cachedFlippedPlacement;
+        // The re-snapped placement below is rebuilt right here, before this label ever sees a
+        // view state - it has to smooth its line by the same length the old one did, or the
+        // glyph run changes shape on every tile-set change.
+        _placementTextLength = label._placementTextLength;
         if (!_placement) {
             return;
         }
@@ -214,8 +316,8 @@ namespace carto::vt {
                 if (!(tileLine.tileId == _placement->tileId && tileLine.localId == _placement->localId)) {
                     continue;
                 }
-                if (_placement->index + 1 < tileLine.vertices.size()) {
-                    placement = buildLinePlacement(tileLine, _placement->index, position);
+                if (_placement->sourceIndex + 1 < tileLine.vertices.size()) {
+                    placement = buildLinePlacement(tileLine, _placement->sourceIndex, position);
                 }
                 break;
             }
@@ -234,6 +336,21 @@ namespace carto::vt {
 
     bool Label::updatePlacement(const ViewState& viewState) {
         VT_STAT_INC(placementUpdates);
+
+        // Refresh the length of the glyph run for the placements built below: it is a screen
+        // size, so the distance it covers depends on the view - including the terrain factor
+        // that keeps labels the same size on screen, which the layout below is measured against
+        // (calculateEnvelope applies it too). Without it, a label over terrain reserves the
+        // wrong amount of line and its run then walks off the end.
+        if (_style->orientation == LabelOrientation::LINE) {
+            float scale = (_style->sizeFunc)(viewState) * viewState.zoomScale * _style->scale;
+            scale *= calculateTerrainScaleFactor(calculateGeometryBBox(viewState).center(), viewState);
+            float textLength = 0;
+            for (const Font::Glyph& glyph : _glyphs) {
+                textLength += glyph.advance(0) * scale;
+            }
+            _placementTextLength = textLength;
+        }
         if (_placement) {
             std::array<cglib::vec3<float>, 4> envelope;
             calculateEnvelope(viewState, envelope);
@@ -304,6 +421,10 @@ namespace carto::vt {
     }
 
     float Label::calculateTerrainScaleFactor(const Placement& placement, const ViewState& viewState) const {
+        return calculateTerrainScaleFactor(placement.position, viewState);
+    }
+
+    float Label::calculateTerrainScaleFactor(const cglib::vec3<double>& position, const ViewState& viewState) const {
         // With planar 3D terrain, labels keep a CONSTANT ON-SCREEN SIZE (tangram-style):
         // the label world size is derived from the zoom level only, so the perspective
         // divide would otherwise scale labels by their distance - drastically oversizing
@@ -314,7 +435,7 @@ namespace carto::vt {
             return 1.0f;
         }
         cglib::vec3<double> viewDir = -cglib::vec3<double>::convert(viewState.orientation[2]);
-        double depth = cglib::dot_product(placement.position - viewState.origin, viewDir);
+        double depth = cglib::dot_product(position - viewState.origin, viewDir);
         if (!(depth > 0)) {
             return 1.0f;
         }
@@ -764,8 +885,8 @@ namespace carto::vt {
                 if (!(tileLine.tileId == oldPlacement->tileId && tileLine.localId == oldPlacement->localId)) {
                     continue;
                 }
-                if (oldPlacement->index + 1 < tileLine.vertices.size()) {
-                    return buildLinePlacement(tileLine, oldPlacement->index, position);
+                if (oldPlacement->sourceIndex + 1 < tileLine.vertices.size()) {
+                    return buildLinePlacement(tileLine, oldPlacement->sourceIndex, position);
                 }
                 break;
             }
@@ -824,7 +945,11 @@ namespace carto::vt {
             return std::shared_ptr<const Placement>();
         }
 
-        return std::make_shared<const Placement>(bestTileLine->tileId, bestTileLine->localId, bestTileLine->vertices, bestIndex, bestPos, bestTileLine->normal);
+        std::vector<cglib::vec3<double>> smoothedVertices;
+        std::size_t smoothedIndex = bestIndex;
+        smoothPlacementLine(bestTileLine->vertices, bestIndex, _placementTextLength * PLACEMENT_SMOOTH_TEXT_FRACTION, smoothedVertices, smoothedIndex);
+        clampPlacementAnchor(smoothedVertices, _placementTextLength, smoothedIndex, bestPos);
+        return std::make_shared<const Placement>(bestTileLine->tileId, bestTileLine->localId, smoothedVertices, smoothedIndex, bestIndex, bestPos, bestTileLine->normal);
     }
 
     std::shared_ptr<const Label::Placement> Label::findClippedPointPlacement(const ViewState& viewState, const std::list<TilePoint>& tilePoints) const {
@@ -938,7 +1063,11 @@ namespace carto::vt {
                         double diff = cglib::length(pos1 - pos0);
                         if (ofs < diff) {
                             cglib::vec3<double> pos = pos0 + (pos1 - pos0) * (ofs / diff); // this assumes central anchor point
-                            bestPlacement = std::make_shared<const Placement>(tileLine.tileId, tileLine.localId, tileLine.vertices, i, pos, tileLine.normal);
+                            std::vector<cglib::vec3<double>> smoothedVertices;
+                            std::size_t smoothedIndex = i;
+                            smoothPlacementLine(tileLine.vertices, i, _placementTextLength * PLACEMENT_SMOOTH_TEXT_FRACTION, smoothedVertices, smoothedIndex);
+                            clampPlacementAnchor(smoothedVertices, _placementTextLength, smoothedIndex, pos);
+                            bestPlacement = std::make_shared<const Placement>(tileLine.tileId, tileLine.localId, smoothedVertices, smoothedIndex, i, pos, tileLine.normal);
                             bestLen = len;
                             break;
                         }
