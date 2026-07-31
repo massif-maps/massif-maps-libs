@@ -105,6 +105,11 @@ namespace carto::vt {
         // GL thread blocked on the renderer mutex - the label placement worker holds it for
         // the whole of buildLabelMaps.
         static inline std::atomic<long long> mutexWaitNs{0};
+        // Terrain drape bakes: how many a frame gets through, how many were waiting, and what
+        // one costs. This is what decides how fast 3D content appears.
+        static inline std::atomic<long long> drapeBakes{0};
+        static inline std::atomic<long long> drapeBakeQueued{0};
+        static inline std::atomic<long long> drapeBakeNs{0};
         static inline std::atomic<long long> geometrySkips{0};   // renderTileGeometry calls that set up and then bailed out (invisible)
 
         // Where a single renderTileGeometry call goes, in nanoseconds, split at the

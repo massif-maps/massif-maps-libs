@@ -3316,8 +3316,10 @@ namespace carto::vt {
     }
 
     void GLTileRenderer::renderTileMask(const TileId& tileId) {
+#if CARTO_VT_RENDER_STATS
         VT_STAT_CLOCK(maskClock);
         struct MaskTimer { std::chrono::steady_clock::time_point& c; ~MaskTimer() { VT_STAT_SPLIT(surfMaskNs, c); } } maskTimer { maskClock };
+#endif
         bool gridMode = _terrainRegularGrid && _terrainMode && static_cast<bool>(_terrainTextureProvider);
         cglib::mat4x4<double> surfaceFrame = gridMode ? calculateTileMatrix(tileId, 1.0f) : cglib::translate4_matrix(_tileSurfaceBuilderOrigin);
         for (const std::shared_ptr<TileSurface>& tileSurface : (gridMode ? buildCompiledTerrainGridSurfaces() : buildCompiledTileSurfaces(tileId))) {
@@ -4051,8 +4053,10 @@ namespace carto::vt {
     }
 
     int GLTileRenderer::renderTileSurfaceDrape(const TileId& tileId, float uvOffsetX, float uvOffsetY, float uvScale) {
+#if CARTO_VT_RENDER_STATS
         VT_STAT_CLOCK(drapeClock);
         struct DrapeTimer { std::chrono::steady_clock::time_point& c; ~DrapeTimer() { VT_STAT_SPLIT(surfDrapeNs, c); } } drapeTimer { drapeClock };
+#endif
         auto texIt = _drapeTextures.find(tileId);
         if (texIt == _drapeTextures.end() || !_drapeTilesThisFrame.count(tileId)) {
             return -3;
