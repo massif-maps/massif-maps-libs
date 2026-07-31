@@ -298,9 +298,9 @@ namespace carto::vt {
         // tiles are in the cover, so the more often it happened.
         double metersToInternal = 0;
         for (const TileId& tileId : tileIds) {
-            TerrainTexture terrainTexture;
-            if (_terrainTextureProvider && _terrainTextureProvider(tileId, terrainTexture) && terrainTexture.metersToInternal > 0) {
-                metersToInternal = terrainTexture.metersToInternal;
+            const std::pair<bool, TerrainTexture>& resolved = resolveTerrainTexture(tileId);
+            if (resolved.first && resolved.second.metersToInternal > 0) {
+                metersToInternal = resolved.second.metersToInternal;
                 break;
             }
         }
@@ -792,6 +792,7 @@ namespace carto::vt {
                     glUniformMatrix4fv(shaderProgram.uniforms[U_MVPMATRIX], 1, GL_FALSE, mvpMatrix.data());
                     glDrawElements(GL_TRIANGLES, tileSurface->getIndicesCount(), GL_UNSIGNED_SHORT, 0);
             VT_STAT_INC(surfaceDraws);
+            VT_STAT_INC(surfShadowDraws);
             VT_STAT_ADD(surfaceIndices, tileSurface->getIndicesCount());
                     draws++;
                 }
@@ -1008,6 +1009,7 @@ namespace carto::vt {
         _colorFuncCache.clear();
         _tileMatrixCache.clear();
         _tileMVPMatrixCache.clear();
+        _terrainTextureCache.clear();
         VT_STAT_INC(viewStateChanges);
     }
 
@@ -1575,7 +1577,9 @@ namespace carto::vt {
     void GLTileRenderer::renderLabels(bool labels2D, bool labels3D) {
         using BitmapLabelsPair = std::pair<std::shared_ptr<const Bitmap>, std::vector<std::shared_ptr<Label>>>;
 
+        VT_STAT_CLOCK(lockClock);
         std::lock_guard<std::mutex> lock(_mutex);
+        VT_STAT_SPLIT(mutexWaitNs, lockClock);
 
         resetProgramState(); // another renderer may have bound its own program since the last draw
 
@@ -1611,6 +1615,8 @@ namespace carto::vt {
     
     bool GLTileRenderer::endFrame() {
         std::lock_guard<std::mutex> lock(_mutex);
+        VT_STAT_CLOCK(statClock);
+        VT_STAT_ADD(endFrameSwept, _compiledBitmapMap.size() + _compiledTileBitmapMap.size() + _compiledTileSurfaceMap.size() + _compiledTileGeometryMap.size());
 
 
 
@@ -1655,6 +1661,7 @@ namespace carto::vt {
         }
 
         // Note: we do not release unused label batches. These are unlinkely very big and can be reused later
+        VT_STAT_SPLIT(endFrameNs, statClock);
         return false;
     }
 
@@ -3058,16 +3065,22 @@ namespace carto::vt {
                 lastLabelStyle = labelStyle;
             }
 
+            VT_STAT_CLOCK(statClock);
             label->calculateVertexData(labelBatchParams.widthTable[styleIndex], _viewState, styleIndex, haloStyleIndex, _labelVertices, _labelNormals, _labelTexCoords, _labelAttribs, _labelIndices);
+            VT_STAT_SPLIT(labelVertexBuildNs, statClock);
+            VT_STAT_INC(labelsDrawnVertices);
 
             labelBatchParams.labelCount++;
 
             if (_labelVertices.size() >= 32768) { // flush the batch if largest vertex index is getting 'close' to 64k limit
                 renderLabelBatch(labelBatchParams, bitmap);
+                VT_STAT_SPLIT(labelBatchNs, statClock);
             }
         }
 
+        VT_STAT_CLOCK(batchClock);
         renderLabelBatch(labelBatchParams, bitmap);
+        VT_STAT_SPLIT(labelBatchNs, batchClock);
     }
     
     void GLTileRenderer::setCompOp(CompOp compOp) {
@@ -3148,6 +3161,16 @@ namespace carto::vt {
         checkGLError();
     }
 
+    const std::pair<bool, GLTileRenderer::TerrainTexture>& GLTileRenderer::resolveTerrainTexture(const TileId& tileId) const {
+        auto it = _terrainTextureCache.find(tileId);
+        if (it != _terrainTextureCache.end()) {
+            return it->second;
+        }
+        std::pair<bool, TerrainTexture> resolved(false, TerrainTexture());
+        resolved.first = _terrainTextureProvider && _terrainTextureProvider(tileId, resolved.second);
+        return _terrainTextureCache.emplace(tileId, resolved).first->second;
+    }
+
     bool GLTileRenderer::setupTerrainUniforms(const ShaderProgram& shaderProgram, const TileId& tileId, const cglib::mat4x4<double>& vertexFrameMatrix, bool gridSurface) {
         // GPU terrain draping: bind the elevation texture covering the tile and the affine
         // transforms taking vertex xy coordinates (in the axis-aligned frame defined by
@@ -3199,8 +3222,9 @@ namespace carto::vt {
         }
         glUniform4f(shaderProgram.uniforms[U_TERRAINEDGECOARSENING], edgeCoarsening(0), edgeCoarsening(1), edgeCoarsening(2), edgeCoarsening(3));
 
-        TerrainTexture terrainTexture;
-        bool valid = _terrainTextureProvider && _terrainTextureProvider(tileId, terrainTexture);
+        const std::pair<bool, TerrainTexture>& resolved = resolveTerrainTexture(tileId);
+        bool valid = resolved.first;
+        const TerrainTexture& terrainTexture = resolved.second;
         if (!valid || terrainTexture.textureId == 0 || terrainTexture.internalSize(0) <= 0 || terrainTexture.internalSize(1) <= 0) {
             // No elevation data (yet): render the tile flat, consistently across all layers
             glUniform1i(shaderProgram.uniforms[U_ELEVATIONTEXTURE], 1);
@@ -3262,8 +3286,9 @@ namespace carto::vt {
         // surface that the vertex stage actually displaced (exaggeration included, because it is
         // baked into metersToInternal). The mercator 1/cos(latitude) stretch is applied per
         // fragment through vElevCosh.
-        TerrainTexture terrainTexture;
-        bool valid = _terrainTextureProvider && _terrainTextureProvider(tileId, terrainTexture);
+        const std::pair<bool, TerrainTexture>& resolved = resolveTerrainTexture(tileId);
+        bool valid = resolved.first;
+        const TerrainTexture& terrainTexture = resolved.second;
         float slopeX = 0.0f, slopeY = 0.0f;
         if (valid && terrainTexture.internalSize(0) > 0 && terrainTexture.internalSize(1) > 0) {
             slopeX = static_cast<float>(terrainTexture.metersToInternal / terrainTexture.internalSize(0));
@@ -3276,6 +3301,8 @@ namespace carto::vt {
     }
 
     void GLTileRenderer::renderTileMask(const TileId& tileId) {
+        VT_STAT_CLOCK(maskClock);
+        struct MaskTimer { std::chrono::steady_clock::time_point& c; ~MaskTimer() { VT_STAT_SPLIT(surfMaskNs, c); } } maskTimer { maskClock };
         bool gridMode = _terrainRegularGrid && _terrainMode && static_cast<bool>(_terrainTextureProvider);
         cglib::mat4x4<double> surfaceFrame = gridMode ? calculateTileMatrix(tileId, 1.0f) : cglib::translate4_matrix(_tileSurfaceBuilderOrigin);
         for (const std::shared_ptr<TileSurface>& tileSurface : (gridMode ? buildCompiledTerrainGridSurfaces() : buildCompiledTileSurfaces(tileId))) {
@@ -3303,6 +3330,7 @@ namespace carto::vt {
 
             glDrawElements(GL_TRIANGLES, tileSurface->getIndicesCount(), GL_UNSIGNED_SHORT, 0);
             VT_STAT_INC(surfaceDraws);
+            VT_STAT_INC(surfMaskDraws);
             VT_STAT_ADD(surfaceIndices, tileSurface->getIndicesCount());
 
             disableVertexAttrib(shaderProgram.attribs[A_VERTEXPOSITION]);
@@ -3403,6 +3431,7 @@ namespace carto::vt {
 
             glDrawElements(GL_TRIANGLES, tileSurface->getIndicesCount(), GL_UNSIGNED_SHORT, 0);
             VT_STAT_INC(surfaceDraws);
+            VT_STAT_INC(surfFillDraws);
             VT_STAT_ADD(surfaceIndices, tileSurface->getIndicesCount());
 
             disableVertexAttrib(shaderProgram.attribs[A_VERTEXPOSITION]);
@@ -3673,6 +3702,7 @@ namespace carto::vt {
 
             glDrawElements(GL_TRIANGLES, tileSurface->getIndicesCount(), GL_UNSIGNED_SHORT, 0);
             VT_STAT_INC(surfaceDraws);
+            VT_STAT_INC(surfBlitDraws);
             VT_STAT_ADD(surfaceIndices, tileSurface->getIndicesCount());
             draws++;
 
@@ -3996,6 +4026,8 @@ namespace carto::vt {
     }
 
     int GLTileRenderer::renderTileSurfaceDrape(const TileId& tileId, float uvOffsetX, float uvOffsetY, float uvScale) {
+        VT_STAT_CLOCK(drapeClock);
+        struct DrapeTimer { std::chrono::steady_clock::time_point& c; ~DrapeTimer() { VT_STAT_SPLIT(surfDrapeNs, c); } } drapeTimer { drapeClock };
         auto texIt = _drapeTextures.find(tileId);
         if (texIt == _drapeTextures.end() || !_drapeTilesThisFrame.count(tileId)) {
             return -3;
@@ -4057,6 +4089,7 @@ namespace carto::vt {
 
             glDrawElements(GL_TRIANGLES, tileSurface->getIndicesCount(), GL_UNSIGNED_SHORT, 0);
             VT_STAT_INC(surfaceDraws);
+            VT_STAT_INC(surfDrapeDraws);
             VT_STAT_ADD(surfaceIndices, tileSurface->getIndicesCount());
             surfaces++;
 
@@ -4193,6 +4226,7 @@ namespace carto::vt {
 
             glDrawElements(GL_TRIANGLES, tileSurface->getIndicesCount(), GL_UNSIGNED_SHORT, 0);
             VT_STAT_INC(surfaceDraws);
+            VT_STAT_INC(surfBackgroundDraws);
             VT_STAT_ADD(surfaceIndices, tileSurface->getIndicesCount());
 
             if (_lightingShader2D) {
@@ -4302,6 +4336,7 @@ namespace carto::vt {
 
             glDrawElements(GL_TRIANGLES, tileSurface->getIndicesCount(), GL_UNSIGNED_SHORT, 0);
             VT_STAT_INC(surfaceDraws);
+            VT_STAT_INC(surfBitmapDraws);
             VT_STAT_ADD(surfaceIndices, tileSurface->getIndicesCount());
 
             glBindTexture(GL_TEXTURE_2D, 0);

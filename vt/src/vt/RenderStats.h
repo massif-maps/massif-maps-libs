@@ -68,6 +68,29 @@ namespace carto::vt {
         static inline std::atomic<long long> styleLayersDrawn{0};
         static inline std::atomic<long long> surfaceDraws{0};     // terrain tile surface draws (depth pre-pass, drape, fill, main) - NOT in geometryDraws
         static inline std::atomic<long long> surfaceIndices{0};
+        // ... split by the pass that issued it, to see how many times a frame the same
+        // terrain mesh is pushed through the vertex stage.
+        static inline std::atomic<long long> surfShadowDraws{0};
+        static inline std::atomic<long long> surfMaskDraws{0};
+        static inline std::atomic<long long> surfFillDraws{0};
+        static inline std::atomic<long long> surfBlitDraws{0};
+        static inline std::atomic<long long> surfDrapeDraws{0};
+        static inline std::atomic<long long> surfBackgroundDraws{0};
+        static inline std::atomic<long long> surfBitmapDraws{0};
+        static inline std::atomic<long long> surfMaskNs{0};   // depth pre-pass over the tile surfaces
+        static inline std::atomic<long long> surfDrapeNs{0};  // drape composite over the tile surfaces
+        // Label pass: the glyph quads are rebuilt from scratch for every visible label
+        // every frame, then uploaded as one batch.
+        static inline std::atomic<long long> labelVertexBuildNs{0};
+        static inline std::atomic<long long> labelBatchNs{0};
+        static inline std::atomic<long long> labelsDrawnVertices{0};
+        // endFrame sweeps every compiled-resource map looking for expired owners, once per
+        // frame, over everything the tile cache still holds.
+        static inline std::atomic<long long> endFrameNs{0};
+        static inline std::atomic<long long> endFrameSwept{0}; // entries visited by those sweeps
+        // GL thread blocked on the renderer mutex - the label placement worker holds it for
+        // the whole of buildLabelMaps.
+        static inline std::atomic<long long> mutexWaitNs{0};
         static inline std::atomic<long long> geometrySkips{0};   // renderTileGeometry calls that set up and then bailed out (invisible)
 
         // Where a single renderTileGeometry call goes, in nanoseconds, split at the
