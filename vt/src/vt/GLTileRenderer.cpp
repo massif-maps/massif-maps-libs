@@ -3874,7 +3874,17 @@ namespace carto::vt {
             combine(static_cast<std::size_t>(renderLayer.sourceTileId.zoom) * 2654435761u
                   ^ static_cast<std::size_t>(renderLayer.sourceTileId.x) * 40503u
                   ^ static_cast<std::size_t>(renderLayer.sourceTileId.y));
-            combine(std::hash<const void*>()(renderLayer.layer.get()));
+            // Identify the layer by what it IS, never by where it lives. A raw pointer says
+            // nothing once the object behind it is freed: while zooming, tiles turn over fast
+            // and a new TileLayer lands on a dead one's address often enough that the
+            // fingerprint matches a texture baked for the PREVIOUS zoom level. The tile then
+            // keeps the stale bake, and alternates with correctly re-baked neighbours - which
+            // is seen as polygons flashing between the old and the new zoom.
+            combine(std::hash<std::string>()(renderLayer.layer->getLayerName()));
+            combine(static_cast<std::size_t>(renderLayer.layer->getLayerIndex()));
+            combine(renderLayer.layer->getGeometries().size() * 2654435761u
+                  ^ renderLayer.layer->getBitmaps().size() * 40503u
+                  ^ renderLayer.layer->getBackgrounds().size());
         }
         if (anyContent && hash == 0) {
             hash = 1;
