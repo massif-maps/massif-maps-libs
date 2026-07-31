@@ -15,7 +15,8 @@ namespace carto::vt {
         A_VERTEXBINORMAL,
         A_VERTEXHEIGHT,
         A_VERTEXCOLOR,
-        A_VERTEXATTRIBS
+        A_VERTEXATTRIBS,
+        A_VERTEXOFFSET
     };
 
     enum : int {
@@ -62,7 +63,9 @@ namespace carto::vt {
         U_FOGCOLOR,
         U_FOGPARAMS,
         U_DRAPEUVTRANSFORM,
-        U_SCREENSCALE
+        U_SCREENSCALE,
+        U_LABELAXISX,
+        U_LABELAXISY
     };
 
     enum : unsigned int {
@@ -85,7 +88,8 @@ namespace carto::vt {
         { "aVertexBinormal", A_VERTEXBINORMAL },
         { "aVertexHeight",   A_VERTEXHEIGHT },
         { "aVertexColor",    A_VERTEXCOLOR },
-        { "aVertexAttribs",  A_VERTEXATTRIBS }
+        { "aVertexAttribs",  A_VERTEXATTRIBS },
+        { "aVertexOffset",   A_VERTEXOFFSET }
     };
 
     static const std::map<std::string, int> uniformMap = {
@@ -132,7 +136,9 @@ namespace carto::vt {
         { "uFogColor",          U_FOGCOLOR },
         { "uFogParams",         U_FOGPARAMS },
         { "uDrapeUVTransform",  U_DRAPEUVTRANSFORM },
-        { "uScreenScale",       U_SCREENSCALE }
+        { "uScreenScale",       U_SCREENSCALE },
+        { "uLabelAxisX",        U_LABELAXISX },
+        { "uLabelAxisY",        U_LABELAXISY }
     };
 
     static const std::map<unsigned int, std::string> flagDefineMap = {
@@ -913,12 +919,21 @@ namespace carto::vt {
 
     static const std::string labelVsh = R"GLSL(
         attribute vec3 aVertexPosition;
+        // Glyph quad corner, relative to the label anchor in aVertexPosition. Already scaled.
+        // aVertexAttribs[3] says how to orient it: 0 = a world offset ready to add (labels
+        // whose axes come from their placement, computed once on the CPU), 1 = x/y on the
+        // camera axes. Resolving the camera case here rather than on the CPU takes the camera
+        // out of the vertex data, which is what lets a label batch be uploaded once instead
+        // of once per frame.
+        attribute vec3 aVertexOffset;
         #if defined(LIGHTING_FSH) || defined(LIGHTING_VSH)
         attribute vec3 aVertexNormal;
         #endif
         attribute vec2 aVertexUV;
         attribute vec4 aVertexColor;
         attribute vec4 aVertexAttribs;
+        uniform vec3 uLabelAxisX;
+        uniform vec3 uLabelAxisY;
         uniform mat4 uMVPMatrix;
         uniform vec2 uUVScale;
         uniform float uSDFScale;
@@ -947,7 +962,10 @@ namespace carto::vt {
         #ifdef LIGHTING_FSH
             vNormal = aVertexNormal;
         #endif
-            gl_Position = uMVPMatrix * vec4(aVertexPosition, 1.0);
+            vec3 offset = aVertexAttribs[3] > 0.5
+                ? uLabelAxisX * aVertexOffset.x + uLabelAxisY * aVertexOffset.y
+                : aVertexOffset;
+            gl_Position = uMVPMatrix * vec4(aVertexPosition + offset, 1.0);
         }
     )GLSL";
 

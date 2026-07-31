@@ -322,12 +322,13 @@ namespace carto::vt {
 
         struct CompiledLabelBatch {
             GLuint verticesVBO;
+            GLuint offsetsVBO;
             GLuint normalsVBO;
             GLuint texCoordsVBO;
             GLuint attribsVBO;
             GLuint indicesVBO;
 
-            CompiledLabelBatch() : verticesVBO(0), normalsVBO(0), texCoordsVBO(0), attribsVBO(0), indicesVBO(0) { }
+            CompiledLabelBatch() : verticesVBO(0), offsetsVBO(0), normalsVBO(0), texCoordsVBO(0), attribsVBO(0), indicesVBO(0) { }
         };
 
         struct LabelBatchParameters {
@@ -623,6 +624,7 @@ namespace carto::vt {
         int _labelBatchCounter = 0;
 
         VertexArray<cglib::vec3<float>> _labelVertices;
+        VertexArray<cglib::vec3<float>> _labelOffsets;
         VertexArray<cglib::vec3<float>> _labelNormals;
         VertexArray<cglib::vec2<std::int16_t>> _labelTexCoords;
         VertexArray<cglib::vec4<std::int8_t>> _labelAttribs;

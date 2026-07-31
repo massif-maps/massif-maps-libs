@@ -87,6 +87,8 @@ namespace carto::vt {
         // Label::calculateVertexData, split by what it spends the time on.
         static inline std::atomic<long long> labelPlacementNs{0};
         static inline std::atomic<long long> labelLineBuildNs{0};
+        static inline std::atomic<long long> labelTransformNs{0}; // world transform of the glyph quads (what a GPU billboard would remove)
+        static inline std::atomic<long long> labelAttribNs{0};    // normals / uvs / attribs / indices plumbing into the batch arrays
         // The three calls the 3D pass makes, in order.
         static inline std::atomic<long long> pass3DLabels2DNs{0};
         static inline std::atomic<long long> pass3DGeometryNs{0};

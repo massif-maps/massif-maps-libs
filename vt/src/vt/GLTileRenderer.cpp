@@ -3081,7 +3081,7 @@ namespace carto::vt {
             }
 
             VT_STAT_CLOCK(statClock);
-            label->calculateVertexData(labelBatchParams.widthTable[styleIndex], _viewState, styleIndex, haloStyleIndex, _labelVertices, _labelNormals, _labelTexCoords, _labelAttribs, _labelIndices);
+            label->calculateVertexData(labelBatchParams.widthTable[styleIndex], _viewState, styleIndex, haloStyleIndex, _labelVertices, _labelOffsets, _labelNormals, _labelTexCoords, _labelAttribs, _labelIndices);
             VT_STAT_SPLIT(labelVertexBuildNs, statClock);
             VT_STAT_INC(labelsDrawnVertices);
 
@@ -4739,6 +4739,10 @@ namespace carto::vt {
             float scale = 1.0f / labelBatchParams.scale / _fullResolution / BITMAP_SDF_SCALE;
             glUniform2f(shaderProgram.uniforms[U_DERIVSCALE], bitmap->width * scale, bitmap->height * scale);
         }
+        // Camera axes for the shader-side billboarding (see labelVsh); the label matrix is
+        // camera-relative, so these are the plain camera basis vectors.
+        glUniform3f(shaderProgram.uniforms[U_LABELAXISX], _viewState.orientation[0](0), _viewState.orientation[0](1), _viewState.orientation[0](2));
+        glUniform3f(shaderProgram.uniforms[U_LABELAXISY], _viewState.orientation[1](0), _viewState.orientation[1](1), _viewState.orientation[1](2));
         glUniform4fv(shaderProgram.uniforms[U_COLORTABLE], labelBatchParams.parameterCount, labelBatchParams.colorTable[0].data());
         glUniform1fv(shaderProgram.uniforms[U_WIDTHTABLE], labelBatchParams.parameterCount, labelBatchParams.widthTable.data());
         glUniform1fv(shaderProgram.uniforms[U_STROKEWIDTHTABLE], labelBatchParams.parameterCount, labelBatchParams.strokeWidthTable.data());
@@ -4746,6 +4750,10 @@ namespace carto::vt {
         glBindBuffer(GL_ARRAY_BUFFER, compiledLabelBatch.verticesVBO);
         glBufferData(GL_ARRAY_BUFFER, _labelVertices.size() * 3 * sizeof(float), _labelVertices.data(), GL_DYNAMIC_DRAW);
         enableVertexAttrib(shaderProgram.attribs[A_VERTEXPOSITION], 3, GL_FLOAT, GL_FALSE, 0, 0);
+
+        glBindBuffer(GL_ARRAY_BUFFER, compiledLabelBatch.offsetsVBO);
+        glBufferData(GL_ARRAY_BUFFER, _labelOffsets.size() * 3 * sizeof(float), _labelOffsets.data(), GL_DYNAMIC_DRAW);
+        enableVertexAttrib(shaderProgram.attribs[A_VERTEXOFFSET], 3, GL_FLOAT, GL_FALSE, 0, 0);
 
         if (_lightingShader2D) {
             glBindBuffer(GL_ARRAY_BUFFER, compiledLabelBatch.normalsVBO);
@@ -4784,12 +4792,15 @@ namespace carto::vt {
             disableVertexAttrib(shaderProgram.attribs[A_VERTEXNORMAL]);
         }
         
+        disableVertexAttrib(shaderProgram.attribs[A_VERTEXOFFSET]);
+
         disableVertexAttrib(shaderProgram.attribs[A_VERTEXPOSITION]);
 
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
         glBindBuffer(GL_ARRAY_BUFFER, 0);
 
         _labelVertices.clear();
+        _labelOffsets.clear();
         _labelNormals.clear();
         _labelTexCoords.clear();
         _labelAttribs.clear();
@@ -5267,6 +5278,7 @@ namespace carto::vt {
 
     void GLTileRenderer::createCompiledLabelBatch(CompiledLabelBatch& compiledLabelBatch) {
         glGenBuffers(1, &compiledLabelBatch.verticesVBO);
+        glGenBuffers(1, &compiledLabelBatch.offsetsVBO);
         glGenBuffers(1, &compiledLabelBatch.normalsVBO);
         glGenBuffers(1, &compiledLabelBatch.texCoordsVBO);
         glGenBuffers(1, &compiledLabelBatch.attribsVBO);
@@ -5277,6 +5289,10 @@ namespace carto::vt {
         if (compiledLabelBatch.verticesVBO != 0) {
             glDeleteBuffers(1, &compiledLabelBatch.verticesVBO);
             compiledLabelBatch.verticesVBO = 0;
+        }
+        if (compiledLabelBatch.offsetsVBO != 0) {
+            glDeleteBuffers(1, &compiledLabelBatch.offsetsVBO);
+            compiledLabelBatch.offsetsVBO = 0;
         }
         if (compiledLabelBatch.normalsVBO != 0) {
             glDeleteBuffers(1, &compiledLabelBatch.normalsVBO);

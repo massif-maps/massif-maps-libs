@@ -552,7 +552,7 @@ namespace carto::vt {
         return valid;
     }
 
-    bool Label::calculateVertexData(float size, const ViewState& viewState, int styleIndex, int haloStyleIndex, VertexArray<cglib::vec3<float>>& vertices, VertexArray<cglib::vec3<float>>& normals, VertexArray<cglib::vec2<std::int16_t>>& texCoords, VertexArray<cglib::vec4<std::int8_t>>& attribs, VertexArray<std::uint16_t>& indices) const {
+    bool Label::calculateVertexData(float size, const ViewState& viewState, int styleIndex, int haloStyleIndex, VertexArray<cglib::vec3<float>>& vertices, VertexArray<cglib::vec3<float>>& offsets, VertexArray<cglib::vec3<float>>& normals, VertexArray<cglib::vec2<std::int16_t>>& texCoords, VertexArray<cglib::vec4<std::int8_t>>& attribs, VertexArray<std::uint16_t>& indices) const {
         VT_STAT_CLOCK(labelClock);
         std::shared_ptr<const Placement> placement = getPlacement(viewState);
         VT_STAT_SPLIT(labelPlacementNs, labelClock);
@@ -566,6 +566,8 @@ namespace carto::vt {
 
         // Build vertex data cache
         bool valid = cglib::dot_product(viewState.orientation[2], placement->normal) > MIN_BILLBOARD_VIEW_NORMAL_DOTPRODUCT;
+        // Which frame the offsets below are expressed in; the shader reads it from attribs[3].
+        std::int8_t billboardMode = CAMERA_AXIS_OFFSET;
         if (_style->orientation == LabelOrientation::LINE) {
             updateLineVertexData(placement, scale, viewState);
             VT_STAT_SPLIT(labelLineBuildNs, labelClock);
@@ -573,11 +575,12 @@ namespace carto::vt {
                 return false;
             }
 
+            // The glyph run is laid out on the camera axes, so the shader can span it from
+            // them: emit the anchor and the run-local offset and let uLabelAxisX/Y do the rest.
             cglib::vec3<float> origin = cglib::vec3<float>::convert(placement->position - viewState.origin);
-            const cglib::vec3<float>& cameraXAxis = viewState.orientation[0];
-            const cglib::vec3<float>& cameraYAxis = viewState.orientation[1];
+            vertices.fill(origin, _cachedVertices.size());
             for (const cglib::vec3<float>& vertex : _cachedVertices) {
-                vertices.append(origin + cameraXAxis * (vertex(0) * scale) + cameraYAxis * (vertex(1) * scale));
+                offsets.append(cglib::vec3<float>(vertex(0) * scale, vertex(1) * scale, 0));
             }
 
             valid = valid && _cachedValid;
@@ -598,17 +601,29 @@ namespace carto::vt {
 
             cglib::vec3<float> origin, xAxis, yAxis;
             setupCoordinateSystem(viewState, placement, origin, xAxis, yAxis);
-            for (const cglib::vec3<float>& vertex : _cachedVertices) {
-                vertices.append(origin + xAxis * (vertex(0) * scale) + yAxis * (vertex(1) * scale));
+            vertices.fill(origin, _cachedVertices.size());
+            if (_style->orientation == LabelOrientation::BILLBOARD_3D || _style->orientation == LabelOrientation::LINE_BILLBOARD_3D) {
+                // Axes are the camera's: leave them to the shader (see labelVsh).
+                for (const cglib::vec3<float>& vertex : _cachedVertices) {
+                    offsets.append(cglib::vec3<float>(vertex(0) * scale, vertex(1) * scale, 0));
+                }
+            } else {
+                // Axes come from the placement (or from the placement normal and the camera
+                // up vector) - span the offset here and hand the shader a world offset.
+                billboardMode = WORLD_OFFSET;
+                for (const cglib::vec3<float>& vertex : _cachedVertices) {
+                    offsets.append(xAxis * (vertex(0) * scale) + yAxis * (vertex(1) * scale));
+                }
             }
         }
 
+        VT_STAT_SPLIT(labelTransformNs, labelClock);
         normals.fill(placement->normal, _cachedVertices.size());
         texCoords.copy(_cachedTexCoords, 0, _cachedTexCoords.size());
 
         if (haloStyleIndex >= 0) {
             for (const cglib::vec4<std::int8_t>& attrib : _cachedAttribs) {
-                attribs.append(cglib::vec4<std::int8_t>(static_cast<std::int8_t>(haloStyleIndex), attrib(1), static_cast<std::int8_t>(_opacity * 127.0f), 0));
+                attribs.append(cglib::vec4<std::int8_t>(static_cast<std::int8_t>(haloStyleIndex), attrib(1), static_cast<std::int8_t>(_opacity * 127.0f), billboardMode));
             }
             
             std::uint16_t offset = static_cast<std::uint16_t>(vertices.size() - _cachedVertices.size());
@@ -617,13 +632,14 @@ namespace carto::vt {
             }
 
             vertices.copy(vertices, vertices.size() - _cachedVertices.size(), _cachedVertices.size());
+            offsets.copy(offsets, offsets.size() - _cachedVertices.size(), _cachedVertices.size());
 
             normals.fill(placement->normal, _cachedVertices.size());
             texCoords.copy(_cachedTexCoords, 0, _cachedTexCoords.size());
         }
 
         for (const cglib::vec4<std::int8_t>& attrib : _cachedAttribs) {
-            attribs.append(cglib::vec4<std::int8_t>(static_cast<std::int8_t>(styleIndex), attrib(1), static_cast<std::int8_t>(_opacity * 127.0f), 0));
+            attribs.append(cglib::vec4<std::int8_t>(static_cast<std::int8_t>(styleIndex), attrib(1), static_cast<std::int8_t>(_opacity * 127.0f), billboardMode));
         }
         
         std::uint16_t offset = static_cast<std::uint16_t>(vertices.size() - _cachedVertices.size());
@@ -633,6 +649,7 @@ namespace carto::vt {
             }
         }
 
+        VT_STAT_SPLIT(labelAttribNs, labelClock);
         return valid;
     }
 
