@@ -202,7 +202,14 @@ namespace carto::vt {
         void setDebugWireframe(bool enabled);
         void setDebugSurfacePrefill(bool enabled);
         void setTerrainBackgroundColor(const Color& color);
-        void setLabelElevationProvider(std::function<double(const cglib::vec3<double>&)> provider, unsigned int version);
+        void setLabelElevationProvider(std::function<double(const cglib::vec3<double>&)> provider);
+        // Ask for labels to be re-anchored onto the terrain on the next frame. Re-anchoring
+        // samples the elevation once per label vertex, so it is driven by what actually
+        // changed: the tileIds overload only marks the labels whose geometry lies over one of
+        // the given (elevation) tiles, the argumentless one marks every label and is for
+        // whole-data-set changes (data source, exaggeration, change-log overflow).
+        void invalidateLabelElevation();
+        void invalidateLabelElevation(const std::vector<TileId>& tileIds);
         void setLabelOcclusionTest(std::function<bool(const cglib::vec3<double>&)> occlusionTest);
         void setLayerBlendingSpeed(float speed);
         void setLabelBlendingSpeed(float speed);
@@ -353,6 +360,11 @@ namespace carto::vt {
         bool isEmptyBlendRequired(CompOp compOp) const;
 
         unsigned int fogFlag() const;
+        // Binds the program only when it is not the one already bound (see the definition).
+        void useProgram(const ShaderProgram& shaderProgram);
+        // Forgets which program is bound. Must be called wherever another renderer may have
+        // bound one of its own since the last draw.
+        void resetProgramState();
         void setupFogUniforms(const ShaderProgram& shaderProgram) const;
         cglib::mat4x4<double> calculateTileMatrix(const TileId& tileId, float coordScale = 1.0f) const;
         cglib::mat3x3<double> calculateTileMatrix2D(const TileId& tileId, float coordScale = 1.0f) const;
@@ -409,7 +421,8 @@ namespace carto::vt {
         const CompiledBitmap& buildCompiledBitmap(const std::shared_ptr<const Bitmap>& bitmap, bool genMipmaps);
         const CompiledBitmap& buildCompiledTileBitmap(const std::shared_ptr<TileBitmap>& tileBitmap);
         const CompiledGeometry& buildCompiledTileGeometry(const std::shared_ptr<TileGeometry>& tileGeometry);
-        const ShaderProgram& buildShaderProgram(const std::string& id, const std::string& vsh, const std::string& fsh, LightingMode lightingMode, RasterFilterMode filterMode, unsigned int flags);
+        // id must be a string LITERAL: its address is the identity in the front cache below.
+        const ShaderProgram& buildShaderProgram(const char* id, const std::string& vsh, const std::string& fsh, LightingMode lightingMode, RasterFilterMode filterMode, unsigned int flags);
         const std::vector<std::shared_ptr<TileSurface>>& buildCompiledTerrainGridSurfaces();
         // Two triangles covering the tile square. The drape bake is flat and orthographic, so the
         // displaced grid's thousands of triangles buy nothing there and cost everything.
@@ -495,8 +508,8 @@ namespace carto::vt {
         std::vector<std::pair<TileId, GLint>> _debugOrderedTileMasks;
         TerrainTextureProvider _terrainTextureProvider;
         std::function<double(const cglib::vec3<double>&)> _labelElevationProvider;
-        unsigned int _labelElevationVersion = 0;
-        unsigned int _appliedLabelElevationVersion = 0;
+        std::vector<TileId> _pendingLabelElevationTiles; // elevation tiles whose labels must be re-anchored
+        bool _pendingLabelElevationAll = false;
         std::function<bool(const cglib::vec3<double>&)> _labelOcclusionTest;
         float _layerBlendingSpeed = 1.0f;
         float _labelBlendingSpeed = 1.0f;
@@ -512,7 +525,33 @@ namespace carto::vt {
         std::vector<std::shared_ptr<Label>> _labels;
         std::map<int, GlobalIdLabelMap> _layerLabelMap;
         std::map<TileId, std::vector<std::shared_ptr<TileSurface>>> _tileSurfaceMap;
+        GLuint _lastUsedProgram = 0; // currently bound program, 0 = unknown (see useProgram)
         std::map<std::string, ShaderProgram> _shaderProgramMap;
+        // Allocation-free front cache for the above. Building the string key (id + flags +
+        // lighting + filter) is several heap allocations and a string-keyed map lookup, and it
+        // runs once per DRAW CALL - measured at 170-510 geometry draws per frame for an
+        // ordinary style, which made it a per-frame cost of its own. The key is the call
+        // site's literal POINTER plus the flags, so a hit costs a hash of four words; a miss
+        // falls through to the string path, which still de-duplicates the programs themselves.
+        struct ShaderProgramKey {
+            const char* id = nullptr;
+            unsigned int flags = 0;
+            int lightingMode = 0;
+            int filterMode = 0;
+
+            bool operator == (const ShaderProgramKey& other) const {
+                return id == other.id && flags == other.flags && lightingMode == other.lightingMode && filterMode == other.filterMode;
+            }
+        };
+        struct ShaderProgramKeyHash {
+            std::size_t operator () (const ShaderProgramKey& key) const {
+                std::size_t hash = std::hash<const void*>()(key.id);
+                hash ^= key.flags + 0x9e3779b9 + (hash << 6) + (hash >> 2);
+                hash ^= static_cast<unsigned int>(key.lightingMode * 31 + key.filterMode) + 0x9e3779b9 + (hash << 6) + (hash >> 2);
+                return hash;
+            }
+        };
+        std::unordered_map<ShaderProgramKey, const ShaderProgram*, ShaderProgramKeyHash> _shaderProgramCache;
         std::map<std::weak_ptr<const Bitmap>, CompiledBitmap, std::owner_less<std::weak_ptr<const Bitmap>>> _compiledBitmapMap;
         std::map<std::weak_ptr<const TileBitmap>, CompiledBitmap, std::owner_less<std::weak_ptr<const TileBitmap>>> _compiledTileBitmapMap;
         std::map<std::weak_ptr<const TileGeometry>, CompiledGeometry, std::owner_less<std::weak_ptr<const TileGeometry>>> _compiledTileGeometryMap;

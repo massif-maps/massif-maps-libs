@@ -765,6 +765,8 @@ namespace carto::vt {
     int GLTileRenderer::renderShadowCasters(const std::vector<TileId>& tileIds, const cglib::mat4x4<double>& lightViewProj, bool castGround) {
         std::lock_guard<std::mutex> lock(_mutex);
 
+        resetProgramState(); // another renderer may have bound its own program since the last draw
+
         if (!(_terrainRegularGrid && _terrainMode && _terrainTextureProvider)) {
             return 0;
         }
@@ -778,7 +780,7 @@ namespace carto::vt {
                 const CompiledSurface& compiledTileSurface = _compiledTileSurfaceMap[tileSurface];
 
                 const ShaderProgram& shaderProgram = buildShaderProgram("shadowcaster", backgroundVsh, shadowCasterFsh, LightingMode::NONE, RasterFilterMode::NONE, TERRAIN_VTF_FLAG);
-                glUseProgram(shaderProgram.program);
+                useProgram(shaderProgram);
                 glBindBuffer(GL_ARRAY_BUFFER, compiledTileSurface.vertexGeometryVBO);
                 enableVertexAttrib(shaderProgram.attribs[A_VERTEXPOSITION], 3, GL_FLOAT, GL_FALSE, vertexGeomLayoutParams.vertexSize, bufferGLOffset(vertexGeomLayoutParams.coordOffset));
                 glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, compiledTileSurface.indicesVBO);
@@ -912,11 +914,26 @@ namespace carto::vt {
         _terrainBackgroundColor = color;
     }
 
-    void GLTileRenderer::setLabelElevationProvider(std::function<double(const cglib::vec3<double>&)> provider, unsigned int version) {
+    void GLTileRenderer::setLabelElevationProvider(std::function<double(const cglib::vec3<double>&)> provider) {
         std::lock_guard<std::mutex> lock(_mutex);
 
         _labelElevationProvider = std::move(provider);
-        _labelElevationVersion = version;
+    }
+
+    void GLTileRenderer::invalidateLabelElevation() {
+        std::lock_guard<std::mutex> lock(_mutex);
+
+        _pendingLabelElevationAll = true;
+        _pendingLabelElevationTiles.clear();
+    }
+
+    void GLTileRenderer::invalidateLabelElevation(const std::vector<TileId>& tileIds) {
+        std::lock_guard<std::mutex> lock(_mutex);
+
+        if (_pendingLabelElevationAll) {
+            return;
+        }
+        _pendingLabelElevationTiles.insert(_pendingLabelElevationTiles.end(), tileIds.begin(), tileIds.end());
     }
 
     void GLTileRenderer::updateTerrainSkirts() {
@@ -1099,6 +1116,7 @@ namespace carto::vt {
         
         // Drop all caches with shader/texture/FBO/VBO references
         _shaderProgramMap.clear();
+        _shaderProgramCache.clear();
         _compiledBitmapMap.clear();
         _compiledTileBitmapMap.clear();
         _compiledTileSurfaceMap.clear();
@@ -1160,6 +1178,7 @@ namespace carto::vt {
             deleteShaderProgram(it->second);
         }
         _shaderProgramMap.clear();
+        _shaderProgramCache.clear();
 
         // Release compiled bitmaps (textures)
         for (auto it = _compiledBitmapMap.begin(); it != _compiledBitmapMap.end(); it++) {
@@ -1216,6 +1235,8 @@ namespace carto::vt {
 
         std::lock_guard<std::mutex> lock(_mutex);
 
+        resetProgramState(); // another renderer may have bound its own program since the last draw
+
         bool refresh = false;
 
         // Load viewport dimensions, update dependent values
@@ -1237,14 +1258,39 @@ namespace carto::vt {
             refresh = updateRenderTile(renderTile, dBlend) || refresh;
         }
         
-        // Re-anchor labels onto the terrain when the elevation data has changed (labels are
-        // built when their tile is decoded, possibly before elevation data was available)
-        if (_labelElevationProvider && _appliedLabelElevationVersion != _labelElevationVersion) {
-            _appliedLabelElevationVersion = _labelElevationVersion;
-            for (const std::shared_ptr<Label>& label : _labels) {
-                label->updateElevation(_labelElevationProvider);
+        // Re-anchor labels onto the terrain. Label geometry is built flat when its tile is
+        // decoded, so a newly built label is always anchored here; an existing one only when
+        // the elevation under one of its tiles changed. Anchoring costs an elevation sample
+        // per label vertex - doing it for every label whenever any elevation tile decodes (or
+        // whenever the visible tile set changes, which rebuilds the label list) resamples the
+        // whole screen several times a second while panning.
+        if (_labelElevationProvider) {
+            if (_pendingLabelElevationAll || !_pendingLabelElevationTiles.empty()) {
+                for (const std::shared_ptr<Label>& label : _labels) {
+                    if (label->isElevationDirty()) {
+                        continue;
+                    }
+                    if (_pendingLabelElevationAll) {
+                        label->setElevationDirty(true);
+                        continue;
+                    }
+                    for (const TileId& tileId : _pendingLabelElevationTiles) {
+                        if (label->hasGeometryOverTile(tileId)) {
+                            label->setElevationDirty(true);
+                            break;
+                        }
+                    }
+                }
+                _pendingLabelElevationAll = false;
+                _pendingLabelElevationTiles.clear();
             }
-            refresh = true;
+            for (const std::shared_ptr<Label>& label : _labels) {
+                if (label->isElevationDirty()) {
+                    label->updateElevation(_labelElevationProvider);
+                    label->setElevationDirty(false);
+                    refresh = true;
+                }
+            }
         }
 
         // Update labels
@@ -1266,6 +1312,8 @@ namespace carto::vt {
     
     void GLTileRenderer::renderGeometry(bool geom2D, bool geom3D) {
         std::lock_guard<std::mutex> lock(_mutex);
+
+        resetProgramState(); // another renderer may have bound its own program since the last draw
 
         if (!_visibleRenderTiles) {
             return;
@@ -1484,6 +1532,8 @@ namespace carto::vt {
 
         std::lock_guard<std::mutex> lock(_mutex);
 
+        resetProgramState(); // another renderer may have bound its own program since the last draw
+
         if (!_visibleBitmapLabelMap[0] || !_visibleBitmapLabelMap[1]) {
             return;
         }
@@ -1516,7 +1566,9 @@ namespace carto::vt {
     
     bool GLTileRenderer::endFrame() {
         std::lock_guard<std::mutex> lock(_mutex);
-        
+
+
+
         // Release unused textures
         for (auto it = _compiledBitmapMap.begin(); it != _compiledBitmapMap.end();) {
             if (it->first.expired()) {
@@ -1793,6 +1845,23 @@ namespace carto::vt {
         // Fully transparent fog, or a zero range, means the style/app did not ask for any: the
         // programs are then built without it and cost nothing.
         return (_fogColor[3] > 0.0f && _fogDistance > _fogStartDistance ? FOG_FLAG : 0);
+    }
+
+    void GLTileRenderer::useProgram(const ShaderProgram& shaderProgram) {
+        // glUseProgram is one of the most expensive state changes on a tiler, and the draw
+        // loop is style-layer-major: every tile of a layer draws with the same program, so
+        // the call is redundant for all but the first. Measured per-draw setup (everything
+        // before glDrawElements) is 24-31 us against 10-12 us for the draw itself, at
+        // 250-560 draws a frame. The tracked value is reset whenever another renderer can
+        // have bound a program of its own (see resetProgramState).
+        if (_lastUsedProgram != shaderProgram.program) {
+            _lastUsedProgram = shaderProgram.program;
+            glUseProgram(shaderProgram.program);
+        }
+    }
+
+    void GLTileRenderer::resetProgramState() {
+        _lastUsedProgram = 0;
     }
 
     void GLTileRenderer::setupFogUniforms(const ShaderProgram& shaderProgram) const {
@@ -2226,10 +2295,6 @@ namespace carto::vt {
         _labels = std::move(labels);
         _bitmapLabelMap = std::move(bitmapLabelMap);
         VT_STAT_SET(labelsLive, static_cast<long long>(_labels.size()));
-
-        // Tile geometry is built flat in GPU draping mode - newly built labels must be
-        // re-anchored onto the terrain (startFrame applies the elevation provider)
-        _appliedLabelElevationVersion = _labelElevationVersion - 1;
     }
 
     bool GLTileRenderer::updateLabel(const std::shared_ptr<Label>& label, float dOpacity) const {
@@ -2424,6 +2489,9 @@ namespace carto::vt {
                 });
             }
         }
+
+        VT_STAT_ADD(styleLayersDrawn, static_cast<long long>(renderLayerMap.size()));
+        VT_STAT_ADD(renderTilesDrawn, static_cast<long long>(renderTiles.size()));
 
         // Render tile layers in correct order
         bool resetStencil = true;
@@ -2991,7 +3059,7 @@ namespace carto::vt {
         }
 
         const ShaderProgram& shaderProgram = buildShaderProgram("blendscreen", blendVsh, blendFsh, LightingMode::NONE, RasterFilterMode::NONE, 0);
-        glUseProgram(shaderProgram.program);
+        useProgram(shaderProgram);
         
         if (_screenQuad.vbo == 0) {
             createCompiledQuad(_screenQuad);
@@ -3160,7 +3228,7 @@ namespace carto::vt {
 
             unsigned int terrainFlag = (_terrainMode && _terrainTextureProvider ? TERRAIN_VTF_FLAG : 0);
             const ShaderProgram& shaderProgram = buildShaderProgram("tilemask", backgroundVsh, backgroundFsh, LightingMode::NONE, RasterFilterMode::NONE, terrainFlag);
-            glUseProgram(shaderProgram.program);
+            useProgram(shaderProgram);
             if (terrainFlag != 0) {
                 setupTerrainUniforms(shaderProgram, tileId, surfaceFrame, gridMode);
             }
@@ -3201,7 +3269,7 @@ namespace carto::vt {
         glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
 
         const ShaderProgram& shaderProgram = buildShaderProgram("tilemask", backgroundVsh, backgroundFsh, LightingMode::NONE, RasterFilterMode::NONE, 0);
-        glUseProgram(shaderProgram.program);
+        useProgram(shaderProgram);
 
         if (_screenQuad.vbo == 0) {
             createCompiledQuad(_screenQuad);
@@ -3257,7 +3325,7 @@ namespace carto::vt {
 
             unsigned int terrainFlag = (_terrainMode && _terrainTextureProvider ? TERRAIN_FLAG | TERRAIN_VTF_FLAG : 0);
             const ShaderProgram& shaderProgram = buildShaderProgram("tilesurfacefill", backgroundVsh, backgroundFsh, LightingMode::NONE, RasterFilterMode::NONE, terrainFlag | fogFlag());
-            glUseProgram(shaderProgram.program);
+            useProgram(shaderProgram);
             setupFogUniforms(shaderProgram);
             if (terrainFlag != 0) {
                 glUniform1f(shaderProgram.uniforms[U_DEPTHBIAS], _terrainDrawDepthBias);
@@ -3364,6 +3432,8 @@ namespace carto::vt {
     int GLTileRenderer::bakeDrapeTile(const TileId& targetTileId) {
         std::lock_guard<std::mutex> lock(_mutex);
 
+        resetProgramState(); // another renderer may have bound its own program since the last draw
+
         if (!_visibleRenderTiles) {
             return 0;
         }
@@ -3457,6 +3527,8 @@ namespace carto::vt {
     int GLTileRenderer::renderDrapedSurface(const TileId& targetTileId, GLuint drapeTexture, float uvOffsetX, float uvOffsetY, float uvScale) {
         std::lock_guard<std::mutex> lock(_mutex);
 
+        resetProgramState(); // another renderer may have bound its own program since the last draw
+
         if (drapeTexture == 0) {
             return -1;
         }
@@ -3485,6 +3557,8 @@ namespace carto::vt {
     int GLTileRenderer::renderDrapedSurfaceFill(const TileId& targetTileId, const Color& color) {
         std::lock_guard<std::mutex> lock(_mutex);
 
+        resetProgramState(); // another renderer may have bound its own program since the last draw
+
         if (!(_terrainRegularGrid && _terrainMode && _terrainTextureProvider)) {
             return -2;
         }
@@ -3500,6 +3574,8 @@ namespace carto::vt {
 
     int GLTileRenderer::blitDrapeTexture(GLuint srcTexture, float dstOffsetX, float dstOffsetY, float dstScale, float uvOffsetX, float uvOffsetY, float uvScale) {
         std::lock_guard<std::mutex> lock(_mutex);
+
+        resetProgramState(); // another renderer may have bound its own program since the last draw
 
         if (srcTexture == 0) {
             return 0;
@@ -3517,7 +3593,7 @@ namespace carto::vt {
             const CompiledSurface& compiledTileSurface = _compiledTileSurfaceMap[tileSurface];
 
             const ShaderProgram& shaderProgram = buildShaderProgram("drapeblit", backgroundVsh, backgroundFsh, LightingMode::NONE, RasterFilterMode::NONE, DRAPE_FLAG);
-            glUseProgram(shaderProgram.program);
+            useProgram(shaderProgram);
 
             glBindBuffer(GL_ARRAY_BUFFER, compiledTileSurface.vertexGeometryVBO);
             enableVertexAttrib(shaderProgram.attribs[A_VERTEXPOSITION], 3, GL_FLOAT, GL_FALSE, vertexGeomLayoutParams.vertexSize, bufferGLOffset(vertexGeomLayoutParams.coordOffset));
@@ -3874,7 +3950,7 @@ namespace carto::vt {
             bool hasElevation = true;
             unsigned int flags = (_terrainMode && _terrainTextureProvider ? TERRAIN_FLAG | TERRAIN_VTF_FLAG : 0) | DRAPE_FLAG | (lit ? TERRAIN_LIGHT_FLAG : 0) | (shadowed ? TERRAIN_SHADOW_FLAG | DERIVATIVES_FLAG : 0);
             const ShaderProgram& shaderProgram = buildShaderProgram("tilesurfacedrape", backgroundVsh, backgroundFsh, LightingMode::NONE, RasterFilterMode::NONE, flags | fogFlag());
-            glUseProgram(shaderProgram.program);
+            useProgram(shaderProgram);
             setupFogUniforms(shaderProgram);
             if (flags & TERRAIN_FLAG) {
                 glUniform1f(shaderProgram.uniforms[U_DEPTHBIAS], _terrainDrawDepthBias);
@@ -3958,7 +4034,7 @@ namespace carto::vt {
 
             unsigned int terrainFlag = (_terrainMode && _terrainTextureProvider ? TERRAIN_VTF_FLAG : 0);
             const ShaderProgram& shaderProgram = buildShaderProgram("tilemask", backgroundVsh, backgroundFsh, LightingMode::NONE, RasterFilterMode::NONE, terrainFlag);
-            glUseProgram(shaderProgram.program);
+            useProgram(shaderProgram);
             if (terrainFlag != 0) {
                 setupTerrainUniforms(shaderProgram, tileId, surfaceFrame, gridMode);
             }
@@ -4009,7 +4085,7 @@ namespace carto::vt {
             // Flat drape pass: bake the background onto the flat [0,1] grid (no displacement).
             unsigned int terrainFlag = flatDrape ? 0 : (terrainVTF ? TERRAIN_FLAG | TERRAIN_VTF_FLAG : (_terrainMode && !_terrainDepthWrite ? TERRAIN_FLAG : 0));
             const ShaderProgram& shaderProgram = buildShaderProgram("tilebackground", backgroundVsh, backgroundFsh, LightingMode::GEOMETRY2D, RasterFilterMode::NONE, (background->getPattern() ? PATTERN_FLAG : 0) | terrainFlag | fogFlag());
-            glUseProgram(shaderProgram.program);
+            useProgram(shaderProgram);
             setupFogUniforms(shaderProgram);
             if ((terrainFlag & TERRAIN_FLAG) != 0) {
                 glUniform1f(shaderProgram.uniforms[U_DEPTHBIAS], terrainVTF ? _terrainDrawDepthBias : _terrainDepthBias);
@@ -4109,7 +4185,7 @@ namespace carto::vt {
                 return;
             }
             const ShaderProgram& shaderProgram = *shaderProgramPtr;
-            glUseProgram(shaderProgram.program);
+            useProgram(shaderProgram);
             if ((terrainFlag & TERRAIN_FLAG) != 0) {
                 glUniform1f(shaderProgram.uniforms[U_DEPTHBIAS], terrainVTF ? _terrainDrawDepthBias : _terrainDepthBias);
             }
@@ -4230,7 +4306,7 @@ namespace carto::vt {
             return;
         }
         const ShaderProgram& shaderProgram = *shaderProgramPtr;
-        glUseProgram(shaderProgram.program);
+        useProgram(shaderProgram);
         if (!_shadowCasterViewProj) {
             setupFogUniforms(shaderProgram);
         }
@@ -4455,6 +4531,8 @@ namespace carto::vt {
         }
 
         glDrawElements(GL_TRIANGLES, geometry->getIndicesCount(), GL_UNSIGNED_SHORT, 0);
+        VT_STAT_INC(geometryDraws);
+        VT_STAT_ADD(geometryIndices, geometry->getIndicesCount());
 
         if (compiledGeometry.geometryVAO != 0) {
             _glExtensions->glBindVertexArrayOES(0);
@@ -4517,7 +4595,7 @@ namespace carto::vt {
 
         const CompiledBitmap& compiledBitmap = buildCompiledBitmap(bitmap, false);
         const ShaderProgram& shaderProgram = buildShaderProgram("labels", labelVsh, labelFsh, LightingMode::GEOMETRY2D, RasterFilterMode::NONE, useDerivatives ? DERIVATIVES_FLAG : 0);
-        glUseProgram(shaderProgram.program);
+        useProgram(shaderProgram);
 
         cglib::mat4x4<float> mvpMatrix = cglib::mat4x4<float>::convert(_viewState.projectionMatrix * labelBatchParams.labelMatrix);
         glUniformMatrix4fv(shaderProgram.uniforms[U_MVPMATRIX], 1, GL_FALSE, mvpMatrix.data());
@@ -4560,6 +4638,7 @@ namespace carto::vt {
         glUniform2f(shaderProgram.uniforms[U_UVSCALE], 1.0f / bitmap->width, 1.0f / bitmap->height);
 
         glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(_labelIndices.size()), GL_UNSIGNED_SHORT, 0);
+        VT_STAT_INC(labelDraws);
 
         glBindTexture(GL_TEXTURE_2D, 0);
 
@@ -4669,8 +4748,16 @@ namespace carto::vt {
         return it->second;
     }
 
-    const GLTileRenderer::ShaderProgram& GLTileRenderer::buildShaderProgram(const std::string& id, const std::string& vsh, const std::string& fsh, LightingMode lightingMode, RasterFilterMode filterMode, unsigned int flags) {
-        std::string shaderProgramId = id + (flags ? std::to_string(flags) : std::string());
+    const GLTileRenderer::ShaderProgram& GLTileRenderer::buildShaderProgram(const char* id, const std::string& vsh, const std::string& fsh, LightingMode lightingMode, RasterFilterMode filterMode, unsigned int flags) {
+        // Fast path: the call site's literal pointer + the flags, no allocation (see the
+        // cache declaration). Only a miss builds the string key below.
+        ShaderProgramKey cacheKey { id, flags, static_cast<int>(lightingMode), static_cast<int>(filterMode) };
+        auto cacheIt = _shaderProgramCache.find(cacheKey);
+        if (cacheIt != _shaderProgramCache.end()) {
+            return *cacheIt->second;
+        }
+
+        std::string shaderProgramId = std::string(id) + (flags ? std::to_string(flags) : std::string());
         if (lightingMode != LightingMode::NONE) {
             shaderProgramId += "_l" + std::to_string(static_cast<int>(lightingMode));
         }
@@ -4737,6 +4824,7 @@ namespace carto::vt {
             
             it = _shaderProgramMap.emplace(shaderProgramId, shaderProgram).first;
         }
+        _shaderProgramCache[cacheKey] = &it->second;
         return it->second;
     }
 
