@@ -299,7 +299,7 @@ namespace carto::vt {
         // tiles are in the cover, so the more often it happened.
         double metersToInternal = 0;
         for (const TileId& tileId : tileIds) {
-            const std::pair<bool, TerrainTexture> resolved = resolveTerrainTexture(tileId);
+            const std::pair<bool, TerrainTexture>& resolved = resolveTerrainTexture(tileId);
             if (resolved.first && resolved.second.metersToInternal > 0) {
                 metersToInternal = resolved.second.metersToInternal;
                 break;
@@ -1010,6 +1010,7 @@ namespace carto::vt {
         _colorFuncCache.clear();
         _tileMatrixCache.clear();
         _tileMVPMatrixCache.clear();
+        _terrainTextureCache.clear();
         VT_STAT_INC(viewStateChanges);
     }
 
@@ -3175,17 +3176,18 @@ namespace carto::vt {
         checkGLError();
     }
 
-    std::pair<bool, GLTileRenderer::TerrainTexture> GLTileRenderer::resolveTerrainTexture(const TileId& tileId) const {
-        // Deliberately NOT memoised per frame. Caching the answer looks free - the provider is
-        // asked once per DRAW for something that cannot change within a frame - but every call
-        // also marks the entry used in the SDK's elevation texture cache, and that cache
-        // protects entries used in the current frame from eviction. Asking once instead of
-        // once per draw changes which DEM texture gets dropped while a zoom floods the cache,
-        // and a dropped one makes its tile fall back to flat for the rest of the frame: the
-        // previous zoom's surface mesh then disagrees with the new one and shows through it.
+    const std::pair<bool, GLTileRenderer::TerrainTexture>& GLTileRenderer::resolveTerrainTexture(const TileId& tileId) const {
+        // Memoised for the frame: setupTerrainUniforms runs per DRAW and the answer cannot
+        // change within a frame. The provider call doubles as the LRU touch in the SDK's
+        // elevation texture cache, but that cache only needs the entry marked used ONCE in the
+        // current frame to protect it from eviction, which one call per tile still does.
+        auto it = _terrainTextureCache.find(tileId);
+        if (it != _terrainTextureCache.end()) {
+            return it->second;
+        }
         std::pair<bool, TerrainTexture> resolved(false, TerrainTexture());
         resolved.first = _terrainTextureProvider && _terrainTextureProvider(tileId, resolved.second);
-        return resolved;
+        return _terrainTextureCache.emplace(tileId, resolved).first->second;
     }
 
     bool GLTileRenderer::setupTerrainUniforms(const ShaderProgram& shaderProgram, const TileId& tileId, const cglib::mat4x4<double>& vertexFrameMatrix, bool gridSurface) {
@@ -3239,7 +3241,7 @@ namespace carto::vt {
         }
         glUniform4f(shaderProgram.uniforms[U_TERRAINEDGECOARSENING], edgeCoarsening(0), edgeCoarsening(1), edgeCoarsening(2), edgeCoarsening(3));
 
-        const std::pair<bool, TerrainTexture> resolved = resolveTerrainTexture(tileId);
+        const std::pair<bool, TerrainTexture>& resolved = resolveTerrainTexture(tileId);
         bool valid = resolved.first;
         const TerrainTexture& terrainTexture = resolved.second;
         if (!valid || terrainTexture.textureId == 0 || terrainTexture.internalSize(0) <= 0 || terrainTexture.internalSize(1) <= 0) {
@@ -3303,7 +3305,7 @@ namespace carto::vt {
         // surface that the vertex stage actually displaced (exaggeration included, because it is
         // baked into metersToInternal). The mercator 1/cos(latitude) stretch is applied per
         // fragment through vElevCosh.
-        const std::pair<bool, TerrainTexture> resolved = resolveTerrainTexture(tileId);
+        const std::pair<bool, TerrainTexture>& resolved = resolveTerrainTexture(tileId);
         bool valid = resolved.first;
         const TerrainTexture& terrainTexture = resolved.second;
         float slopeX = 0.0f, slopeY = 0.0f;
