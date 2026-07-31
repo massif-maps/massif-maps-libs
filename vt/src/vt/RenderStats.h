@@ -24,6 +24,7 @@
 #if CARTO_VT_RENDER_STATS
 
 #include <atomic>
+#include <chrono>
 
 namespace carto::vt {
     struct RenderStats {
@@ -65,6 +66,31 @@ namespace carto::vt {
         static inline std::atomic<long long> labelDraws{0};
         static inline std::atomic<long long> renderTilesDrawn{0};
         static inline std::atomic<long long> styleLayersDrawn{0};
+        static inline std::atomic<long long> surfaceDraws{0};     // terrain tile surface draws (depth pre-pass, drape, fill, main) - NOT in geometryDraws
+        static inline std::atomic<long long> surfaceIndices{0};
+        static inline std::atomic<long long> geometrySkips{0};   // renderTileGeometry calls that set up and then bailed out (invisible)
+
+        // Where a single renderTileGeometry call goes, in nanoseconds, split at the
+        // boundaries a fix would actually move. Only meaningful divided by geometryDraws.
+        static inline std::atomic<long long> geomProgramNs{0};   // shader program selection, useProgram, fog uniforms
+        static inline std::atomic<long long> geomTerrainNs{0};   // MVP, depth bias, terrain/shadow/translate uniforms
+        static inline std::atomic<long long> geomStyleNs{0};     // style parameter uniform uploads (colour/width/offset/pattern tables)
+        static inline std::atomic<long long> geomStyleEvalNs{0}; // the colour/width/offset function calls alone
+        static inline std::atomic<long long> geomCompileNs{0};   // compiled-geometry map lookup (and the VBO upload on a miss)
+        static inline std::atomic<long long> geomCompileMisses{0}; // of which were misses, i.e. actually uploaded a VBO
+        static inline std::atomic<long long> geomBindNs{0};      // VAO / vertex attribute binding, lighting shader setup
+        static inline std::atomic<long long> geomDrawNs{0};      // glDrawElements
+        // Cost of one VT_STAT_SPLIT itself, measured back-to-back with no work between. The
+        // sections above each carry one of these, so subtract it before believing them.
+        static inline std::atomic<long long> geomProbeNs{0};
+        // Style function memo: how often a draw asks for a value, and how often the answer had
+        // to be computed (a constant counts as neither - it never reaches the cache).
+        static inline std::atomic<long long> styleFuncLookups{0};
+        static inline std::atomic<long long> styleFuncMisses{0};
+        static inline std::atomic<long long> styleFuncConstants{0};
+        static inline std::atomic<long long> styleParameters{0}; // sum of parameterCount over the calls, i.e. the loop trip count
+        static inline std::atomic<long long> styleFuncEvalNs{0}; // time inside the style function objects themselves (misses only)
+        static inline std::atomic<long long> viewStateChanges{0}; // setViewState calls - each one drops the per-frame memos
 
         // Culling
         static inline std::atomic<long long> cullerPasses{0};
@@ -75,12 +101,22 @@ namespace carto::vt {
 #define VT_STAT_INC(name) (carto::vt::RenderStats::name++)
 #define VT_STAT_ADD(name, value) (carto::vt::RenderStats::name += (value))
 #define VT_STAT_SET(name, value) (carto::vt::RenderStats::name = (value))
+// A clock read is ~30 ns here, so a handful per draw is affordable; 'var' is reset to the
+// current time so the same variable can walk through consecutive sections of one draw.
+#define VT_STAT_CLOCK(var) std::chrono::steady_clock::time_point var = std::chrono::steady_clock::now()
+#define VT_STAT_SPLIT(name, var) do { \
+        std::chrono::steady_clock::time_point vtStatNow = std::chrono::steady_clock::now(); \
+        carto::vt::RenderStats::name += std::chrono::duration_cast<std::chrono::nanoseconds>(vtStatNow - (var)).count(); \
+        (var) = vtStatNow; \
+    } while (false)
 
 #else
 
 #define VT_STAT_INC(name) ((void)0)
 #define VT_STAT_ADD(name, value) ((void)0)
 #define VT_STAT_SET(name, value) ((void)0)
+#define VT_STAT_CLOCK(var) ((void)0)
+#define VT_STAT_SPLIT(name, var) ((void)0)
 
 #endif
 

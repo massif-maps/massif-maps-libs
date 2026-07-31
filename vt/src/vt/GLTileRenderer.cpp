@@ -791,6 +791,8 @@ namespace carto::vt {
                     setupTerrainUniforms(shaderProgram, tileId, surfaceFrame, true);
                     glUniformMatrix4fv(shaderProgram.uniforms[U_MVPMATRIX], 1, GL_FALSE, mvpMatrix.data());
                     glDrawElements(GL_TRIANGLES, tileSurface->getIndicesCount(), GL_UNSIGNED_SHORT, 0);
+            VT_STAT_INC(surfaceDraws);
+            VT_STAT_ADD(surfaceIndices, tileSurface->getIndicesCount());
                     draws++;
                 }
 
@@ -1002,6 +1004,49 @@ namespace carto::vt {
         _halfResolution = viewState.resolution * 0.5f;
         _viewState = viewState;
         _viewState.zoomScale *= _scale;
+        _floatFuncCache.clear();
+        _colorFuncCache.clear();
+        _tileMatrixCache.clear();
+        _tileMVPMatrixCache.clear();
+        VT_STAT_INC(viewStateChanges);
+    }
+
+    float GLTileRenderer::evaluateFloatFunc(const FloatFunction& func) {
+        // A constant carries no function object and is already a plain load - only the
+        // expression-backed ones are worth a map lookup (see the cache declaration).
+        const void* key = func.function().get();
+        if (!key) {
+            VT_STAT_INC(styleFuncConstants);
+            return func.value();
+        }
+        VT_STAT_INC(styleFuncLookups);
+        auto it = _floatFuncCache.find(key);
+        if (it != _floatFuncCache.end()) {
+            return it->second;
+        }
+        VT_STAT_INC(styleFuncMisses);
+        VT_STAT_CLOCK(evalClock);
+        float value = func(_viewState);
+        VT_STAT_SPLIT(styleFuncEvalNs, evalClock);
+        return _floatFuncCache.emplace(key, value).first->second;
+    }
+
+    Color GLTileRenderer::evaluateColorFunc(const ColorFunction& func) {
+        const void* key = func.function().get();
+        if (!key) {
+            VT_STAT_INC(styleFuncConstants);
+            return func.value();
+        }
+        VT_STAT_INC(styleFuncLookups);
+        auto it = _colorFuncCache.find(key);
+        if (it != _colorFuncCache.end()) {
+            return it->second;
+        }
+        VT_STAT_INC(styleFuncMisses);
+        VT_STAT_CLOCK(evalClock);
+        Color value = func(_viewState);
+        VT_STAT_SPLIT(styleFuncEvalNs, evalClock);
+        return _colorFuncCache.emplace(key, value).first->second;
     }
     
     void GLTileRenderer::setVisibleTiles(const std::map<TileId, std::shared_ptr<const Tile>>& tiles) {
@@ -1200,7 +1245,7 @@ namespace carto::vt {
 
         // Release compiled geometry (VBOs)
         for (auto it = _compiledTileGeometryMap.begin(); it != _compiledTileGeometryMap.end(); it++) {
-            deleteCompiledGeometry(it->second);
+            deleteCompiledGeometry(it->second.geometry);
         }
         _compiledTileGeometryMap.clear();
 
@@ -1601,8 +1646,8 @@ namespace carto::vt {
 
         // Release unused tile geometry VBOs
         for (auto it = _compiledTileGeometryMap.begin(); it != _compiledTileGeometryMap.end();) {
-            if (it->first.expired()) {
-                deleteCompiledGeometry(it->second);
+            if (it->second.owner.expired()) {
+                deleteCompiledGeometry(it->second.geometry);
                 it = _compiledTileGeometryMap.erase(it);
             } else {
                 it++;
@@ -1873,7 +1918,12 @@ namespace carto::vt {
     }
 
     cglib::mat4x4<double> GLTileRenderer::calculateTileMatrix(const TileId& tileId, float coordScale) const {
-        return _transformer->calculateTileMatrix(tileId, coordScale);
+        TileMatrixKey key { tileId, coordScale };
+        auto it = _tileMatrixCache.find(key);
+        if (it != _tileMatrixCache.end()) {
+            return it->second;
+        }
+        return _tileMatrixCache.emplace(key, _transformer->calculateTileMatrix(tileId, coordScale)).first->second;
     }
     
     cglib::mat3x3<double> GLTileRenderer::calculateTileMatrix2D(const TileId& tileId, float coordScale) const {
@@ -1888,7 +1938,13 @@ namespace carto::vt {
     }
 
     cglib::mat4x4<float> GLTileRenderer::calculateTileMVPMatrix(const TileId& tileId, float coordScale) const {
-        return cglib::mat4x4<float>::convert(_cameraProjMatrix * calculateTileMatrix(tileId, coordScale));
+        TileMatrixKey key { tileId, coordScale };
+        auto it = _tileMVPMatrixCache.find(key);
+        if (it != _tileMVPMatrixCache.end()) {
+            return it->second;
+        }
+        cglib::mat4x4<float> mvpMatrix = cglib::mat4x4<float>::convert(_cameraProjMatrix * calculateTileMatrix(tileId, coordScale));
+        return _tileMVPMatrixCache.emplace(key, mvpMatrix).first->second;
     }
 
     bool GLTileRenderer::testLayerFilter(const std::string& layerName, const std::optional<std::regex>& filter) const {
@@ -2949,10 +3005,10 @@ namespace carto::vt {
             const std::shared_ptr<const TileLabel::Style>& labelStyle = label->getStyle();
 
             if (lastLabelStyle != labelStyle) {
-                cglib::vec4<float> color = cglib::vec4<float>((labelStyle->colorFunc)(_viewState).rgba());
-                float size = (labelStyle->sizeFunc)(_viewState);
-                cglib::vec4<float> haloColor = cglib::vec4<float>((labelStyle->haloColorFunc)(_viewState).rgba());
-                float haloRadius = (labelStyle->haloRadiusFunc)(_viewState) * HALO_RADIUS_SCALE;
+                cglib::vec4<float> color = cglib::vec4<float>(evaluateColorFunc(labelStyle->colorFunc).rgba());
+                float size = evaluateFloatFunc(labelStyle->sizeFunc);
+                cglib::vec4<float> haloColor = cglib::vec4<float>(evaluateColorFunc(labelStyle->haloColorFunc).rgba());
+                float haloRadius = evaluateFloatFunc(labelStyle->haloRadiusFunc) * HALO_RADIUS_SCALE;
                 haloRadius = std::min(haloRadius, static_cast<float>(GLYPH_RENDER_SPREAD));
 
                 if (labelStyle->transform || (lastLabelStyle && lastLabelStyle->transform) || labelBatchParams.scale != labelStyle->scale || labelBatchParams.glyphRenderSize != labelStyle->glyphRenderSize || labelBatchParams.parameterCount + 2 > LabelBatchParameters::MAX_PARAMETERS) {
@@ -3246,6 +3302,8 @@ namespace carto::vt {
             glUniform1f(shaderProgram.uniforms[U_OPACITY], 0);
 
             glDrawElements(GL_TRIANGLES, tileSurface->getIndicesCount(), GL_UNSIGNED_SHORT, 0);
+            VT_STAT_INC(surfaceDraws);
+            VT_STAT_ADD(surfaceIndices, tileSurface->getIndicesCount());
 
             disableVertexAttrib(shaderProgram.attribs[A_VERTEXPOSITION]);
 
@@ -3344,6 +3402,8 @@ namespace carto::vt {
             glUniform1f(shaderProgram.uniforms[U_OPACITY], 1.0f);
 
             glDrawElements(GL_TRIANGLES, tileSurface->getIndicesCount(), GL_UNSIGNED_SHORT, 0);
+            VT_STAT_INC(surfaceDraws);
+            VT_STAT_ADD(surfaceIndices, tileSurface->getIndicesCount());
 
             disableVertexAttrib(shaderProgram.attribs[A_VERTEXPOSITION]);
 
@@ -3612,6 +3672,8 @@ namespace carto::vt {
             glUniform1f(shaderProgram.uniforms[U_OPACITY], 1.0f);
 
             glDrawElements(GL_TRIANGLES, tileSurface->getIndicesCount(), GL_UNSIGNED_SHORT, 0);
+            VT_STAT_INC(surfaceDraws);
+            VT_STAT_ADD(surfaceIndices, tileSurface->getIndicesCount());
             draws++;
 
             glBindTexture(GL_TEXTURE_2D, 0);
@@ -3994,6 +4056,8 @@ namespace carto::vt {
             glUniform1f(shaderProgram.uniforms[U_OPACITY], 1.0f);
 
             glDrawElements(GL_TRIANGLES, tileSurface->getIndicesCount(), GL_UNSIGNED_SHORT, 0);
+            VT_STAT_INC(surfaceDraws);
+            VT_STAT_ADD(surfaceIndices, tileSurface->getIndicesCount());
             surfaces++;
 
             glBindTexture(GL_TEXTURE_2D, 0);
@@ -4128,6 +4192,8 @@ namespace carto::vt {
             glUniform1f(shaderProgram.uniforms[U_OPACITY], blend * opacity);
 
             glDrawElements(GL_TRIANGLES, tileSurface->getIndicesCount(), GL_UNSIGNED_SHORT, 0);
+            VT_STAT_INC(surfaceDraws);
+            VT_STAT_ADD(surfaceIndices, tileSurface->getIndicesCount());
 
             if (_lightingShader2D) {
                 if (vertexGeomLayoutParams.normalOffset >= 0) {
@@ -4235,6 +4301,8 @@ namespace carto::vt {
             glUniform1f(shaderProgram.uniforms[U_OPACITY], blend * opacity);
 
             glDrawElements(GL_TRIANGLES, tileSurface->getIndicesCount(), GL_UNSIGNED_SHORT, 0);
+            VT_STAT_INC(surfaceDraws);
+            VT_STAT_ADD(surfaceIndices, tileSurface->getIndicesCount());
 
             glBindTexture(GL_TEXTURE_2D, 0);
 
@@ -4268,6 +4336,8 @@ namespace carto::vt {
             return;
         }
 
+        VT_STAT_CLOCK(statClock);
+        VT_STAT_SPLIT(geomProbeNs, statClock);
         bool styleOffsetting = std::count(styleParams.offsetFuncs.begin(), styleParams.offsetFuncs.begin() + styleParams.parameterCount, FloatFunction(0)) != styleParams.parameterCount;
 
         // Flat drape pass: draw the fill into the per-tile drape texture with NO terrain
@@ -4310,6 +4380,7 @@ namespace carto::vt {
         if (!_shadowCasterViewProj) {
             setupFogUniforms(shaderProgram);
         }
+        VT_STAT_SPLIT(geomProgramNs, statClock);
 
         cglib::mat4x4<float> mvpMatrix;
         if (_shadowCasterViewProj) {
@@ -4363,32 +4434,37 @@ namespace carto::vt {
             cglib::mat4x4<float> transformMatrix = _transformer->calculateTileTransform(sourceTileId, translate, 1.0f / vertexGeomLayoutParams.coordScale);
             glUniformMatrix4fv(shaderProgram.uniforms[U_TRANSFORMMATRIX], 1, GL_FALSE, transformMatrix.data());
         }
+        VT_STAT_SPLIT(geomTerrainNs, statClock);
 
         std::array<cglib::vec4<float>, TileGeometry::StyleParameters::MAX_PARAMETERS> colors;
         for (int i = 0; i < styleParams.parameterCount; i++) {
-            Color color = Color::fromColorOpacity((styleParams.colorFuncs[i])(_viewState) * blend, opacity);
+            Color color = Color::fromColorOpacity(evaluateColorFunc(styleParams.colorFuncs[i]) * blend, opacity);
             colors[i] = cglib::vec4<float>(color.rgba());
         }
-        
+        VT_STAT_SPLIT(geomStyleEvalNs, statClock);
+        VT_STAT_ADD(styleParameters, styleParams.parameterCount);
+
         if (geometry->getType() == TileGeometry::Type::POINT) {
             std::array<float, TileGeometry::StyleParameters::MAX_PARAMETERS> widths, strokeWidths;
             for (int i = 0; i < styleParams.parameterCount; i++) {
-                float width = std::max(0.0f, (styleParams.widthFuncs[i])(_viewState)) * geometry->getGeometryScale() / tileSize;
+                float width = std::max(0.0f, evaluateFloatFunc(styleParams.widthFuncs[i])) * geometry->getGeometryScale() / tileSize;
                 if (width <= 0) {
                     colors[i] = cglib::vec4<float>(0, 0, 0, 0);
                 }
                 widths[i] = width;
 
-                float strokeWidth = (styleParams.offsetFuncs[i])(_viewState) * HALO_RADIUS_SCALE;
+                float strokeWidth = evaluateFloatFunc(styleParams.offsetFuncs[i]) * HALO_RADIUS_SCALE;
                 strokeWidths[i] = strokeWidth;
             }
+            VT_STAT_SPLIT(geomStyleEvalNs, statClock);
 
             if (std::all_of(widths.begin(), widths.begin() + styleParams.parameterCount, [](float width) { return width == 0; })) {
                 if (std::all_of(strokeWidths.begin(), strokeWidths.begin() + styleParams.parameterCount, [](float strokeWidth) { return strokeWidth == 0; })) {
+                    VT_STAT_INC(geometrySkips);
                     return;
                 }
             }
-            
+
             glUniform1f(shaderProgram.uniforms[U_BINORMALSCALE], vertexGeomLayoutParams.coordScale / vertexGeomLayoutParams.binormalScale / std::pow(2.0f, _viewState.zoom - sourceTileId.zoom));
             glUniform1f(shaderProgram.uniforms[U_SDFSCALE], styleParams.glyphRenderSize / _fullResolution / BITMAP_SDF_SCALE);
             glUniform1fv(shaderProgram.uniforms[U_WIDTHTABLE], styleParams.parameterCount, widths.data());
@@ -4398,7 +4474,7 @@ namespace carto::vt {
         } else if (geometry->getType() == TileGeometry::Type::LINE) {
             std::array<float, TileGeometry::StyleParameters::MAX_PARAMETERS> widths, offsets;
             for (int i = 0; i < styleParams.parameterCount; i++) {
-                float offset = 0.5f * _fullResolution * (styleParams.offsetFuncs[i])(_viewState) * geometry->getGeometryScale() / tileSize;
+                float offset = 0.5f * _fullResolution * evaluateFloatFunc(styleParams.offsetFuncs[i]) * geometry->getGeometryScale() / tileSize;
                 offsets[i] = offset;
 
                 // Check for 0-width function. This is used only for polygons.
@@ -4406,7 +4482,7 @@ namespace carto::vt {
                     widths[i] = -1;
                 }
                 else {
-                    float width = 0.5f * _fullResolution * std::abs((styleParams.widthFuncs[i])(_viewState)) * geometry->getGeometryScale() / tileSize;
+                    float width = 0.5f * _fullResolution * std::abs(evaluateFloatFunc(styleParams.widthFuncs[i])) * geometry->getGeometryScale() / tileSize;
                     if (width < 1.0f) {
                         colors[i] = colors[i] * width; // should do gamma correction here, but simple implementation gives closer results to Mapnik
                         width = (width > 0.0f ? 1.0f : 0.0f); // normalize width
@@ -4414,9 +4490,11 @@ namespace carto::vt {
                     widths[i] = width * 0.5f;
                 }
             }
+            VT_STAT_SPLIT(geomStyleEvalNs, statClock);
 
             if (std::all_of(widths.begin(), widths.begin() + styleParams.parameterCount, [](float width) { return width == 0; })) {
                 if (std::all_of(styleParams.widthFuncs.begin(), styleParams.widthFuncs.begin() + styleParams.parameterCount, [](const FloatFunction& func) { return func != FloatFunction(0); })) { // check that all are proper lines, not polygons
+                    VT_STAT_INC(geometrySkips);
                     return;
                 }
             }
@@ -4459,6 +4537,8 @@ namespace carto::vt {
         if (std::all_of(colors.begin(), colors.begin() + styleParams.parameterCount, [](const cglib::vec4<float>& color) {
             return std::all_of(color.cbegin(), color.cend(), [](float val) { return val < 1.0f / 256.0f; });
         })) {
+            VT_STAT_SPLIT(geomStyleNs, statClock);
+            VT_STAT_INC(geometrySkips);
             return;
         }
 
@@ -4480,8 +4560,10 @@ namespace carto::vt {
             glBindTexture(GL_TEXTURE_2D, compiledBitmap.texture);
             glUniform1i(shaderProgram.uniforms[U_PATTERN], 0);
         }
+        VT_STAT_SPLIT(geomStyleNs, statClock);
 
         const CompiledGeometry& compiledGeometry = buildCompiledTileGeometry(geometry);
+        VT_STAT_SPLIT(geomCompileNs, statClock);
         if (compiledGeometry.geometryVAO != 0) {
             _glExtensions->glBindVertexArrayOES(compiledGeometry.geometryVAO);
         }
@@ -4529,8 +4611,10 @@ namespace carto::vt {
         } else if (geometry->getType() == TileGeometry::Type::POLYGON3D && _lightingShader3D) {
             _lightingShader3D->setupFunc(shaderProgram.program, _viewState);
         }
+        VT_STAT_SPLIT(geomBindNs, statClock);
 
         glDrawElements(GL_TRIANGLES, geometry->getIndicesCount(), GL_UNSIGNED_SHORT, 0);
+        VT_STAT_SPLIT(geomDrawNs, statClock);
         VT_STAT_INC(geometryDraws);
         VT_STAT_ADD(geometryIndices, geometry->getIndicesCount());
 
@@ -4728,8 +4812,9 @@ namespace carto::vt {
     }
 
     const GLTileRenderer::CompiledGeometry& GLTileRenderer::buildCompiledTileGeometry(const std::shared_ptr<TileGeometry>& tileGeometry) {
-        auto it = _compiledTileGeometryMap.find(tileGeometry);
+        auto it = _compiledTileGeometryMap.find(tileGeometry.get());
         if (it == _compiledTileGeometryMap.end()) {
+            VT_STAT_INC(geomCompileMisses);
             CompiledGeometry compiledGeometry;
             createCompiledGeometry(compiledGeometry);
 
@@ -4743,9 +4828,9 @@ namespace carto::vt {
                 tileGeometry->releaseVertexArrays(); // if interaction is enabled, we must keep the vertex arrays. Otherwise optimize for lower memory usage
             }
 
-            it = _compiledTileGeometryMap.emplace(tileGeometry, compiledGeometry).first;
+            it = _compiledTileGeometryMap.emplace(tileGeometry.get(), OwnedCompiledGeometry { tileGeometry, compiledGeometry }).first;
         }
-        return it->second;
+        return it->second.geometry;
     }
 
     const GLTileRenderer::ShaderProgram& GLTileRenderer::buildShaderProgram(const char* id, const std::string& vsh, const std::string& fsh, LightingMode lightingMode, RasterFilterMode filterMode, unsigned int flags) {
