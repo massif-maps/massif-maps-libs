@@ -65,6 +65,14 @@ namespace carto::vt {
         void setGeometrySignature(long long hash, int count) { _geometryHash = hash; _geometryCount = count; }
         bool hasGeometrySignature(long long hash, int count) const { return _geometryCount == count && _geometryHash == hash && count > 0; }
 
+        // Terrain re-anchoring state (see updateElevation). A label is anchored once, when it
+        // is built, and re-anchored only when the elevation under one of the tiles it is built
+        // from actually changes. Re-anchoring costs one elevation sample per line vertex, so
+        // doing it for every label on every tile-set change is a whole-screen resample.
+        bool isElevationDirty() const { return _elevationDirty; }
+        void setElevationDirty(bool dirty) { _elevationDirty = dirty; }
+        bool hasGeometryOverTile(const TileId& tileId) const;
+
         void mergeGeometries(Label& label);
         void snapPlacement(const Label& label);
         bool updatePlacement(const ViewState& viewState);
@@ -239,6 +247,7 @@ namespace carto::vt {
         float _opacity = 0.0f;
         bool _visible = false;
         bool _active = false;
+        bool _elevationDirty = true; // built flat: anchor it onto the terrain on the next frame
         long long _geometryHash = 0;
         int _geometryCount = 0;
 

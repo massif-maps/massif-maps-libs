@@ -270,6 +270,22 @@ namespace carto::vt {
 #endif
     }
 
+    bool Label::hasGeometryOverTile(const TileId& tileId) const {
+        // Elevation tiles and label tiles are different tile sets at different zooms, so the
+        // test is 'the two tiles overlap on the ground', not equality.
+        for (const TilePoint& tilePoint : _tilePoints) {
+            if (tilePoint.tileId.getWrapped().intersects(tileId)) {
+                return true;
+            }
+        }
+        for (const TileLine& tileLine : _tileLines) {
+            if (tileLine.tileId.getWrapped().intersects(tileId)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     void Label::updateElevation(const std::function<double(const cglib::vec3<double>&)>& heightFunc) {
         // Refresh anchor heights from the elevation data. Label geometry is built when the
         // tile is decoded, possibly before its elevation data has arrived - this re-anchors
