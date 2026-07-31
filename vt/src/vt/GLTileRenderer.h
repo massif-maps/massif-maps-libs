@@ -345,6 +345,13 @@ namespace carto::vt {
             LabelBatchParameters() : labelCount(0), parameterCount(0), scale(0), glyphRenderSize(64), labelMatrix(cglib::mat4x4<double>::identity()), colorTable(), widthTable(), strokeWidthTable() { }
         };
 
+        // Frames between two sweeps of the compiled-resource maps for expired owners (see
+        // endFrame). The sweep touches every entry the tile cache still holds - measured at
+        // ~800 entries and 0.5-0.9 ms a frame - and all it buys is releasing a VBO a few
+        // frames earlier.
+        static constexpr int RESOURCE_SWEEP_INTERVAL_FRAMES = 8;
+        // Milliseconds a frame may spend re-anchoring labels onto the terrain (see startFrame).
+        static constexpr float LABEL_ELEVATION_BUDGET_MS = 1.5f;
         static constexpr float HALO_RADIUS_SCALE = 2.5f; // the scaling factor for halo radius
         static constexpr float STROKE_UV_SCALE = 2.857f; // stroked line UV scale factor
         static constexpr float POLYGON3D_HEIGHT_SCALE = 10018754.17f; // scaling factor for zoom 0 heights
@@ -527,6 +534,9 @@ namespace carto::vt {
         std::array<std::shared_ptr<BitmapLabelMap>, 2> _bitmapLabelMap; // for 'ground' labels and for 'billboard' labels
         std::array<std::shared_ptr<BitmapLabelMap>, 2> _visibleBitmapLabelMap;  // for 'ground' labels and for 'billboard' labels
         std::vector<std::shared_ptr<Label>> _labels;
+        // Round-robin cursor into _labels for the budgeted terrain re-anchoring in startFrame.
+        std::size_t _labelElevationCursor = 0;
+        int _resourceSweepCounter = 0;
         std::map<int, GlobalIdLabelMap> _layerLabelMap;
         std::map<TileId, std::vector<std::shared_ptr<TileSurface>>> _tileSurfaceMap;
         GLuint _lastUsedProgram = 0; // currently bound program, 0 = unknown (see useProgram)

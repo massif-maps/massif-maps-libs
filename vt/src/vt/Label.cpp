@@ -553,7 +553,9 @@ namespace carto::vt {
     }
 
     bool Label::calculateVertexData(float size, const ViewState& viewState, int styleIndex, int haloStyleIndex, VertexArray<cglib::vec3<float>>& vertices, VertexArray<cglib::vec3<float>>& normals, VertexArray<cglib::vec2<std::int16_t>>& texCoords, VertexArray<cglib::vec4<std::int8_t>>& attribs, VertexArray<std::uint16_t>& indices) const {
+        VT_STAT_CLOCK(labelClock);
         std::shared_ptr<const Placement> placement = getPlacement(viewState);
+        VT_STAT_SPLIT(labelPlacementNs, labelClock);
         float scale = size * viewState.zoomScale * _style->scale;
         if (placement) {
             scale *= calculateTerrainScaleFactor(*placement, viewState);
@@ -566,6 +568,7 @@ namespace carto::vt {
         bool valid = cglib::dot_product(viewState.orientation[2], placement->normal) > MIN_BILLBOARD_VIEW_NORMAL_DOTPRODUCT;
         if (_style->orientation == LabelOrientation::LINE) {
             updateLineVertexData(placement, scale, viewState);
+            VT_STAT_SPLIT(labelLineBuildNs, labelClock);
             if (_cachedVertices.size() > MAX_LABEL_VERTICES) {
                 return false;
             }

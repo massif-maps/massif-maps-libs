@@ -79,6 +79,18 @@ namespace carto::vt {
         static inline std::atomic<long long> surfBitmapDraws{0};
         static inline std::atomic<long long> surfMaskNs{0};   // depth pre-pass over the tile surfaces
         static inline std::atomic<long long> surfDrapeNs{0};  // drape composite over the tile surfaces
+        // startFrame, split by loop. All four walk every live label or render tile.
+        static inline std::atomic<long long> prepTileBlendNs{0};
+        static inline std::atomic<long long> prepElevDirtyNs{0};
+        static inline std::atomic<long long> prepElevUpdateNs{0};
+        static inline std::atomic<long long> prepLabelBlendNs{0};
+        // Label::calculateVertexData, split by what it spends the time on.
+        static inline std::atomic<long long> labelPlacementNs{0};
+        static inline std::atomic<long long> labelLineBuildNs{0};
+        // The three calls the 3D pass makes, in order.
+        static inline std::atomic<long long> pass3DLabels2DNs{0};
+        static inline std::atomic<long long> pass3DGeometryNs{0};
+        static inline std::atomic<long long> pass3DLabels3DNs{0};
         // Label pass: the glyph quads are rebuilt from scratch for every visible label
         // every frame, then uploaded as one batch.
         static inline std::atomic<long long> labelVertexBuildNs{0};

@@ -9,6 +9,7 @@
 
 #include <cassert>
 #include <algorithm>
+#include <chrono>
 
 namespace {
     const GLvoid* bufferGLOffset(int offset) {
@@ -1300,10 +1301,12 @@ namespace carto::vt {
 
         // Update geometry blending state
         _visibleRenderTiles = _renderTiles;
+        VT_STAT_CLOCK(prepClock);
         float dBlend = (_layerBlendingSpeed > 0.0f ? dt * _layerBlendingSpeed : 1.0f);
         for (RenderTile& renderTile : *_visibleRenderTiles) {
             refresh = updateRenderTile(renderTile, dBlend) || refresh;
         }
+        VT_STAT_SPLIT(prepTileBlendNs, prepClock);
         
         // Re-anchor labels onto the terrain. Label geometry is built flat when its tile is
         // decoded, so a newly built label is always anchored here; an existing one only when
@@ -1331,13 +1334,33 @@ namespace carto::vt {
                 _pendingLabelElevationAll = false;
                 _pendingLabelElevationTiles.clear();
             }
-            for (const std::shared_ptr<Label>& label : _labels) {
-                if (label->isElevationDirty()) {
+            VT_STAT_SPLIT(prepElevDirtyNs, prepClock);
+            // Re-anchoring costs one elevation sample per label vertex, and a whole screen of
+            // labels goes dirty at once while elevation tiles stream in during a pan -
+            // measured at 2.5-4.1 ms of a frame, unbounded. Spend at most a fixed budget here
+            // and carry the rest over: a label keeps its dirty flag until it is actually
+            // re-anchored, and a frame or two of latency on a terrain anchor is invisible
+            // next to a dropped frame. The cursor makes it round-robin so no label starves.
+            if (!_labels.empty()) {
+                std::chrono::steady_clock::time_point elevationStart = std::chrono::steady_clock::now();
+                std::size_t cursor = (_labelElevationCursor < _labels.size() ? _labelElevationCursor : 0);
+                for (std::size_t i = 0; i < _labels.size(); i++) {
+                    const std::shared_ptr<Label>& label = _labels[cursor];
+                    cursor = (cursor + 1 < _labels.size() ? cursor + 1 : 0);
+                    if (!label->isElevationDirty()) {
+                        continue;
+                    }
                     label->updateElevation(_labelElevationProvider);
                     label->setElevationDirty(false);
                     refresh = true;
+                    if (std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - elevationStart).count() >= LABEL_ELEVATION_BUDGET_MS) {
+                        refresh = true; // the rest is still dirty, so keep the frames coming
+                        break;
+                    }
                 }
+                _labelElevationCursor = cursor;
             }
+            VT_STAT_SPLIT(prepElevUpdateNs, prepClock);
         }
 
         // Update labels
@@ -1350,6 +1373,7 @@ namespace carto::vt {
                 }
             }
         }
+        VT_STAT_SPLIT(prepLabelBlendNs, prepClock);
         
         // Reset label batch counter
         _labelBatchCounter = 0;
@@ -1616,6 +1640,10 @@ namespace carto::vt {
     bool GLTileRenderer::endFrame() {
         std::lock_guard<std::mutex> lock(_mutex);
         VT_STAT_CLOCK(statClock);
+        if (--_resourceSweepCounter > 0) {
+            return false;
+        }
+        _resourceSweepCounter = RESOURCE_SWEEP_INTERVAL_FRAMES;
         VT_STAT_ADD(endFrameSwept, _compiledBitmapMap.size() + _compiledTileBitmapMap.size() + _compiledTileSurfaceMap.size() + _compiledTileGeometryMap.size());
 
 
