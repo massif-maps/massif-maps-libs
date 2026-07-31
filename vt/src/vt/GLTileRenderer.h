@@ -404,7 +404,7 @@ namespace carto::vt {
         void setCompOp(CompOp compOp);
         void blendScreenTexture(float opacity, GLuint texture);
         void updateTerrainSkirts();
-        const std::pair<bool, TerrainTexture>& resolveTerrainTexture(const TileId& tileId) const;
+        std::pair<bool, TerrainTexture> resolveTerrainTexture(const TileId& tileId) const;
         bool setupTerrainUniforms(const ShaderProgram& shaderProgram, const TileId& tileId, const cglib::mat4x4<double>& vertexFrameMatrix, bool gridSurface = false);
         void buildTerrainEdgeCoarsening(const std::set<TileId>& tileIds);
         void setupTerrainLightingUniforms(const ShaderProgram& shaderProgram, const TileId& tileId, const cglib::mat4x4<double>& vertexFrameMatrix);
@@ -597,12 +597,6 @@ namespace carto::vt {
                 return hash;
             }
         };
-        // The elevation texture a tile stands on, resolved once per frame. setupTerrainUniforms
-        // runs per DRAW, so with a dozen style layers the same tile asked the provider (a
-        // std::function into the SDK's elevation texture cache, two map lookups and a struct
-        // fill) a dozen times for an answer that cannot change within the frame.
-        mutable std::unordered_map<TileId, std::pair<bool, TerrainTexture>> _terrainTextureCache;
-
         mutable std::unordered_map<TileMatrixKey, cglib::mat4x4<double>, TileMatrixKeyHash> _tileMatrixCache;
         mutable std::unordered_map<TileMatrixKey, cglib::mat4x4<float>, TileMatrixKeyHash> _tileMVPMatrixCache;
 
