@@ -113,6 +113,7 @@ namespace carto::vt {
         static inline std::atomic<long long> geomStyleEvalNs{0}; // the colour/width/offset function calls alone
         static inline std::atomic<long long> geomCompileNs{0};   // compiled-geometry map lookup (and the VBO upload on a miss)
         static inline std::atomic<long long> geomCompileMisses{0}; // of which were misses, i.e. actually uploaded a VBO
+        static inline std::atomic<long long> geomCompileStale{0};  // lookups that hit a dead geometry's entry at a recycled address
         static inline std::atomic<long long> geomBindNs{0};      // VAO / vertex attribute binding, lighting shader setup
         static inline std::atomic<long long> geomDrawNs{0};      // glDrawElements
         // Cost of one VT_STAT_SPLIT itself, measured back-to-back with no work between. The

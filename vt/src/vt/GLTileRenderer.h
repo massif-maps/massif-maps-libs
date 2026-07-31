@@ -350,8 +350,6 @@ namespace carto::vt {
         // ~800 entries and 0.5-0.9 ms a frame - and all it buys is releasing a VBO a few
         // frames earlier.
         static constexpr int RESOURCE_SWEEP_INTERVAL_FRAMES = 8;
-        // Milliseconds a frame may spend re-anchoring labels onto the terrain (see startFrame).
-        static constexpr float LABEL_ELEVATION_BUDGET_MS = 1.5f;
         static constexpr float HALO_RADIUS_SCALE = 2.5f; // the scaling factor for halo radius
         static constexpr float STROKE_UV_SCALE = 2.857f; // stroked line UV scale factor
         static constexpr float POLYGON3D_HEIGHT_SCALE = 10018754.17f; // scaling factor for zoom 0 heights
@@ -534,8 +532,6 @@ namespace carto::vt {
         std::array<std::shared_ptr<BitmapLabelMap>, 2> _bitmapLabelMap; // for 'ground' labels and for 'billboard' labels
         std::array<std::shared_ptr<BitmapLabelMap>, 2> _visibleBitmapLabelMap;  // for 'ground' labels and for 'billboard' labels
         std::vector<std::shared_ptr<Label>> _labels;
-        // Round-robin cursor into _labels for the budgeted terrain re-anchoring in startFrame.
-        std::size_t _labelElevationCursor = 0;
         int _resourceSweepCounter = 0;
         std::map<int, GlobalIdLabelMap> _layerLabelMap;
         std::map<TileId, std::vector<std::shared_ptr<TileSurface>>> _tileSurfaceMap;
@@ -575,8 +571,11 @@ namespace carto::vt {
         // 1.8 us for a 6-layer one. The style layers are shared by every tile, so the same
         // function object is evaluated once per layer instead of once per tile per layer.
         // Cleared in setViewState - the only place the argument can change.
-        std::unordered_map<const void*, float> _floatFuncCache;
-        std::unordered_map<const void*, Color> _colorFuncCache;
+        // Keyed on the function object's address, so the entry keeps a reference to it: a
+        // function that died mid-frame could otherwise have its address handed to a new one
+        // and hand back the wrong colour or width.
+        std::unordered_map<const void*, std::pair<FloatFunction::Function, float>> _floatFuncCache;
+        std::unordered_map<const void*, std::pair<ColorFunction::Function, Color>> _colorFuncCache;
 
         // Per-view-state tile matrix memo. The draw loop is style-layer-major, so the same
         // handful of tiles is transformed again for every style layer - 20-odd distinct

@@ -1025,13 +1025,13 @@ namespace carto::vt {
         VT_STAT_INC(styleFuncLookups);
         auto it = _floatFuncCache.find(key);
         if (it != _floatFuncCache.end()) {
-            return it->second;
+            return it->second.second;
         }
         VT_STAT_INC(styleFuncMisses);
         VT_STAT_CLOCK(evalClock);
         float value = func(_viewState);
         VT_STAT_SPLIT(styleFuncEvalNs, evalClock);
-        return _floatFuncCache.emplace(key, value).first->second;
+        return _floatFuncCache.emplace(key, std::make_pair(func.function(), value)).first->second.second;
     }
 
     Color GLTileRenderer::evaluateColorFunc(const ColorFunction& func) {
@@ -1043,13 +1043,13 @@ namespace carto::vt {
         VT_STAT_INC(styleFuncLookups);
         auto it = _colorFuncCache.find(key);
         if (it != _colorFuncCache.end()) {
-            return it->second;
+            return it->second.second;
         }
         VT_STAT_INC(styleFuncMisses);
         VT_STAT_CLOCK(evalClock);
         Color value = func(_viewState);
         VT_STAT_SPLIT(styleFuncEvalNs, evalClock);
-        return _colorFuncCache.emplace(key, value).first->second;
+        return _colorFuncCache.emplace(key, std::make_pair(func.function(), value)).first->second.second;
     }
     
     void GLTileRenderer::setVisibleTiles(const std::map<TileId, std::shared_ptr<const Tile>>& tiles) {
@@ -1335,30 +1335,17 @@ namespace carto::vt {
                 _pendingLabelElevationTiles.clear();
             }
             VT_STAT_SPLIT(prepElevDirtyNs, prepClock);
-            // Re-anchoring costs one elevation sample per label vertex, and a whole screen of
-            // labels goes dirty at once while elevation tiles stream in during a pan -
-            // measured at 2.5-4.1 ms of a frame, unbounded. Spend at most a fixed budget here
-            // and carry the rest over: a label keeps its dirty flag until it is actually
-            // re-anchored, and a frame or two of latency on a terrain anchor is invisible
-            // next to a dropped frame. The cursor makes it round-robin so no label starves.
-            if (!_labels.empty()) {
-                std::chrono::steady_clock::time_point elevationStart = std::chrono::steady_clock::now();
-                std::size_t cursor = (_labelElevationCursor < _labels.size() ? _labelElevationCursor : 0);
-                for (std::size_t i = 0; i < _labels.size(); i++) {
-                    const std::shared_ptr<Label>& label = _labels[cursor];
-                    cursor = (cursor + 1 < _labels.size() ? cursor + 1 : 0);
-                    if (!label->isElevationDirty()) {
-                        continue;
-                    }
+            // Re-anchoring costs one elevation sample per label vertex (~233 us a label) and a
+            // whole screen of labels goes dirty at once while elevation tiles stream in, so
+            // this loop is 2.5-4.1 ms of a frame. It still has to run to completion: a label
+            // left dirty is drawn, and culled, at the height it had before the elevation
+            // arrived - which reads as labels popping in at the wrong place and then settling.
+            for (const std::shared_ptr<Label>& label : _labels) {
+                if (label->isElevationDirty()) {
                     label->updateElevation(_labelElevationProvider);
                     label->setElevationDirty(false);
                     refresh = true;
-                    if (std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - elevationStart).count() >= LABEL_ELEVATION_BUDGET_MS) {
-                        refresh = true; // the rest is still dirty, so keep the frames coming
-                        break;
-                    }
                 }
-                _labelElevationCursor = cursor;
             }
             VT_STAT_SPLIT(prepElevUpdateNs, prepClock);
         }
@@ -4876,6 +4863,18 @@ namespace carto::vt {
 
     const GLTileRenderer::CompiledGeometry& GLTileRenderer::buildCompiledTileGeometry(const std::shared_ptr<TileGeometry>& tileGeometry) {
         auto it = _compiledTileGeometryMap.find(tileGeometry.get());
+        if (it != _compiledTileGeometryMap.end() && it->second.owner.expired()) {
+            // The geometry this entry was built for is gone and the allocator handed its
+            // address to a NEW geometry: the raw pointer matches but the VBOs do not. Two
+            // live objects can never share an address, so a live owner is proof the entry
+            // belongs to this geometry - an expired one is proof it does not. Without this
+            // the renderer draws the previous tile's buffers, which shows up as roads and
+            // labels flashing while tiles turn over during a zoom.
+            VT_STAT_INC(geomCompileStale);
+            deleteCompiledGeometry(it->second.geometry);
+            _compiledTileGeometryMap.erase(it);
+            it = _compiledTileGeometryMap.end();
+        }
         if (it == _compiledTileGeometryMap.end()) {
             VT_STAT_INC(geomCompileMisses);
             CompiledGeometry compiledGeometry;
