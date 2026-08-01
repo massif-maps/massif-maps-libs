@@ -203,6 +203,12 @@ namespace carto::vt {
         _terrainSlackScale = slackScale;
     }
 
+    void GLTileRenderer::setTerrainContentDepthShift(float depthShift) {
+        std::lock_guard<std::mutex> lock(_mutex);
+
+        _terrainContentDepthShift = depthShift;
+    }
+
     void GLTileRenderer::setTerrainDrapeFills(bool enabled, bool includeLines) {
         std::lock_guard<std::mutex> lock(_mutex);
 
@@ -3224,7 +3230,10 @@ namespace carto::vt {
         // The clip slack magnitude is the same proven, twist-clearing value in both models;
         // the sign / which draw carries it differs (see the loop). The painter-order per-layer
         // delta uniforms are unused - painter-order is expressed purely as a surface back-push.
-        glUniform1f(shaderProgram.uniforms[U_DEPTHBIASCLIP], static_cast<float>(clipUnits * TERRAIN_DEPTH_CLIP_SLACK * slackScale * projScaleZ));
+        // Tangram's depth_shift rides on top of the geometric slack and is deliberately NOT scaled
+        // by the tile size: it is a fixed clip-space pull whose NDC effect dies off as 1/w.
+        double contentShift = (gridSurface ? 0.0 : _terrainContentDepthShift * projScaleZ);
+        glUniform1f(shaderProgram.uniforms[U_DEPTHBIASCLIP], static_cast<float>(clipUnits * TERRAIN_DEPTH_CLIP_SLACK * slackScale * projScaleZ + contentShift));
         glUniform1f(shaderProgram.uniforms[U_LAYERDEPTHOFFSET], 0.0f);
         glUniform1f(shaderProgram.uniforms[U_DEPTHSHIFT], 0.0f);
 

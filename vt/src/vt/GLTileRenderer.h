@@ -128,6 +128,15 @@ namespace carto::vt {
         // regular grid mode (the adaptive per-tile surfaces tesselate their borders to match).
         void setTerrainEdgeStitching(bool enabled);
         void setTerrainSlackScale(float slackScale);
+        /**
+         * Tangram's content depth shift: a CONSTANT clip-space pull of drawn content towards the
+         * viewer (tangram-ng polygon.vs, 'depth_shift = -0.02*u_proj[2][3]'). Unlike a constant-NDC
+         * bias its effect falls off as 1/w, so it separates content from the surface near the
+         * camera - where an un-subdivided segment chords furthest below it - without opening a
+         * see-through band at range. 0 (the default) keeps content exactly on the surface, which
+         * is only correct while geometry is subdivided to follow it.
+         */
+        void setTerrainContentDepthShift(float depthShift);
         void setTerrainDrapeFills(bool enabled, bool includeLines);
         void setTerrainDrapeResolution(int resolution);
         void setTerrainLighting(const TerrainLighting& lighting);
@@ -476,6 +485,7 @@ namespace carto::vt {
         bool _terrainMode = false;
         bool _terrainDepthWrite = false;
         float _terrainDepthBias = 0.0f;
+        float _terrainContentDepthShift = 0.0f; // tangram-style constant-clip pull of content towards the viewer
         float _terrainSlackScale = 1.0f;         // scales the clip-constant slack; ~(32/meshResolution)^2 - the chord error shrinks quadratically with the tesselation
         float _terrainDrawDepthBias = 0.0f;      // per-draw NDC (w-scaled) depth bias while rendering 2D layers (GPU draping mode)
         float _terrainDrawDepthClipUnits = 0.0f; // per-draw clip-constant slack units (distance-growing; see setupTerrainUniforms)
