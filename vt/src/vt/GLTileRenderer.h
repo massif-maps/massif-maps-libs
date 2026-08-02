@@ -166,6 +166,9 @@ namespace carto::vt {
         // paint for every draped tile and nothing else. Only effective under a cross-layer drape
         // target, which is where the layer order is resolved.
         void setTerrainPaint(const TerrainPaint& paint);
+        // The terrain tiles a paint covers when it draws itself (no drape to bake into). A paint
+        // has no tile set, so the owner hands it the terrain's own cover.
+        void setTerrainPaintTiles(const std::vector<TileId>& tileIds);
         // Distance fog over the whole 3D scene, in world units: the terrain surface, rasters,
         // 2D geometry and 3D extrusions all fade towards this colour between the two distances.
         // A transparent colour or a zero range turns it off, and the programs are then built
@@ -450,6 +453,8 @@ namespace carto::vt {
         // framebuffer. Returns the number of primitives drawn (0 when there is no elevation
         // data for the tile yet, so the owner can tell it apart from a finished bake).
         int renderTerrainPaint(const TileId& targetTileId);
+        // Draws the paint as the terrain surface, one draw per covered tile. Returns the draws.
+        int renderTerrainPaintSurfaces();
         // The zoom-dependent relief boost of the paint, matching the normal-map path.
         float calculateTerrainPaintReliefBoost(float metersPerTexel) const;
         void renderTileSurfaceFill(const TileId& tileId, const Color& color);
@@ -548,6 +553,7 @@ namespace carto::vt {
         bool _debugSurfacePrefill = false;
         TerrainLighting _terrainLighting;
         TerrainPaint _terrainPaint;
+        std::vector<TileId> _terrainPaintTiles; // what a paint covers when it draws itself
         GLuint _terrainShadowTexture = 0;
         int _terrainShadowMapSize = 0;
         int _terrainShadowCascades = 1;

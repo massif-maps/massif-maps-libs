@@ -80,6 +80,7 @@ namespace carto::vt {
         DRAPE_FLAG       = 64,
         TERRAIN_LIGHT_FLAG = 128,
         TERRAIN_SHADOW_FLAG = 256,
+        PAINT_SURFACE_FLAG = 1024,
         FOG_FLAG = 512
     };
 
@@ -155,6 +156,7 @@ namespace carto::vt {
         { DRAPE_FLAG,       "DRAPE" },
         { TERRAIN_LIGHT_FLAG, "TERRAIN_LIGHT" },
         { TERRAIN_SHADOW_FLAG, "TERRAIN_SHADOW" },
+        { PAINT_SURFACE_FLAG, "PAINT_SURFACE" },
         { FOG_FLAG, "FOG" }
     };
 
@@ -957,12 +959,21 @@ namespace carto::vt {
         varying mediump float vElevCosh;
 
         void main(void) {
-            // The bake is flat and orthographic, so the quad is the tile-local unit square; the
-            // paint is a function of the DEM alone and needs no displacement here.
             vElevUV = uElevationUV.xy + aVertexPosition.xy * uElevationUV.zw;
             highp float my = uElevationScale.y + aVertexPosition.y * uElevationScale.z;
             vElevCosh = 0.5 * (exp(my) + exp(-my));
+        #ifdef PAINT_SURFACE
+            // Drawn as the terrain surface itself, displaced by the DEM - tangram's model, where
+            // the hillshade is a draw on the tile's own terrain mesh rather than a texture baked
+            // for it. Same grid VBO as every other surface draw, per-tile uniforms only.
+            highp vec3 terrainPos = applyTerrain(aVertexPosition);
+            applyShadowPos(terrainPos);
+            gl_Position = applyDepthBias(uMVPMatrix * vec4(terrainPos, 1.0));
+        #else
+            // The drape bake is flat and orthographic: the quad is the tile-local unit square and
+            // the paint is a function of the DEM alone, so no displacement is needed there.
             gl_Position = uMVPMatrix * vec4(aVertexPosition.xy, 0.0, 1.0);
+        #endif
         }
     )GLSL";
 
@@ -974,7 +985,11 @@ namespace carto::vt {
             // is baked into the tile texture, and the terrain surface tilts it afterwards.
             mediump vec3 normal = normalize(vec3(-deriv.x, deriv.y, 1.0));
             lowp vec4 color = applyLighting(vec4(uPaintParams.x), normal, vec3(0.0, 0.0, 1.0), 0.0);
+        #ifdef PAINT_SURFACE
+            gl_FragColor = applyFog(color * uPaintParams.y); // drawn in the scene, so it fogs with it
+        #else
             gl_FragColor = color * uPaintParams.y;
+        #endif
         }
     )GLSL";
 

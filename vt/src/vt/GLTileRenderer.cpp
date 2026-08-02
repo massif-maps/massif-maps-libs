@@ -1456,6 +1456,10 @@ namespace carto::vt {
             // then the only depth-writing terrain geometry. Running this per-layer pre-pass would
             // glClear(DEPTH) that shared surface away and re-establish the private depth domain
             // the shared drape exists to remove.
+            if (_terrainPaint.enabled && !_externalDrapeTarget) {
+                // A paint with no drape draws itself here, in this layer's place in the order.
+                renderTerrainPaintSurfaces();
+            }
             if (_terrainMode && _terrainTextureProvider && !_externalDrapeTarget) {
                 bool colorFill = (_terrainBackgroundColor.value() != 0);
                 glEnable(GL_DEPTH_TEST);
@@ -3849,6 +3853,75 @@ namespace carto::vt {
         }
         checkGLError();
         return primitives;
+    }
+
+    int GLTileRenderer::renderTerrainPaintSurfaces() {
+        // No drape to bake into: draw the paint as the terrain surface itself, one draw per tile
+        // over the shared grid VBO - which is what tangram does (the hillshade is a raster style
+        // drawn on the tile's terrain mesh). The tiles come from the owner, because a paint has no
+        // tile set of its own.
+        if (!_lightingShaderNormalMap || _lightingShaderNormalMap->perVertex || _terrainPaintTiles.empty()) {
+            return 0;
+        }
+        if (!(_terrainRegularGrid && _terrainMode && _terrainTextureProvider)) {
+            return 0; // the shared grid surface is what this draws
+        }
+
+        glDisable(GL_CULL_FACE);
+        glEnable(GL_DEPTH_TEST);
+        glDepthMask(GL_TRUE); // this IS the terrain surface for this layer, so it writes depth
+        glDisable(GL_STENCIL_TEST);
+        glEnable(GL_BLEND);
+        setCompOp(CompOp::SRC_OVER);
+        _terrainDrawDepthBias = _terrainDepthBias;
+        _terrainDrawDepthClipUnits = 0.0f;
+
+        int draws = 0;
+        for (const TileId& tileId : _terrainPaintTiles) {
+            const std::pair<bool, TerrainTexture>& resolved = resolveTerrainTexture(tileId);
+            if (!resolved.first || resolved.second.textureId == 0 || resolved.second.metersPerTexel <= 0.0f) {
+                continue;
+            }
+            cglib::mat4x4<double> surfaceFrame = calculateTileMatrix(tileId, 1.0f);
+            for (const std::shared_ptr<TileSurface>& tileSurface : buildCompiledTerrainGridSurfaces()) {
+                const TileSurface::VertexGeometryLayoutParameters& vertexGeomLayoutParams = tileSurface->getVertexGeometryLayoutParameters();
+                const CompiledSurface& compiledTileSurface = _compiledTileSurfaceMap[tileSurface];
+
+                const ShaderProgram& shaderProgram = buildShaderProgram("terrainpaintsurface", terrainPaintVsh, terrainPaintFsh, LightingMode::TERRAINPAINT, RasterFilterMode::NONE, TERRAIN_FLAG | TERRAIN_VTF_FLAG | PAINT_SURFACE_FLAG | fogFlag());
+                useProgram(shaderProgram);
+                setupFogUniforms(shaderProgram);
+                glUniform1f(shaderProgram.uniforms[U_DEPTHBIAS], _terrainDrawDepthBias);
+                setupTerrainUniforms(shaderProgram, tileId, surfaceFrame, true);
+
+                float slopeScale = _terrainPaint.heightScale * calculateTerrainPaintReliefBoost(resolved.second.metersPerTexel) / resolved.second.metersPerTexel;
+                glUniform2f(shaderProgram.uniforms[U_PAINTSLOPESCALE], slopeScale, slopeScale);
+                glUniform4f(shaderProgram.uniforms[U_PAINTPARAMS], _terrainPaint.contrast, _terrainPaint.opacity, 0.0f, 0.0f);
+                _lightingShaderNormalMap->setupFunc(shaderProgram.program, _viewState);
+
+                glBindBuffer(GL_ARRAY_BUFFER, compiledTileSurface.vertexGeometryVBO);
+                enableVertexAttrib(shaderProgram.attribs[A_VERTEXPOSITION], 3, GL_FLOAT, GL_FALSE, vertexGeomLayoutParams.vertexSize, bufferGLOffset(vertexGeomLayoutParams.coordOffset));
+                glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, compiledTileSurface.indicesVBO);
+
+                cglib::mat4x4<float> mvpMatrix = calculateTileMVPMatrix(tileId, 1.0f);
+                glUniformMatrix4fv(shaderProgram.uniforms[U_MVPMATRIX], 1, GL_FALSE, mvpMatrix.data());
+
+                glDrawElements(GL_TRIANGLES, tileSurface->getIndicesCount(), GL_UNSIGNED_SHORT, 0);
+                VT_STAT_INC(surfaceDraws);
+                VT_STAT_ADD(surfaceIndices, tileSurface->getIndicesCount());
+                draws++;
+
+                disableVertexAttrib(shaderProgram.attribs[A_VERTEXPOSITION]);
+            }
+        }
+        glDepthMask(GL_FALSE);
+        checkGLError();
+        return draws;
+    }
+
+    void GLTileRenderer::setTerrainPaintTiles(const std::vector<TileId>& tileIds) {
+        std::lock_guard<std::mutex> lock(_mutex);
+
+        _terrainPaintTiles = tileIds;
     }
 
     float GLTileRenderer::calculateTerrainPaintReliefBoost(float metersPerTexel) const {
