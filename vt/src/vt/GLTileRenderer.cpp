@@ -10,6 +10,7 @@
 #include <cassert>
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 
 namespace {
     const GLvoid* bufferGLOffset(int offset) {
@@ -237,6 +238,12 @@ namespace carto::vt {
         std::lock_guard<std::mutex> lock(_mutex);
 
         _terrainLighting = lighting;
+    }
+
+    void GLTileRenderer::setTerrainPaint(const TerrainPaint& paint) {
+        std::lock_guard<std::mutex> lock(_mutex);
+
+        _terrainPaint = paint;
     }
 
     void GLTileRenderer::setTerrainShadowMap(GLuint texture, int mapSize, int cascades, const std::array<float, MAX_SHADOW_CASCADES>& depthBiases, float strength, float softness, const std::array<cglib::mat4x4<double>, MAX_SHADOW_CASCADES>& lightViewProjs) {
@@ -3520,6 +3527,14 @@ namespace carto::vt {
     void GLTileRenderer::collectDrapeTiles(std::map<TileId, std::size_t>& drapeTiles) const {
         std::lock_guard<std::mutex> lock(_mutex);
 
+        if (_terrainPaint.enabled) {
+            // A paint renderer holds no tiles: it cannot extend the cover (it paints whatever the
+            // other layers put in it) and it has nothing per-tile to fingerprint. Reporting the
+            // previous frame's cover instead makes every tile that has just entered it look
+            // incomplete, and the owner bakes it a second time. Its appearance is watched through
+            // the drape STACK signature (TileLayer::drapeStackSignature) instead.
+            return;
+        }
         if (!_visibleRenderTiles) {
             return;
         }
@@ -3553,6 +3568,9 @@ namespace carto::vt {
 
         resetProgramState(); // another renderer may have bound its own program since the last draw
 
+        if (_terrainPaint.enabled) {
+            return renderTerrainPaint(targetTileId);
+        }
         if (!_visibleRenderTiles) {
             return 0;
         }
@@ -3769,6 +3787,94 @@ namespace carto::vt {
             glDeleteFramebuffers(1, &_drapeFBO);
             _drapeFBO = 0;
         }
+    }
+
+    int GLTileRenderer::renderTerrainPaint(const TileId& targetTileId) {
+        // The paint has no tiles of its own: it is a function of the elevation texture the
+        // terrain already binds for this tile, drawn as ONE quad into the shared drape texture
+        // at this layer's place in the bake order. Nothing is fetched, decoded or uploaded.
+        if (!_lightingShaderNormalMap || _lightingShaderNormalMap->perVertex) {
+            return 0; // the lighting shader IS the hillshade algorithm; without it there is no paint
+        }
+        const std::pair<bool, TerrainTexture>& resolved = resolveTerrainTexture(targetTileId);
+        if (!resolved.first || resolved.second.textureId == 0 || resolved.second.metersPerTexel <= 0.0f) {
+            return 0; // no elevation data for this tile yet - report "nothing baked", not "done"
+        }
+        const TerrainTexture& terrainTexture = resolved.second;
+
+        // The bake owns its GL state: it runs before any layer's own pass, so nothing has
+        // established one. Culling off (the bake matrix does not flip y, so the winding is
+        // reversed), depth off, blend on - the paint composites over what earlier layers baked.
+        glDisable(GL_CULL_FACE);
+        glDisable(GL_DEPTH_TEST);
+        glDepthMask(GL_FALSE);
+        glDisable(GL_STENCIL_TEST);
+        glStencilMask(0);
+        glEnable(GL_BLEND);
+        setCompOp(CompOp::SRC_OVER);
+
+        int primitives = 0;
+        cglib::mat4x4<double> surfaceFrame = calculateTileMatrix(targetTileId, 1.0f);
+        for (const std::shared_ptr<TileSurface>& tileSurface : buildCompiledFlatSurfaces()) {
+            const TileSurface::VertexGeometryLayoutParameters& vertexGeomLayoutParams = tileSurface->getVertexGeometryLayoutParameters();
+            const CompiledSurface& compiledTileSurface = _compiledTileSurfaceMap[tileSurface];
+
+            const ShaderProgram& shaderProgram = buildShaderProgram("terrainpaint", terrainPaintVsh, terrainPaintFsh, LightingMode::TERRAINPAINT, RasterFilterMode::NONE, TERRAIN_VTF_FLAG);
+            useProgram(shaderProgram);
+            // Binds the elevation texture and the tile-local -> elevation uv transform. The
+            // vertex frame is the tile matrix, so the quad's [0,1] xy maps straight onto it.
+            setupTerrainUniforms(shaderProgram, targetTileId, surfaceFrame, false);
+
+            // The DEM gradient is in metres per texel; the hillshade algorithms want the
+            // dimensionless slope, scaled by the layer's height scale. The mercator
+            // 1/cos(latitude) stretch is applied per fragment (vElevCosh).
+            float slopeScale = _terrainPaint.heightScale * calculateTerrainPaintReliefBoost(terrainTexture.metersPerTexel) / terrainTexture.metersPerTexel;
+            glUniform2f(shaderProgram.uniforms[U_PAINTSLOPESCALE], slopeScale, slopeScale);
+            glUniform4f(shaderProgram.uniforms[U_PAINTPARAMS], _terrainPaint.contrast, _terrainPaint.opacity, 0.0f, 0.0f);
+            _lightingShaderNormalMap->setupFunc(shaderProgram.program, _viewState);
+
+            glBindBuffer(GL_ARRAY_BUFFER, compiledTileSurface.vertexGeometryVBO);
+            enableVertexAttrib(shaderProgram.attribs[A_VERTEXPOSITION], 3, GL_FLOAT, GL_FALSE, vertexGeomLayoutParams.vertexSize, bufferGLOffset(vertexGeomLayoutParams.coordOffset));
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, compiledTileSurface.indicesVBO);
+
+            cglib::mat4x4<float> mvpMatrix = calculateDrapeMVPMatrix(targetTileId, targetTileId);
+            glUniformMatrix4fv(shaderProgram.uniforms[U_MVPMATRIX], 1, GL_FALSE, mvpMatrix.data());
+
+            glDrawElements(GL_TRIANGLES, tileSurface->getIndicesCount(), GL_UNSIGNED_SHORT, 0);
+            VT_STAT_INC(surfaceDraws);
+            VT_STAT_ADD(surfaceIndices, tileSurface->getIndicesCount());
+            primitives++;
+
+            disableVertexAttrib(shaderProgram.attribs[A_VERTEXPOSITION]);
+        }
+        checkGLError();
+        return primitives;
+    }
+
+    float GLTileRenderer::calculateTerrainPaintReliefBoost(float metersPerTexel) const {
+        // Verbatim from the normal-map path (HillshadeRasterTileLayer::createVectorTile), so a
+        // layer switched to paint mode keeps its relief: MapLibre's low-zoom boost by default,
+        // or the legacy formula, which damps the relief by the ABSOLUTE zoom instead.
+        //
+        // The zoom that goes in is the one the SAMPLING density corresponds to, not the tile id
+        // of the elevation grid: the normal-map path multiplied the tile zoom by its bitmap
+        // resolution, so a 512-texel grid at z11 was worth a z12 tile of 256 texels - which is
+        // exactly what the terrain's elevation grids are. Keyed off the grid's own zoom instead,
+        // the paint reads the same data as one level coarser and boosts the relief ~1.5x too far.
+        // 156543.03 m/texel is the web-mercator resolution at zoom 0 for 256-texel tiles.
+        if (!(metersPerTexel > 0.0f)) {
+            return 1.0f;
+        }
+        double zoom = std::log2(156543.03392804097 / metersPerTexel);
+        if (_terrainPaint.legacyHeightScale) {
+            float exaggeration = zoom < 2 ? 0.2f : zoom < 5 ? 0.3f : 0.35f;
+            return static_cast<float>(160.0 * std::pow(2.0, -zoom * exaggeration));
+        }
+        if (_terrainPaint.exaggerateHeightScale && zoom < 15.0) {
+            float exaggerationFactor = zoom < 2.0 ? 0.4f : zoom < 4.5 ? 0.35f : 0.3f;
+            return static_cast<float>(std::pow(2.0, (15.0 - zoom) * exaggerationFactor));
+        }
+        return 1.0f;
     }
 
     void GLTileRenderer::releaseDrapeTexture(GLuint texture) {
@@ -4977,6 +5083,14 @@ namespace carto::vt {
                 } else {
                     lightingFsh = _lightingShader3D->shader;
                 }
+            }
+            else if (lightingMode == LightingMode::TERRAINPAINT && _lightingShaderNormalMap && !_lightingShaderNormalMap->perVertex) {
+                defs.insert("LIGHTING_FSH");
+                defs.insert("DERIVATIVES");
+                // The same lighting shader the normal-map path uses, over a prelude that reads
+                // the shared terrain DEM instead of a per-tile normal map raster - so the built-in
+                // hillshade algorithms and custom shaders (getElevation/getMapZoom) both work.
+                lightingFsh = terrainPaintPrelude + _lightingShaderNormalMap->shader;
             }
             else if (lightingMode == LightingMode::NORMALMAP && _lightingShaderNormalMap) {
                 defs.insert(_lightingShaderNormalMap->perVertex ? "LIGHTING_VSH" : "LIGHTING_FSH");

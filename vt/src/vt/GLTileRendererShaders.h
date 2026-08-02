@@ -65,7 +65,9 @@ namespace carto::vt {
         U_DRAPEUVTRANSFORM,
         U_SCREENSCALE,
         U_LABELAXISX,
-        U_LABELAXISY
+        U_LABELAXISY,
+        U_PAINTSLOPESCALE,
+        U_PAINTPARAMS
     };
 
     enum : unsigned int {
@@ -138,7 +140,9 @@ namespace carto::vt {
         { "uDrapeUVTransform",  U_DRAPEUVTRANSFORM },
         { "uScreenScale",       U_SCREENSCALE },
         { "uLabelAxisX",        U_LABELAXISX },
-        { "uLabelAxisY",        U_LABELAXISY }
+        { "uLabelAxisY",        U_LABELAXISY },
+        { "uPaintSlopeScale",   U_PAINTSLOPESCALE },
+        { "uPaintParams",       U_PAINTPARAMS }
     };
 
     static const std::map<unsigned int, std::string> flagDefineMap = {
@@ -894,6 +898,83 @@ namespace carto::vt {
         #else
             gl_FragColor = applyFog(color * uOpacity);
         #endif
+        }
+    )GLSL";
+
+    // Terrain paint: hillshading computed directly from the shared terrain elevation texture,
+    // as one quad per tile, instead of from a per-tile normal map raster of its own. There is
+    // no tile set behind it - the DEM the 3D terrain already has bound IS the data - so the
+    // paint costs one draw where a hillshade layer costs a tile set, a decode, a normal map
+    // and a surface pass. The lighting itself is unchanged: the same normal-map lighting
+    // shader (built-in or custom) is injected and fed a normal rebuilt from the DEM gradient.
+    static const std::string terrainPaintPrelude = R"GLSL(
+        uniform sampler2D uElevationTexture;
+        // Precision qualifiers must match the vertex-stage declarations exactly, or the program
+        // fails to LINK (same name, different precision is an error in GLSL ES 1.00).
+        uniform highp vec4 uElevationDecode;
+        uniform highp vec4 uElevationTexelSize; // xy: texture size in texels, zw: 1 / size
+        uniform highp vec2 uPaintSlopeScale;    // metres per texel -> the dimensionless slope the hillshade algorithms expect (height scale folded in)
+        uniform mediump vec4 uPaintParams;      // x = contrast, y = opacity, zw reserved
+        uniform highp_opt float u_zoom;         // current fractional map zoom, for per-zoom custom shaders
+        varying highp vec2 vElevUV;
+        varying mediump float vElevCosh;
+
+        highp float sampleElevation(highp vec2 uv) {
+            return dot(texture2D(uElevationTexture, uv), uElevationDecode);
+        }
+        // The same contract the normal-map path offers custom shaders, backed by the shared DEM.
+        highp float getElevation() { return sampleElevation(vElevUV); }
+        highp float getMapZoom() { return u_zoom; }
+        lowp vec4 getRawColor() { return texture2D(uElevationTexture, vElevUV); }
+
+        // 3x3 Sobel over the DEM - the same operator NormalMapBuilder ran on the CPU - so the
+        // slope handed to the hillshade algorithms is the one they were tuned against. Heights
+        // are metres and reach several thousand: mediump would quantise them to whole metres and
+        // the difference would be mostly rounding noise. The mercator 1/cos(latitude) stretch is
+        // per fragment; everything constant over the tile is in uPaintSlopeScale.
+        mediump vec2 terrainPaintDeriv() {
+            highp vec2 st = uElevationTexelSize.zw;
+            highp float h00 = sampleElevation(vElevUV + vec2(-st.x, -st.y));
+            highp float h01 = sampleElevation(vElevUV + vec2(-st.x,   0.0));
+            highp float h02 = sampleElevation(vElevUV + vec2(-st.x,  st.y));
+            highp float h10 = sampleElevation(vElevUV + vec2(  0.0, -st.y));
+            highp float h12 = sampleElevation(vElevUV + vec2(  0.0,  st.y));
+            highp float h20 = sampleElevation(vElevUV + vec2( st.x, -st.y));
+            highp float h21 = sampleElevation(vElevUV + vec2( st.x,   0.0));
+            highp float h22 = sampleElevation(vElevUV + vec2( st.x,  st.y));
+            highp float gu = (h20 + 2.0 * h21 + h22) - (h00 + 2.0 * h01 + h02);
+            highp float gv = (h02 + 2.0 * h12 + h22) - (h00 + 2.0 * h10 + h20);
+            // v grows NORTH in the elevation texture, and the algorithms expect
+            // (dh/dEast, -dh/dNorth) - the convention the normal map encoded.
+            return vec2(gu, -gv) * (0.125 * vElevCosh) * uPaintSlopeScale;
+        }
+    )GLSL";
+
+    static const std::string terrainPaintVsh = R"GLSL(
+        attribute vec3 aVertexPosition;
+        uniform mat4 uMVPMatrix;
+        varying highp vec2 vElevUV;
+        varying mediump float vElevCosh;
+
+        void main(void) {
+            // The bake is flat and orthographic, so the quad is the tile-local unit square; the
+            // paint is a function of the DEM alone and needs no displacement here.
+            vElevUV = uElevationUV.xy + aVertexPosition.xy * uElevationUV.zw;
+            highp float my = uElevationScale.y + aVertexPosition.y * uElevationScale.z;
+            vElevCosh = 0.5 * (exp(my) + exp(-my));
+            gl_Position = uMVPMatrix * vec4(aVertexPosition.xy, 0.0, 1.0);
+        }
+    )GLSL";
+
+    static const std::string terrainPaintFsh = R"GLSL(
+        void main(void) {
+            mediump vec2 deriv = terrainPaintDeriv();
+            // applyLighting() recovers the gradient as vec2(-n.x, n.y)/n.z, so hand it a normal
+            // that reproduces this deriv exactly. The surface normal is the flat one: the paint
+            // is baked into the tile texture, and the terrain surface tilts it afterwards.
+            mediump vec3 normal = normalize(vec3(-deriv.x, deriv.y, 1.0));
+            lowp vec4 color = applyLighting(vec4(uPaintParams.x), normal, vec3(0.0, 0.0, 1.0), 0.0);
+            gl_FragColor = color * uPaintParams.y;
         }
     )GLSL";
 

@@ -94,6 +94,7 @@ namespace carto::vt {
             cglib::vec4<float> decode = cglib::vec4<float>(0, 0, 0, 0);     // texture sample -> meters
             float metersToInternal = 0.0f; // meters -> world z units at the equator (exaggeration included)
             float mercatorYScale = 0.0f;   // world y -> mercator angle (for the per-vertex 1/cos(latitude) factor)
+            float metersPerTexel = 0.0f;   // ground meters per texel at the equator (the 1/cos(latitude) stretch is per fragment)
         };
 
         using TerrainTextureProvider = std::function<bool(const TileId&, TerrainTexture&)>;
@@ -110,6 +111,27 @@ namespace carto::vt {
             cglib::vec3<float> sunColor = cglib::vec3<float>(1, 1, 1);
             float sunIntensity = 1.0f;
             float ambientIntensity = 0.35f;
+        };
+
+        /**
+         * DEM-derived paint drawn from the shared terrain elevation texture instead of from a
+         * tile set of its own: one quad per draped tile, no tiles fetched, decoded or uploaded,
+         * no normal map and no surface pass. A renderer in paint mode holds no tiles at all -
+         * it bakes the paint into the shared drape texture at its own position in the layer
+         * order, so the style's placement of the hillshade is preserved exactly.
+         */
+        struct TerrainPaint {
+            bool enabled = false;
+            float heightScale = 1.0f;       // relief scale, as HillshadeRasterTileLayer defines it
+            bool exaggerateHeightScale = true; // MapLibre's low-zoom relief boost
+            bool legacyHeightScale = false;    // pre-MapLibre-parity formula
+            float contrast = 0.5f;          // MapLibre 'hillshade-exaggeration', fed to the lighting shader
+            float opacity = 1.0f;
+            // Hash of everything the paint's appearance depends on, INCLUDING what only the
+            // injected lighting shader sees (light direction, colours, method). The renderer
+            // cannot derive it - it never sees those uniforms - and without it a parameter
+            // change would leave every already-baked drape texture in place.
+            std::size_t fingerprint = 0;
         };
 
         explicit GLTileRenderer(std::shared_ptr<GLExtensions> glExtensions, std::shared_ptr<const TileTransformer> transformer, float scale);
@@ -140,6 +162,10 @@ namespace carto::vt {
         void setTerrainDrapeFills(bool enabled, bool includeLines);
         void setTerrainDrapeResolution(int resolution);
         void setTerrainLighting(const TerrainLighting& lighting);
+        // Turns this renderer into a paint baker (see TerrainPaint): it draws the DEM-derived
+        // paint for every draped tile and nothing else. Only effective under a cross-layer drape
+        // target, which is where the layer order is resolved.
+        void setTerrainPaint(const TerrainPaint& paint);
         // Distance fog over the whole 3D scene, in world units: the terrain surface, rasters,
         // 2D geometry and 3D extrusions all fade towards this colour between the two distances.
         // A transparent colour or a zero range turns it off, and the programs are then built
@@ -259,7 +285,8 @@ namespace carto::vt {
             NONE,
             GEOMETRY2D,
             GEOMETRY3D,
-            NORMALMAP
+            NORMALMAP,
+            TERRAINPAINT // the normal-map lighting shader, fed from the terrain DEM instead of a normal map raster
         };
 
         struct RenderTileLayer {
@@ -419,6 +446,12 @@ namespace carto::vt {
         void setupTerrainLightingUniforms(const ShaderProgram& shaderProgram, const TileId& tileId, const cglib::mat4x4<double>& vertexFrameMatrix);
         void renderTileMask(const TileId& tileId);
         void renderStencilDebugOverlay();
+        // Bakes the DEM-derived paint of one target tile into the currently bound drape
+        // framebuffer. Returns the number of primitives drawn (0 when there is no elevation
+        // data for the tile yet, so the owner can tell it apart from a finished bake).
+        int renderTerrainPaint(const TileId& targetTileId);
+        // The zoom-dependent relief boost of the paint, matching the normal-map path.
+        float calculateTerrainPaintReliefBoost(float metersPerTexel) const;
         void renderTileSurfaceFill(const TileId& tileId, const Color& color);
         void renderDrapeTextures(const std::vector<RenderTile>& renderTiles);
         int renderTileSurfaceDrape(const TileId& tileId, float uvOffsetX, float uvOffsetY, float uvScale);
@@ -514,6 +547,7 @@ namespace carto::vt {
         bool _debugWireframe = false;
         bool _debugSurfacePrefill = false;
         TerrainLighting _terrainLighting;
+        TerrainPaint _terrainPaint;
         GLuint _terrainShadowTexture = 0;
         int _terrainShadowMapSize = 0;
         int _terrainShadowCascades = 1;
