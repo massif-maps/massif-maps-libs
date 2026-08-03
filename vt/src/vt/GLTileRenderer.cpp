@@ -4167,7 +4167,11 @@ namespace carto::vt {
         // the shadows invisible wherever the paint is opaque.
         bool litSurface = _terrainSharedGround && _terrainLighting.enabled;
         bool shadowedSurface = litSurface && _terrainShadowTexture != 0 && _terrainShadowStrength > 0.0f;
-        unsigned int lightFlags = (litSurface ? TERRAIN_LIGHT_FLAG : 0) | (shadowedSurface ? TERRAIN_SHADOW_FLAG | DERIVATIVES_FLAG : 0);
+        // DERIVATIVES unconditionally: the contour block's fwidth() needs it, and the paint has no
+        // way to know whether the layer asked for contours (the interval arrives as a uniform, set
+        // by the shared normal-map setup func). The NORMALMAP path does the same for the same
+        // reason - harmless when contours are off, since the branch is not taken.
+        unsigned int lightFlags = (litSurface ? TERRAIN_LIGHT_FLAG : 0) | (shadowedSurface ? TERRAIN_SHADOW_FLAG : 0) | DERIVATIVES_FLAG;
 
         int draws = 0;
         for (std::size_t paintIndex = 0; paintIndex < paintTiles.size(); paintIndex++) {

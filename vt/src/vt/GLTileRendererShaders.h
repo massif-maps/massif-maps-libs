@@ -978,6 +978,18 @@ namespace carto::vt {
     )GLSL";
 
     static const std::string terrainPaintFsh = R"GLSL(
+        #ifdef PAINT_SURFACE
+        // Contour lines as a fragment block on the terrain draw, which is where tangram puts them
+        // (res/scenes/hillshade.yaml computes hillshade, hypsometric tint and contours in the
+        // `color` block of the raster style that IS the terrain surface). Same uniforms and the
+        // same screen-width anti-aliasing as the normal-map path, so a layer gets identical
+        // contours whether it shades a per-tile normal map or the shared DEM - the paint used to
+        // switch itself off when contours were asked for, precisely because it lacked this.
+        // Declared here and NOT in the prelude: normalmapFsh is not part of this program.
+        uniform lowp vec4 u_contourColor;
+        uniform highp_opt float u_contourInterval; // metres between contour lines; <= 0 disables them
+        uniform mediump float u_contourWidth;      // contour half-width in screen pixels
+        #endif
         #if defined(PAINT_SURFACE) && defined(TERRAIN_LIGHT)
         // Drawn as the terrain surface, so it takes the sun and the shadow map the surface takes -
         // otherwise the paint covers a lit, shadowed ground with an unlit copy of it and the
@@ -1023,6 +1035,19 @@ namespace carto::vt {
         #endif
             color = vec4(min(color.rgb * lit, vec3(color.a)), color.a);
         #endif
+            if (u_contourInterval > 0.0) {
+                // Distance to the nearest contour in metres, divided by the per-pixel elevation
+                // change, gives a screen-space width that stays constant as the ground tilts away.
+                // Composited OVER the shaded ground, premultiplied - the same order and the same
+                // result as normalmapFsh, so switching a layer to the paint does not move the lines.
+                highp_opt float e = sampleElevation(vElevUV);
+                highp_opt float frac = fract(e / u_contourInterval);
+                highp_opt float distM = min(frac, 1.0 - frac) * u_contourInterval;
+                mediump float px = distM / max(fwidth(e), 1e-4);
+                mediump float cov = clamp(u_contourWidth - px + 0.5, 0.0, 1.0) * u_contourColor.a;
+                color.rgb = u_contourColor.rgb * cov + color.rgb * (1.0 - cov);
+                color.a = cov + color.a * (1.0 - cov);
+            }
             gl_FragColor = applyFog(color); // drawn in the scene, so it fogs with it
         #else
             gl_FragColor = color * uPaintParams.y;
