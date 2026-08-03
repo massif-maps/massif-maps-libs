@@ -2568,10 +2568,14 @@ namespace carto::vt {
     void GLTileRenderer::renderGeometry2D(const std::vector<RenderTile>& renderTiles, GLint stencilBits) {
         // Extract layer tiles for each layers
         std::map<int, std::vector<const RenderTileLayer*>> renderLayerMap;
+        // Tangram's maxVisS: the deepest level on screen, which is what a proxy tile's depth is
+        // measured against (tileManager.cpp, setProxyDepth).
+        int maxVisibleZoom = 0;
         for (const RenderTile& renderTile : renderTiles) {
             if (!renderTile.visible) {
                 continue;
             }
+            maxVisibleZoom = std::max(maxVisibleZoom, renderTile.targetTileId.zoom);
             for (auto it = renderTile.renderLayers.begin(); it != renderTile.renderLayers.end(); it++) {
                 const std::shared_ptr<const TileLayer>& layer = it->second.layer;
 
@@ -2586,6 +2590,18 @@ namespace carto::vt {
                 }
             }
         }
+
+        // Tangram's proxy depth, their formula (tileManager.cpp, setProxyDepth):
+        //     max(maxVisS - tileId.s, 1) while the tile stands in, 0 once it is live.
+        // How many levels COARSER the drawn tile is than the deepest level on screen - not a flat
+        // one. A tile standing in two levels up is a different height field twice over, and the
+        // push has to say so; a flat 1 pushes it exactly as far as a tile that is one level off.
+        auto proxyDepth = [maxVisibleZoom](const RenderTileLayer* renderLayer) -> float {
+            if (renderLayer->active) {
+                return 0.0f;
+            }
+            return std::max(static_cast<float>(maxVisibleZoom - renderLayer->targetTileId.zoom), TERRAIN_PROXY_DEPTH_UNITS);
+        };
 
         // Allocate stencil value for each target tile
         std::map<TileId, GLint> tileStencilMap;
@@ -2781,7 +2797,7 @@ namespace carto::vt {
                         //    pull is what leaks over a ridge.
                         _terrainDrawDepthBias = _terrainDepthBias;
                         _terrainDrawDepthClipUnits = 0.0f;
-                        _terrainDrawLayerOffset = (renderLayer->active ? 0.0f : TERRAIN_PROXY_DEPTH_UNITS) - layerOrdinal;
+                        _terrainDrawLayerOffset = proxyDepth(renderLayer) - layerOrdinal;
                     } else if (terrainVTF) {
                         // Backgrounds/bitmaps ARE the terrain occluders: they render the
                         // reference surface meshes and WRITE depth. Retained blend-out
@@ -2880,7 +2896,7 @@ namespace carto::vt {
                         // carries the same ordinal as the backgrounds and rasters of its own layer.
                         _terrainDrawDepthBias = _terrainDepthBias;
                         _terrainDrawDepthClipUnits = 0.0f;
-                        _terrainDrawLayerOffset = (renderLayer->active ? 0.0f : TERRAIN_PROXY_DEPTH_UNITS) - layerOrdinal;
+                        _terrainDrawLayerOffset = proxyDepth(renderLayer) - layerOrdinal;
                     } else if (terrainVTF) {
                         // Geometry (roads, lines, polygons) is a different piecewise-linear
                         // approximation of the height field than the background/surface
