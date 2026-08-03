@@ -2856,11 +2856,9 @@ namespace carto::vt {
                         glDepthMask(GL_FALSE);
                     }
                     if (_terrainSharedGround) {
-                        // Geometry does NOT write: two style layers painting the same ground are
-                        // different meshes, and once both write, whichever chords slightly higher
-                        // wins per pixel - the washed road casings of round 52. It is still
-                        // depth-TESTED, which is what makes a proxy tile's roads disappear behind
-                        // the live tile's written ground, so the masks are not needed for them.
+                        // Same push for the geometry: a proxy tile's roads fail against the ground
+                        // the live cover wrote, which is what stops the previous zoom's content
+                        // painting through the gaps in the new one.
                         _terrainDrawDepthBias = _terrainDepthBias;
                         _terrainDrawDepthClipUnits = 0.0f;
                         _terrainDrawLayerOffset = (renderLayer->active ? 0.0f : TERRAIN_PROXY_DEPTH_UNITS);
