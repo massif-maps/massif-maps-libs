@@ -222,7 +222,12 @@ namespace carto::vt {
         // pre-pass plus a mask per tile PER LAYER. Ground-shaped content (tile backgrounds and
         // rasters) is drawn on the cover tiles rather than on the layer's own, because two
         // tesselations of the same height field do not agree and would z-fight.
-        void setTerrainGroundTiles(const std::vector<TileId>& tileIds);
+        // proxyDepths, parallel to tileIds: how many levels COARSER than asked for each ground
+        // tile is (0 = its own level). Tangram multiplies the proxy term by 48 for the terrain
+        // raster - "need sufficient offset for proxy levels to prevent terrain poking through
+        // level above" (res/scenes/terrain-3d.yaml) - because a coarse stand-in is a different
+        // height field and pokes through the content drawn on the level above it.
+        void setTerrainGroundTiles(const std::vector<TileId>& tileIds, const std::vector<int>& proxyDepths);
         // Draws the shared ground for the cover: the displaced grid surface per tile in the given
         // colour, writing depth at its TRUE depth. The only depth-writing terrain geometry in the
         // frame - everything drawn afterwards tests against it and never writes. Returns the draws.
@@ -421,6 +426,8 @@ namespace carto::vt {
         // TERRAIN_LAYER_DEPTH_DELTA. Tangram's own value: u_proxy_depth is the tile's PROXY DEPTH,
         // one per level of proxying (Tile::proxyDepth), fed into the same (proxy - layer) term.
         static constexpr float TERRAIN_PROXY_DEPTH_UNITS = 1.0f;
+        // tangram res/scenes/terrain-3d.yaml, TANGRAM_RASTER_STYLE branch: `proxy *= 48.0`.
+        static constexpr float TERRAIN_RASTER_PROXY_SCALE = 48.0f;
         static constexpr float TERRAIN_PAINTER_SURFACE_BACK = 2.0f; // painter-order: clip-slack units the depth-writing surface is pushed BACK (same magnitude as the regular-grid geometry forward slack); geometry then draws at its real depth with the same twist clearance but no forward pull, so it can not leak in front of a near ridge
         static constexpr float TERRAIN_EXTRUSION_DEPTH_DELTAS = 24.0f; // 3D extrusions vs the terrain surface pre-pass in the 3D overlay. A wall stands ON the ground it is tested against, so the pair is only separable to the depth buffer's resolution, which in eye units grows like distance^2/near - the same law a constant-NDC bias follows, which is why the clearance is expressed here and not as clip slack. Measured on the demo: 1 delta eats most of a 40 m building at a few km, 24 restores it, 64 adds nothing (and every extra delta is a wider band in which an extrusion behind a crest can show through it)
         static constexpr float TERRAIN_DEPTH_CLIP_SLACK = 1.0e-3f; // clip-space depth shift per bias unit at the reference tile size, scaled by tile size (quadratic law, see setupTerrainUniforms) and |proj m22|
@@ -587,6 +594,7 @@ namespace carto::vt {
         bool _terrainSharedGround = false;       // the owner draws one ground pass for the whole layer stack
         Color _terrainGroundColor;               // what the ground pass painted; a background repeating it is skipped
         std::vector<TileId> _terrainGroundTiles; // the shared ground cover, in the owner's order
+        std::vector<int> _terrainGroundProxyDepths; // per ground tile: levels coarser than asked for
         mutable std::unordered_map<TileId, std::vector<TileId>> _groundLeafCache; // render tile -> its cover leaves
         bool _externalDrapeTarget = false;       // drape textures are owned by the caller (cross-layer stacks)
         std::set<TileId> _drapeTilesThisFrame;   // target tiles that have a valid drape texture this frame

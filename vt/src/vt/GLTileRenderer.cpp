@@ -3701,10 +3701,12 @@ namespace carto::vt {
         }
     }
 
-    void GLTileRenderer::setTerrainGroundTiles(const std::vector<TileId>& tileIds) {
+    void GLTileRenderer::setTerrainGroundTiles(const std::vector<TileId>& tileIds, const std::vector<int>& proxyDepths) {
         std::lock_guard<std::mutex> lock(_mutex);
 
         _terrainGroundTiles = tileIds;
+        _terrainGroundProxyDepths = proxyDepths;
+        _terrainGroundProxyDepths.resize(tileIds.size(), 0);
         _terrainSharedGround = !tileIds.empty();
         _groundLeafCache.clear();
         updateTerrainCoverTiles();
@@ -3756,13 +3758,17 @@ namespace carto::vt {
         _terrainDrawDepthClipUnits = 0.0f;
         _terrainGroundColor = color;
 
-        _terrainDrawLayerOffset = 0.0f; // the ground is the bottom of the stack
-
         int surfaceDraws = 0;
-        for (const TileId& tileId : _terrainGroundTiles) {
-            renderTileSurfaceFill(tileId, color, true); // lit and shadowed: this IS the terrain surface
+        for (std::size_t i = 0; i < _terrainGroundTiles.size(); i++) {
+            // The bottom of the stack (offset 0) unless this tile is standing in on a coarser
+            // level, in which case it is pushed back hard - tangram's `proxy *= 48` for the terrain
+            // raster. A stand-in is a DIFFERENT height field: where it rises above the level it
+            // replaces it pokes through the content drawn on that level.
+            _terrainDrawLayerOffset = _terrainGroundProxyDepths[i] * TERRAIN_RASTER_PROXY_SCALE;
+            renderTileSurfaceFill(_terrainGroundTiles[i], color, true); // lit and shadowed: this IS the terrain surface
             surfaceDraws++;
         }
+        _terrainDrawLayerOffset = 0.0f;
 
         glDepthMask(GL_FALSE);
         glEnable(GL_CULL_FACE);
@@ -4138,7 +4144,13 @@ namespace carto::vt {
         unsigned int lightFlags = (litSurface ? TERRAIN_LIGHT_FLAG : 0) | (shadowedSurface ? TERRAIN_SHADOW_FLAG | DERIVATIVES_FLAG : 0);
 
         int draws = 0;
-        for (const TileId& tileId : paintTiles) {
+        for (std::size_t paintIndex = 0; paintIndex < paintTiles.size(); paintIndex++) {
+            const TileId& tileId = paintTiles[paintIndex];
+            // The paint is drawn ON the ground, so it carries the ground's proxy push as well -
+            // otherwise a stand-in tile's shading separates from the surface it shades.
+            if (_terrainSharedGround && paintIndex < _terrainGroundProxyDepths.size()) {
+                _terrainDrawLayerOffset = -static_cast<float>(_terrainLayerOrdinalBase) + _terrainGroundProxyDepths[paintIndex] * TERRAIN_RASTER_PROXY_SCALE;
+            }
             const std::pair<bool, TerrainTexture>& resolved = resolveTerrainTexture(tileId);
             if (!resolved.first || resolved.second.textureId == 0 || resolved.second.metersPerTexel <= 0.0f) {
                 continue;
