@@ -1573,9 +1573,33 @@ namespace carto::vt {
             // sits at the SAME depth as the surface, so test it with GL_LEQUAL and no forward
             // bias: coincident content passes (visible), but content behind a near ridge is at
             // greater depth and fails (occluded) - zero forward pull means zero ridge leak.
-            // A shared ground drops the stencil tile masks with the per-layer depth domain: they
-            // are a full displaced surface draw per tile PER LAYER, and tangram has none.
-            renderGeometry2D(*_visibleRenderTiles, _terrainSharedGround ? 0 : stencilBits);
+            //
+            // The stencil tile masks are a full displaced surface draw per tile PER LAYER, which is
+            // what the shared ground is meant to remove - and tangram has none. But tangram's
+            // content WRITES depth, so a live tile beats the proxy it replaces; ours does not (that
+            // is what stops road casings and fills of different style layers z-fighting), so with
+            // no mask the retained tile from the previous zoom keeps painting its whole footprint
+            // through every gap in the new tile's content: the same roads twice, one zoom level
+            // apart, blinking as the blend runs. So the masks are dropped only when nothing can
+            // overlap - one zoom level on screen and no tile blending out, which is the steady
+            // state - and stamped during transitions, which is where they earn their cost.
+            bool tileFootprintsOverlap = false;
+            if (_terrainSharedGround) {
+                int zoom = -1;
+                for (const RenderTile& renderTile : *_visibleRenderTiles) {
+                    if (!renderTile.visible) {
+                        continue;
+                    }
+                    for (auto it = renderTile.renderLayers.begin(); it != renderTile.renderLayers.end() && !tileFootprintsOverlap; it++) {
+                        tileFootprintsOverlap = !it->second.active || (zoom >= 0 && it->second.targetTileId.zoom != zoom);
+                        zoom = it->second.targetTileId.zoom;
+                    }
+                    if (tileFootprintsOverlap) {
+                        break;
+                    }
+                }
+            }
+            renderGeometry2D(*_visibleRenderTiles, (_terrainSharedGround && !tileFootprintsOverlap) ? 0 : stencilBits);
             if (leEqualDepth) {
                 glDepthFunc(GL_LESS);
             }
