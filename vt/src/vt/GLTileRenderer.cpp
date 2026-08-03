@@ -193,6 +193,12 @@ namespace carto::vt {
         _terrainPainterOrder = enabled;
     }
 
+    void GLTileRenderer::setTerrainLayerOrdinalBase(int base) {
+        std::lock_guard<std::mutex> lock(_mutex);
+
+        _terrainLayerOrdinalBase = base;
+    }
+
     void GLTileRenderer::setTerrainEdgeStitching(bool enabled) {
         std::lock_guard<std::mutex> lock(_mutex);
 
@@ -2626,7 +2632,13 @@ namespace carto::vt {
         // Render tile layers in correct order
         bool resetStencil = true;
         std::optional<CompOp> currentCompOp;
-        for (auto it = renderLayerMap.begin(); it != renderLayerMap.end(); it++) {
+        // Tangram's style-layer order as a small dense index. The term it feeds carries a
+        // constant-NDC part (2^-19 per unit) whose eye tolerance grows as distance^2 - which is how
+        // rounds 45-56 saw through ridges - but that took 128-256 units, and a style layer count is
+        // tens. The base separates one tile layer's style layers from another's, since every tile
+        // layer has a renderer of its own.
+        int layerOrdinal = _terrainLayerOrdinalBase;
+        for (auto it = renderLayerMap.begin(); it != renderLayerMap.end(); it++, layerOrdinal++) {
             const std::vector<const RenderTileLayer*>& renderLayers = it->second;
             if (renderLayers.empty()) {
                 continue;
@@ -2749,19 +2761,20 @@ namespace carto::vt {
                         glDepthMask(GL_TRUE);
                     }
                     if (_terrainSharedGround) {
-                        // Tangram's model, in the one form that does not bring back the z-fights
-                        // this renderer removed. Ground-shaped content (the tile background, the
-                        // rasters) WRITES depth and a retained (proxy) tile writes PUSHED BACK, so
-                        // the tile that replaces it wins the ground - and the proxy's own roads,
-                        // pushed back with it, then fail against the live tile's written ground.
-                        // That is exactly the job the stencil tile masks were doing.
-                        // What is NOT done here is separating style layers by an ordinal: with
-                        // content writing depth that is what tangram needs, and it is also a
-                        // constant-NDC pull whose eye tolerance grows as distance^2 - the
-                        // see-through of rounds 45-56. Geometry keeps painter's order instead.
+                        // Tangram's model, whole. Three parts, and none of them does the job on its
+                        // own - which is what adopting it piecemeal cost:
+                        //  - content WRITES depth, so a live tile beats the proxy it replaces and
+                        //    the stencil tile masks are not needed;
+                        //  - every style layer is pulled forward by its own ordinal, so coplanar
+                        //    content of two layers cannot fight once both write (round 52's washed
+                        //    road casings were writes WITHOUT this);
+                        //  - the pull is (2^-19*w + depth_shift), and depth_shift is CONSTANT CLIP:
+                        //    large near the camera, where content and the ground disagree most and
+                        //    fills shred into stripes, and dying as 1/w at range, where a forward
+                        //    pull is what leaks over a ridge.
                         _terrainDrawDepthBias = _terrainDepthBias;
                         _terrainDrawDepthClipUnits = 0.0f;
-                        _terrainDrawLayerOffset = (renderLayer->active ? 0.0f : TERRAIN_PROXY_DEPTH_UNITS);
+                        _terrainDrawLayerOffset = (renderLayer->active ? 0.0f : TERRAIN_PROXY_DEPTH_UNITS) - layerOrdinal;
                     } else if (terrainVTF) {
                         // Backgrounds/bitmaps ARE the terrain occluders: they render the
                         // reference surface meshes and WRITE depth. Retained blend-out
@@ -2852,16 +2865,15 @@ namespace carto::vt {
                     // per-layer bias), so road casings/fills from different style layers
                     // can not z-fight each other, and vector elements drawn after the
                     // tile layers stay in front of all tile content.
-                    if (contentDepthWrite) {
+                    if (contentDepthWrite && !_terrainSharedGround) {
                         glDepthMask(GL_FALSE);
                     }
                     if (_terrainSharedGround) {
-                        // Same push for the geometry: a proxy tile's roads fail against the ground
-                        // the live cover wrote, which is what stops the previous zoom's content
-                        // painting through the gaps in the new one.
+                        // Geometry writes as well (tangram writes for opaque AND translucent) and
+                        // carries the same ordinal as the backgrounds and rasters of its own layer.
                         _terrainDrawDepthBias = _terrainDepthBias;
                         _terrainDrawDepthClipUnits = 0.0f;
-                        _terrainDrawLayerOffset = (renderLayer->active ? 0.0f : TERRAIN_PROXY_DEPTH_UNITS);
+                        _terrainDrawLayerOffset = (renderLayer->active ? 0.0f : TERRAIN_PROXY_DEPTH_UNITS) - layerOrdinal;
                     } else if (terrainVTF) {
                         // Geometry (roads, lines, polygons) is a different piecewise-linear
                         // approximation of the height field than the background/surface
@@ -3342,8 +3354,16 @@ namespace carto::vt {
         // content WRITE depth without style layers z-fighting each other, and what makes a live
         // tile beat the proxy it replaces - which is the job the stencil tile masks were doing.
         // Zero for the surface itself, which is the bottom of the stack.
-        glUniform1f(shaderProgram.uniforms[U_LAYERDEPTHOFFSET], gridSurface ? 0.0f : _terrainDrawLayerOffset);
-        glUniform1f(shaderProgram.uniforms[U_DEPTHSHIFT], static_cast<float>(_terrainSharedGround ? _terrainContentDepthShift * projScaleZ : 0.0));
+        // Surfaces take it too: a terrain paint IS a surface and still has to sit at its own place
+        // in the stack's depth order, or the fills of the layer under it are pulled in front of it.
+        // The ground pass sets the offset to 0 itself, which is where the stack starts.
+        glUniform1f(shaderProgram.uniforms[U_LAYERDEPTHOFFSET], _terrainDrawLayerOffset);
+        // depth_shift, tangram's constant-clip pull. Scaled by the projection's depth coefficient
+        // |m22|, which is what the measured `debug.carto.depthshift 0.02` experiment used - taking
+        // it from (2,3) instead makes it orders of magnitude larger and drags a whole landcover
+        // fill in front of the mountain behind it.
+        double depthShift = (_terrainSharedGround ? _terrainContentDepthShift * projScaleZ : 0.0);
+        glUniform1f(shaderProgram.uniforms[U_DEPTHSHIFT], static_cast<float>(depthShift));
 
         // Cross-LOD edge stitching applies to the shared grid SURFACE only: its vertices are
         // the tile-local unit square, so the edge test in the shader is meaningful. Draped
@@ -3725,6 +3745,8 @@ namespace carto::vt {
         _terrainDrawDepthClipUnits = 0.0f;
         _terrainGroundColor = color;
 
+        _terrainDrawLayerOffset = 0.0f; // the ground is the bottom of the stack
+
         int surfaceDraws = 0;
         for (const TileId& tileId : _terrainGroundTiles) {
             renderTileSurfaceFill(tileId, color, true); // lit and shadowed: this IS the terrain surface
@@ -4094,6 +4116,8 @@ namespace carto::vt {
         // backgrounds carry over the surface they share) is all it takes.
         _terrainDrawDepthBias = _terrainDepthBias + (_terrainSharedGround ? TERRAIN_LAYER_DEPTH_DELTA : 0.0f);
         _terrainDrawDepthClipUnits = 0.0f;
+        // At this layer's place in the stack's depth order, like any other content of it.
+        _terrainDrawLayerOffset = (_terrainSharedGround ? -static_cast<float>(_terrainLayerOrdinalBase) : 0.0f);
 
         // The paint COVERS the ground it is drawn on, so it has to carry the ground's sun and
         // shadow too: lighting only the surface underneath leaves the shading over it unlit and
