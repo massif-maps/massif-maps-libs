@@ -584,7 +584,8 @@ namespace carto::vt {
         bool _terrainPainterOrder = false;       // tangram painter-order depth model (no surface occluder / no slack); implies regular grid
         float _terrainDrawLayerOffset = 0.0f;    // painter-order per-draw (proxy - layer) offset
         int _terrainLayerOrdinalBase = 0;        // first style-layer ordinal of this renderer in the stack
-        int _terrainStyleLayersDrawn = 0;        // style layers drawn last frame (the owner's dense numbering)
+        std::set<int> _terrainStyleLayerIndices; // every style layer index this renderer has drawn - the stable order list
+        int _terrainStyleLayersDrawn = 0;        // size of the order list above (the owner's dense numbering)
         bool _terrainDrapeFills = false;         // maplibre-style: bake polygon fills flat to a per-tile texture, sampled on the surface
         bool _terrainDrapeLines = false;         // also bake vt tile lines into the drape texture (softer, but zero leak/hug error)
         int _drapeTextureSize = 512;             // per-tile drape texture resolution

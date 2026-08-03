@@ -2659,9 +2659,19 @@ namespace carto::vt {
         // rounds 45-56 saw through ridges - but that took 128-256 units, and a style layer count is
         // tens. The base separates one tile layer's style layers from another's, since every tile
         // layer has a renderer of its own.
-        int layerOrdinal = _terrainLayerOrdinalBase;
-        _terrainStyleLayersDrawn = static_cast<int>(renderLayerMap.size()); // the owner numbers the next renderer from here
-        for (auto it = renderLayerMap.begin(); it != renderLayerMap.end(); it++, layerOrdinal++) {
+        // Numbered over every style layer this renderer has EVER drawn, not over the ones present
+        // this frame. Tangram's `order` is a property of the scene, fixed before a tile loads
+        // (osm-bright.yaml numbers them 1..93); a rank over what happens to be on screen renumbers
+        // the whole stack as tiles come and go - measured walking a layer's base 7 -> 5 -> 7 between
+        // frames - so the depth relation between two layers is a moving target and content pops in
+        // and out from under the layer above it. The set only grows, and a style has a bounded
+        // number of layers.
+        for (auto it = renderLayerMap.begin(); it != renderLayerMap.end(); it++) {
+            _terrainStyleLayerIndices.insert(it->first);
+        }
+        _terrainStyleLayersDrawn = static_cast<int>(_terrainStyleLayerIndices.size()); // the owner numbers the next renderer from here
+        for (auto it = renderLayerMap.begin(); it != renderLayerMap.end(); it++) {
+            int layerOrdinal = _terrainLayerOrdinalBase + static_cast<int>(std::distance(_terrainStyleLayerIndices.begin(), _terrainStyleLayerIndices.find(it->first)));
             const std::vector<const RenderTileLayer*>& renderLayers = it->second;
             if (renderLayers.empty()) {
                 continue;
