@@ -3365,11 +3365,15 @@ namespace carto::vt {
         // in the stack's depth order, or the fills of the layer under it are pulled in front of it.
         // The ground pass sets the offset to 0 itself, which is where the stack starts.
         glUniform1f(shaderProgram.uniforms[U_LAYERDEPTHOFFSET], _terrainDrawLayerOffset);
-        // depth_shift, tangram's constant-clip pull. Scaled by the projection's depth coefficient
-        // |m22|, which is what the measured `debug.carto.depthshift 0.02` experiment used - taking
-        // it from (2,3) instead makes it orders of magnitude larger and drags a whole landcover
-        // fill in front of the mountain behind it.
-        double depthShift = (_terrainSharedGround ? _terrainContentDepthShift * projScaleZ : 0.0);
+        // depth_shift, tangram's, verbatim from res/scenes/terrain-3d.yaml:
+        //     depth_shift = -0.02*u_proj[2][3];
+        // glm::perspective puts -1 in [2][3], so it is a FLAT 0.02 - not scaled by the projection
+        // at all. Their comment says what it is for: "use larger depth delta near camera to prevent
+        // terrain from covering geometry", which is exactly what un-subdivided content needs, since
+        // it chords across the terrain between its own vertices. Constant CLIP, so it is large near
+        // the camera - where the chord error is - and dies as 1/w at range, where a forward pull
+        // would leak over a ridge.
+        double depthShift = (_terrainSharedGround ? _terrainContentDepthShift : 0.0);
         glUniform1f(shaderProgram.uniforms[U_DEPTHSHIFT], static_cast<float>(depthShift));
 
         // Cross-LOD edge stitching applies to the shared grid SURFACE only: its vertices are
