@@ -204,6 +204,20 @@ namespace carto::vt {
         // tile in layer order via bakeDrapeTile, and then draws the surface once per tile with
         // renderDrapedSurface. That is what lets a hillshade layer and a vector tile layer share
         // a single drape texture, a single surface draw and a single depth domain.
+        // Shared terrain ground (the tangram model, and what replaces the RTT drape). The owner
+        // hands every participating renderer the SAME cover of terrain tiles and draws the ground
+        // for it ONCE per frame with renderTerrainGround; each layer then composites its content
+        // straight onto it in layer order. A renderer with a ground cover set stops establishing a
+        // depth domain of its own - no depth clear, no reference surface pre-pass - and stops
+        // stamping tile stencil masks, so a frame costs one ground draw per tile instead of a
+        // pre-pass plus a mask per tile PER LAYER. Ground-shaped content (tile backgrounds and
+        // rasters) is drawn on the cover tiles rather than on the layer's own, because two
+        // tesselations of the same height field do not agree and would z-fight.
+        void setTerrainGroundTiles(const std::vector<TileId>& tileIds);
+        // Draws the shared ground for the cover: the displaced grid surface per tile in the given
+        // colour, writing depth at its TRUE depth. The only depth-writing terrain geometry in the
+        // frame - everything drawn afterwards tests against it and never writes. Returns the draws.
+        int renderTerrainGround(const Color& color);
         void setExternalDrapeTarget(bool enabled);
         // The terrain tiles the owner drapes and draws this frame. Content covered by them must
         // NOT be drawn again as displaced 3D geometry - it is already in the drape texture, and
@@ -445,7 +459,16 @@ namespace carto::vt {
         void updateTerrainSkirts();
         const std::pair<bool, TerrainTexture>& resolveTerrainTexture(const TileId& tileId) const;
         bool setupTerrainUniforms(const ShaderProgram& shaderProgram, const TileId& tileId, const cglib::mat4x4<double>& vertexFrameMatrix, bool gridSurface = false);
-        void buildTerrainEdgeCoarsening(const std::set<TileId>& tileIds);
+        // The tile set the terrain SURFACES are drawn from this frame - which is not the
+        // renderer's own visible tiles as soon as a cover is handed in from outside (the drape
+        // cover, or a paint's terrain cover). Edge stitching has to follow the drawn cover, or it
+        // stitches a set of tiles nothing is drawn from and the surfaces crack at LOD rings.
+        const std::set<TileId>& terrainSurfaceTileIds() const;
+        // The cover tiles making up the ground under one render tile: the leaves inside it, or
+        // the tile itself where the cover is coarser there (a capped split).
+        const std::vector<TileId>& collectGroundLeaves(const TileId& targetTileId) const;
+        void updateTerrainCoverTiles();
+        void buildTerrainEdgeCoarsening();
         void setupTerrainLightingUniforms(const ShaderProgram& shaderProgram, const TileId& tileId, const cglib::mat4x4<double>& vertexFrameMatrix);
         void renderTileMask(const TileId& tileId);
         void renderStencilDebugOverlay();
@@ -457,7 +480,7 @@ namespace carto::vt {
         int renderTerrainPaintSurfaces();
         // The zoom-dependent relief boost of the paint, matching the normal-map path.
         float calculateTerrainPaintReliefBoost(float metersPerTexel) const;
-        void renderTileSurfaceFill(const TileId& tileId, const Color& color);
+        void renderTileSurfaceFill(const TileId& tileId, const Color& color, bool lit = false);
         void renderDrapeTextures(const std::vector<RenderTile>& renderTiles);
         int renderTileSurfaceDrape(const TileId& tileId, float uvOffsetX, float uvOffsetY, float uvScale);
         GLuint ensureDrapeTexture(const TileId& tileId);
@@ -531,7 +554,9 @@ namespace carto::vt {
         bool _terrainRegularGrid = false;        // shared unit-grid surfaces instead of per-tile tesselated meshes (planar terrain)
         int _terrainRegularGridResolution = 0;   // resolution of the currently built shared grid
         bool _terrainEdgeStitching = false;      // snap grid surface edges to a coarser neighbour's lattice
-        std::map<TileId, cglib::vec4<float>> _terrainEdgeCoarseningMap; // per visible tile: lattice cell scale (2^k) on the west/east/south/north edge
+        std::set<TileId> _visibleTileIds;        // this renderer's own visible tiles (surface cover when no external one is set)
+        std::set<TileId> _terrainCoverTileIds;   // the cover the surfaces are actually drawn from (drape cover / paint cover)
+        std::map<TileId, cglib::vec4<float>> _terrainEdgeCoarseningMap; // per drawn cover tile: lattice cell scale (2^k) on the west/east/south/north edge
         std::vector<std::shared_ptr<TileSurface>> _terrainGridSurfaces;
         std::vector<std::shared_ptr<TileSurface>> _terrainFlatSurfaces; // 1x1 grid for the flat drape bake // the single shared unit-grid surface, drawn per tile
         bool _terrainPainterOrder = false;       // tangram painter-order depth model (no surface occluder / no slack); implies regular grid
@@ -544,6 +569,9 @@ namespace carto::vt {
         std::map<TileId, std::size_t> _drapeFingerprints; // what each cached texture was baked from; a change means it is stale
         std::vector<GLuint> _drapeTexturePool;   // recycled textures, so panning does not churn GL allocations
         std::vector<GLuint> _drapeStaleTextures; // wrong-size textures awaiting deletion on the GL thread
+        bool _terrainSharedGround = false;       // the owner draws one ground pass for the whole layer stack
+        std::vector<TileId> _terrainGroundTiles; // the shared ground cover, in the owner's order
+        mutable std::unordered_map<TileId, std::vector<TileId>> _groundLeafCache; // render tile -> its cover leaves
         bool _externalDrapeTarget = false;       // drape textures are owned by the caller (cross-layer stacks)
         std::set<TileId> _drapeTilesThisFrame;   // target tiles that have a valid drape texture this frame
         std::vector<TileId> _externalDrapeTiles; // terrain tiles the owner drapes this frame

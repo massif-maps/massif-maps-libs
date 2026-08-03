@@ -174,12 +174,16 @@ namespace carto::vt {
     void GLTileRenderer::setTerrainRegularGrid(bool enabled, int resolution) {
         std::lock_guard<std::mutex> lock(_mutex);
 
+        bool wasEnabled = _terrainRegularGrid;
         _terrainRegularGrid = enabled;
         if (!enabled) {
             _terrainGridSurfaces.clear();
         } else if (resolution != _terrainRegularGridResolution) {
             _terrainRegularGridResolution = resolution;
             _terrainGridSurfaces.clear(); // rebuilt lazily; the old compiled VBO is released in endFrame
+        }
+        if (wasEnabled != enabled) {
+            buildTerrainEdgeCoarsening(); // stitching only exists in regular grid mode
         }
     }
 
@@ -194,7 +198,7 @@ namespace carto::vt {
 
         if (_terrainEdgeStitching != enabled) {
             _terrainEdgeStitching = enabled;
-            _terrainEdgeCoarseningMap.clear(); // rebuilt on the next visible tile set
+            buildTerrainEdgeCoarsening();
         }
     }
 
@@ -1096,13 +1100,22 @@ namespace carto::vt {
         std::lock_guard<std::mutex> lock(_mutex);
 
         VT_STAT_INC(visibleTileSetChanges);
-        buildTerrainEdgeCoarsening(tileIds);
+        _visibleTileIds = tileIds;
+        buildTerrainEdgeCoarsening();
         buildTileSurfaces(tileIds);
         buildLabelMaps(labelTiles);
         buildRenderTiles(tiles);
     }
 
-    void GLTileRenderer::buildTerrainEdgeCoarsening(const std::set<TileId>& tileIds) {
+    const std::set<TileId>& GLTileRenderer::terrainSurfaceTileIds() const {
+        // The surfaces are drawn from the cover the owner hands in whenever there is one: under a
+        // cross-layer drape the shared surface is drawn for the drape cover (normalised leaves,
+        // not any single layer's tiles), and a paint draws itself on the terrain's own cover -
+        // it has no tiles of its own at all.
+        return (_terrainCoverTileIds.empty() ? _visibleTileIds : _terrainCoverTileIds);
+    }
+
+    void GLTileRenderer::buildTerrainEdgeCoarsening() {
         // Per visible tile: how much coarser the neighbour on each edge is. The shared grid
         // surface is drawn for every tile, so a coarser neighbour interpolates the DEM between
         // its own (2^k times wider) lattice nodes; the fine tile must chord across the same
@@ -1112,6 +1125,7 @@ namespace carto::vt {
         if (!(_terrainEdgeStitching && _terrainRegularGrid)) {
             return;
         }
+        const std::set<TileId>& tileIds = terrainSurfaceTileIds();
         int maxLevels = 0;
         for (int res = _terrainRegularGridResolution; res > 0 && (res & 1) == 0; res >>= 1) {
             maxLevels++;
@@ -1456,11 +1470,22 @@ namespace carto::vt {
             // then the only depth-writing terrain geometry. Running this per-layer pre-pass would
             // glClear(DEPTH) that shared surface away and re-establish the private depth domain
             // the shared drape exists to remove.
+            // Content composited onto the shared ground is coincident with it, so it has to pass
+            // at EQUAL depth; the ground pass itself ran with GL_LESS. Set before the paint, which
+            // is the first such layer.
+            bool leEqualDepth = _terrainMode && (_terrainDrapeFills || _terrainSharedGround);
+            if (leEqualDepth) {
+                glDepthFunc(GL_LEQUAL);
+            }
+
             if (_terrainPaint.enabled && !_externalDrapeTarget) {
                 // A paint with no drape draws itself here, in this layer's place in the order.
                 renderTerrainPaintSurfaces();
             }
-            if (_terrainMode && _terrainTextureProvider && !_externalDrapeTarget) {
+            // A shared ground has already been drawn once for the whole stack, so this layer must
+            // not clear the depth buffer and re-establish a private domain - that is exactly what
+            // makes a contour or an element leak through the ridge in front of it.
+            if (_terrainMode && _terrainTextureProvider && !_externalDrapeTarget && !_terrainSharedGround) {
                 bool colorFill = (_terrainBackgroundColor.value() != 0);
                 glEnable(GL_DEPTH_TEST);
                 glDepthMask(GL_TRUE);
@@ -1544,15 +1569,13 @@ namespace carto::vt {
                 }
             }
 
-            // 2D geometry pass. With the true-depth drape occluder, lattice-clamped content
+            // 2D geometry pass. With the true-depth ground occluder, lattice-clamped content
             // sits at the SAME depth as the surface, so test it with GL_LEQUAL and no forward
             // bias: coincident content passes (visible), but content behind a near ridge is at
             // greater depth and fails (occluded) - zero forward pull means zero ridge leak.
-            bool leEqualDepth = _terrainMode && _terrainDrapeFills;
-            if (leEqualDepth) {
-                glDepthFunc(GL_LEQUAL);
-            }
-            renderGeometry2D(*_visibleRenderTiles, stencilBits);
+            // A shared ground drops the stencil tile masks with the per-layer depth domain: they
+            // are a full displaced surface draw per tile PER LAYER, and tangram has none.
+            renderGeometry2D(*_visibleRenderTiles, _terrainSharedGround ? 0 : stencilBits);
             if (leEqualDepth) {
                 glDepthFunc(GL_LESS);
             }
@@ -2578,6 +2601,12 @@ namespace carto::vt {
         if (_terrainMode && _terrainTextureProvider) {
             for (auto it = renderLayerMap.begin(); it != renderLayerMap.end(); it++) {
                 std::sort(it->second.begin(), it->second.end(), [this](const RenderTileLayer* layer1, const RenderTileLayer* layer2) {
+                    // Retained blend-out (proxy) tiles first: without the stencil masks nothing
+                    // else stops a stale tile kept for the crossfade from painting over the live
+                    // tile that replaced it, and the two overlap exactly during a LOD change.
+                    if (layer1->active != layer2->active) {
+                        return layer2->active;
+                    }
                     cglib::vec3<double> center1 = _transformer->calculateTileBBox(layer1->targetTileId).center();
                     cglib::vec3<double> center2 = _transformer->calculateTileBBox(layer2->targetTileId).center();
                     return cglib::length(center1 - _viewState.origin) < cglib::length(center2 - _viewState.origin);
@@ -2704,12 +2733,21 @@ namespace carto::vt {
                 // their overlaps. CPU fallback mode: mesh tesselations differ between
                 // layers, so surfaces are separated with slope-scaled polygon offsets.
                 bool terrainVTF = _terrainMode && (bool) _terrainTextureProvider;
-                bool contentDepthWrite = _terrainMode && !layer->getCompOp() && (terrainVTF || _terrainDepthWrite);
+                // Under a shared ground NOTHING but the ground pass writes depth: backgrounds and
+                // rasters are drawn on the cover tiles, coincident with it, so a write would only
+                // repeat what is there - and the proxy pushback below would put them BEHIND it and
+                // make every retained tile's raster disappear.
+                bool contentDepthWrite = _terrainMode && !_terrainSharedGround && !layer->getCompOp() && (terrainVTF || _terrainDepthWrite);
                 if (_terrainMode) {
                     if (contentDepthWrite) {
                         glDepthMask(GL_TRUE);
                     }
-                    if (terrainVTF) {
+                    if (_terrainSharedGround) {
+                        // Coincident with the ground, GL_LEQUAL: no bias in either direction.
+                        // Stacking is painter's order, as it is in tangram.
+                        _terrainDrawDepthBias = _terrainDepthBias;
+                        _terrainDrawDepthClipUnits = 0.0f;
+                    } else if (terrainVTF) {
                         // Backgrounds/bitmaps ARE the terrain occluders: they render the
                         // reference surface meshes and WRITE depth. Retained blend-out
                         // (proxy) tiles are pushed back one delta so live content wins.
@@ -2746,6 +2784,13 @@ namespace carto::vt {
                 // displaced geometry. Overzoomed/proxy layers are draped too (through the
                 // sub-rect bake), so this no longer requires sourceTileId == targetTileId.
                 bool drapedTile = isTileDraped(renderLayer->targetTileId);
+                // Ground-shaped content - the style's tile background and rasters - is a second
+                // tesselation of the same height field as the ground, and two tesselations do not
+                // agree: under a shared ground it is drawn on the COVER tiles instead of on the
+                // layer's own, so it is coincident with the ground to the bit. A layer coarser
+                // than the cover therefore draws once per leaf, with the source uv sub-rect the
+                // overzoom path already computes for a coarse source over a fine target.
+                const std::vector<TileId>& groundTiles = collectGroundLeaves(renderLayer->targetTileId);
                 for (const std::shared_ptr<TileBackground>& background : renderLayer->layer->getBackgrounds()) {
                     // Draped native backgrounds are baked into the surface texture already.
                     if (drapedTile) {
@@ -2756,7 +2801,12 @@ namespace carto::vt {
                         setCompOp(backgroundCompOp);
                         currentCompOp = backgroundCompOp;
                     }
-                    renderTileBackground(renderLayer->targetTileId, renderLayer->blend, geometryOpacity, renderLayer->tileSize, background);
+                    for (const TileId& groundTileId : groundTiles) {
+                        // The pattern is anchored in the tile's own uv, so a leaf covering a
+                        // quarter of the tile repeats it a quarter as often.
+                        float groundTileSize = renderLayer->tileSize * std::exp2(static_cast<float>(renderLayer->targetTileId.zoom - groundTileId.zoom));
+                        renderTileBackground(groundTileId, renderLayer->blend, geometryOpacity, groundTileSize, background);
+                    }
                 }
 
                 for (const std::shared_ptr<TileBitmap>& bitmap : renderLayer->layer->getBitmaps()) {
@@ -2769,7 +2819,9 @@ namespace carto::vt {
                         setCompOp(bitmapCompOp);
                         currentCompOp = bitmapCompOp;
                     }
-                    renderTileBitmap(renderLayer->sourceTileId, renderLayer->targetTileId, renderLayer->blend, geometryOpacity, bitmap);
+                    for (const TileId& groundTileId : groundTiles) {
+                        renderTileBitmap(renderLayer->sourceTileId, groundTileId, renderLayer->blend, geometryOpacity, bitmap);
+                    }
                 }
 
                 if (_terrainMode) {
@@ -2781,7 +2833,14 @@ namespace carto::vt {
                     if (contentDepthWrite) {
                         glDepthMask(GL_FALSE);
                     }
-                    if (terrainVTF) {
+                    if (_terrainSharedGround) {
+                        // Lattice-clamped geometry is coincident with the ground surface and is
+                        // tested with GL_LEQUAL, so it needs no bias at all: it passes at equal
+                        // depth and fails behind a ridge. Any forward pull here is what leaks
+                        // far-slope content over a crest (rounds 45-56).
+                        _terrainDrawDepthBias = _terrainDepthBias;
+                        _terrainDrawDepthClipUnits = 0.0f;
+                    } else if (terrainVTF) {
                         // Geometry (roads, lines, polygons) is a different piecewise-linear
                         // approximation of the height field than the background/surface
                         // meshes: between vertices its chords deviate by the interpolation
@@ -2970,9 +3029,18 @@ namespace carto::vt {
                 glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
                 _terrainDrawDepthBias = _terrainDepthBias;
                 _terrainDrawDepthClipUnits = 0.0f; // TRUE depth: the occluder is never pushed back
-                for (const RenderTile& renderTile : renderTiles) {
-                    if (renderTile.visible) {
-                        renderTileSurfaceFill(renderTile.targetTileId, Color());
+                // The overlay has its own depth buffer, so it needs its own seeding even under a
+                // shared ground - but from the SAME cover, so an extrusion is occluded by exactly
+                // the ridge that occludes it in the main framebuffer.
+                if (_terrainSharedGround) {
+                    for (const TileId& tileId : _terrainGroundTiles) {
+                        renderTileSurfaceFill(tileId, Color());
+                    }
+                } else {
+                    for (const RenderTile& renderTile : renderTiles) {
+                        if (renderTile.visible) {
+                            renderTileSurfaceFill(renderTile.targetTileId, Color());
+                        }
                     }
                 }
                 glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
@@ -3439,7 +3507,7 @@ namespace carto::vt {
         checkGLError();
     }
 
-    void GLTileRenderer::renderTileSurfaceFill(const TileId& tileId, const Color& color) {
+    void GLTileRenderer::renderTileSurfaceFill(const TileId& tileId, const Color& color, bool lit) {
         // The displaced tile surface as a solid color (or depth-only when transparent).
         // Drawn UNDER the style content with the per-draw depth bias applied - the
         // terrain pre-pass renders it pushed slightly back so content passes over it
@@ -3451,12 +3519,38 @@ namespace carto::vt {
             const CompiledSurface& compiledTileSurface = _compiledTileSurfaceMap[tileSurface];
 
             unsigned int terrainFlag = (_terrainMode && _terrainTextureProvider ? TERRAIN_FLAG | TERRAIN_VTF_FLAG : 0);
-            const ShaderProgram& shaderProgram = buildShaderProgram("tilesurfacefill", backgroundVsh, backgroundFsh, LightingMode::NONE, RasterFilterMode::NONE, terrainFlag | fogFlag());
+            // The shared ground is the lit terrain surface - the same role the drape surface has
+            // when there is a drape - so it takes the sun and the shadow map exactly as that does.
+            // The depth pre-passes and the 3D overlay seeding ask for the plain fill: they are
+            // colour-masked or invisible, and lighting them is pure shader cost.
+            bool litSurface = lit && terrainFlag != 0 && _terrainLighting.enabled;
+            bool shadowedSurface = litSurface && _terrainShadowTexture != 0 && _terrainShadowStrength > 0.0f;
+            unsigned int lightFlags = (litSurface ? TERRAIN_LIGHT_FLAG : 0) | (shadowedSurface ? TERRAIN_SHADOW_FLAG | DERIVATIVES_FLAG : 0);
+            const ShaderProgram& shaderProgram = buildShaderProgram("tilesurfacefill", backgroundVsh, backgroundFsh, LightingMode::NONE, RasterFilterMode::NONE, terrainFlag | lightFlags | fogFlag());
             useProgram(shaderProgram);
             setupFogUniforms(shaderProgram);
+            bool hasElevation = true;
             if (terrainFlag != 0) {
                 glUniform1f(shaderProgram.uniforms[U_DEPTHBIAS], _terrainDrawDepthBias);
-                setupTerrainUniforms(shaderProgram, tileId, surfaceFrame, gridMode);
+                hasElevation = setupTerrainUniforms(shaderProgram, tileId, surfaceFrame, gridMode);
+            }
+            if (litSurface) {
+                setupTerrainLightingUniforms(shaderProgram, tileId, surfaceFrame);
+            }
+            if (shadowedSurface) {
+                std::array<cglib::mat4x4<float>, MAX_SHADOW_CASCADES> shadowMatrices;
+                for (int i = 0; i < MAX_SHADOW_CASCADES; i++) {
+                    shadowMatrices[i] = cglib::mat4x4<float>::convert(_terrainShadowViewProjs[i] * surfaceFrame);
+                }
+                glUniformMatrix4fv(shaderProgram.uniforms[U_SHADOWMATRIX], MAX_SHADOW_CASCADES, GL_FALSE, shadowMatrices[0].data());
+                glActiveTexture(GL_TEXTURE2);
+                glBindTexture(GL_TEXTURE_2D, _terrainShadowTexture);
+                glUniform1i(shaderProgram.uniforms[U_SHADOWTEXTURE], 2);
+                glActiveTexture(GL_TEXTURE0);
+                // A tile drawn flat because its elevation has not arrived has no relief to shadow,
+                // and the terrain around it would shadow every texel of it (see renderTileSurfaceDrape).
+                glUniform4f(shaderProgram.uniforms[U_SHADOWPARAMS], 1.0f / std::max(1, _terrainShadowMapSize), hasElevation ? _terrainShadowStrength : 0.0f, _terrainShadowSoftness, 1.0f / _terrainShadowCascades);
+                glUniform4f(shaderProgram.uniforms[U_SHADOWBIAS], _terrainShadowBiases[0], _terrainShadowBiases[1], _terrainShadowBiases[2], _terrainShadowBiases[3]);
             }
 
             glBindBuffer(GL_ARRAY_BUFFER, compiledTileSurface.vertexGeometryVBO);
@@ -3526,6 +3620,90 @@ namespace carto::vt {
         std::lock_guard<std::mutex> lock(_mutex);
 
         _externalDrapeTiles.assign(tileIds.begin(), tileIds.end());
+        updateTerrainCoverTiles();
+    }
+
+    void GLTileRenderer::updateTerrainCoverTiles() {
+        // The drape cover wins over a paint's: under a cross-layer drape the shared surface is
+        // drawn for the drape leaves, and a paint bakes into that texture flat instead of drawing
+        // a surface of its own. Both are handed in every frame, so only rebuild on a real change.
+        std::set<TileId> coverTileIds;
+        if (!_externalDrapeTiles.empty()) {
+            coverTileIds.insert(_externalDrapeTiles.begin(), _externalDrapeTiles.end());
+        } else if (!_terrainGroundTiles.empty()) {
+            coverTileIds.insert(_terrainGroundTiles.begin(), _terrainGroundTiles.end());
+        } else if (!_terrainPaintTiles.empty()) {
+            coverTileIds.insert(_terrainPaintTiles.begin(), _terrainPaintTiles.end());
+        }
+        if (coverTileIds != _terrainCoverTileIds) {
+            _terrainCoverTileIds = std::move(coverTileIds);
+            buildTerrainEdgeCoarsening();
+        }
+    }
+
+    void GLTileRenderer::setTerrainGroundTiles(const std::vector<TileId>& tileIds) {
+        std::lock_guard<std::mutex> lock(_mutex);
+
+        _terrainGroundTiles = tileIds;
+        _terrainSharedGround = !tileIds.empty();
+        _groundLeafCache.clear();
+        updateTerrainCoverTiles();
+    }
+
+    const std::vector<TileId>& GLTileRenderer::collectGroundLeaves(const TileId& targetTileId) const {
+        auto it = _groundLeafCache.find(targetTileId);
+        if (it != _groundLeafCache.end()) {
+            return it->second;
+        }
+        std::vector<TileId> leaves;
+        for (const TileId& groundTileId : _terrainGroundTiles) {
+            if (tileCovers(targetTileId, groundTileId)) {
+                leaves.push_back(groundTileId);
+            }
+        }
+        if (leaves.empty()) {
+            // No leaf of its own: either there is no shared ground at all, or the cover is COARSER
+            // here (the split hit its cap). The tile then draws on its own surface, one tesselation
+            // finer than the ground it stands on - it hugs the same height field, so it stays
+            // within the content slack.
+            leaves.push_back(targetTileId);
+        }
+        return _groundLeafCache.emplace(targetTileId, std::move(leaves)).first->second;
+    }
+
+    int GLTileRenderer::renderTerrainGround(const Color& color) {
+        std::lock_guard<std::mutex> lock(_mutex);
+
+        resetProgramState(); // another renderer may have bound its own program since the last draw
+
+        if (!(_terrainMode && _terrainTextureProvider) || _terrainGroundTiles.empty()) {
+            return 0;
+        }
+
+        // The ground is the frame's only depth-writing terrain geometry, at its TRUE depth: it
+        // blocks the far slope of a ridge exactly, and everything drawn after it tests against it
+        // with GL_LEQUAL and no forward pull. Pushing it back instead is what opened the
+        // see-through band of rounds 45-56 - do not.
+        glEnable(GL_DEPTH_TEST);
+        glDepthFunc(GL_LESS);
+        glDepthMask(GL_TRUE);
+        glDisable(GL_STENCIL_TEST);
+        glStencilMask(0);
+        glDisable(GL_CULL_FACE); // displaced surfaces can face away from the camera near ridge crests
+        glEnable(GL_BLEND);
+        setCompOp(CompOp::SRC_OVER);
+        _terrainDrawDepthBias = _terrainDepthBias;
+        _terrainDrawDepthClipUnits = 0.0f;
+
+        int surfaceDraws = 0;
+        for (const TileId& tileId : _terrainGroundTiles) {
+            renderTileSurfaceFill(tileId, color, true); // lit and shadowed: this IS the terrain surface
+            surfaceDraws++;
+        }
+
+        glDepthMask(GL_FALSE);
+        glEnable(GL_CULL_FACE);
+        return surfaceDraws;
     }
 
     void GLTileRenderer::collectDrapeTiles(std::map<TileId, std::size_t>& drapeTiles) const {
@@ -3860,7 +4038,11 @@ namespace carto::vt {
         // over the shared grid VBO - which is what tangram does (the hillshade is a raster style
         // drawn on the tile's terrain mesh). The tiles come from the owner, because a paint has no
         // tile set of its own.
-        if (!_lightingShaderNormalMap || _lightingShaderNormalMap->perVertex || _terrainPaintTiles.empty()) {
+        // Under a shared ground the paint is one of the layers composited onto it, so it draws the
+        // cover the ground was drawn from - the same tiles, the same lattice, coincident to the
+        // bit - and leaves the depth alone. On its own it IS the surface, and writes depth.
+        const std::vector<TileId>& paintTiles = (_terrainSharedGround ? _terrainGroundTiles : _terrainPaintTiles);
+        if (!_lightingShaderNormalMap || _lightingShaderNormalMap->perVertex || paintTiles.empty()) {
             return 0;
         }
         if (!(_terrainRegularGrid && _terrainMode && _terrainTextureProvider)) {
@@ -3869,7 +4051,7 @@ namespace carto::vt {
 
         glDisable(GL_CULL_FACE);
         glEnable(GL_DEPTH_TEST);
-        glDepthMask(GL_TRUE); // this IS the terrain surface for this layer, so it writes depth
+        glDepthMask(_terrainSharedGround ? GL_FALSE : GL_TRUE); // this IS the terrain surface for this layer, so it writes depth
         glDisable(GL_STENCIL_TEST);
         glEnable(GL_BLEND);
         setCompOp(CompOp::SRC_OVER);
@@ -3877,7 +4059,7 @@ namespace carto::vt {
         _terrainDrawDepthClipUnits = 0.0f;
 
         int draws = 0;
-        for (const TileId& tileId : _terrainPaintTiles) {
+        for (const TileId& tileId : paintTiles) {
             const std::pair<bool, TerrainTexture>& resolved = resolveTerrainTexture(tileId);
             if (!resolved.first || resolved.second.textureId == 0 || resolved.second.metersPerTexel <= 0.0f) {
                 continue;
@@ -3922,6 +4104,7 @@ namespace carto::vt {
         std::lock_guard<std::mutex> lock(_mutex);
 
         _terrainPaintTiles = tileIds;
+        updateTerrainCoverTiles();
     }
 
     float GLTileRenderer::calculateTerrainPaintReliefBoost(float metersPerTexel) const {
