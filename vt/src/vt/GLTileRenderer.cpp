@@ -2653,17 +2653,32 @@ namespace carto::vt {
         // geometry, and translucent content of a far tile can not blend under
         // already-drawn near content.
         if (_terrainMode && _terrainTextureProvider) {
+            // One distance per tile, not one per comparison. On the terrain transformer
+            // calculateTileBBox samples the elevation manager for the tile's min/max height and
+            // transforms the box in double precision, so calling it from the comparator made the
+            // sort the single most expensive thing on the render thread (measured on the
+            // Crosscall, north pan: 21% of it, with calculateTileBBox at 22% inclusive).
+            std::map<TileId, double> tileDistances;
+            auto tileDistance = [this, &tileDistances](const TileId& tileId) -> double {
+                auto it = tileDistances.find(tileId);
+                if (it == tileDistances.end()) {
+                    cglib::vec3<double> center = _transformer->calculateTileBBox(tileId).center();
+                    it = tileDistances.emplace(tileId, cglib::length(center - _viewState.origin)).first;
+                }
+                return it->second;
+            };
             for (auto it = renderLayerMap.begin(); it != renderLayerMap.end(); it++) {
-                std::sort(it->second.begin(), it->second.end(), [this](const RenderTileLayer* layer1, const RenderTileLayer* layer2) {
+                for (const RenderTileLayer* renderLayer : it->second) {
+                    tileDistance(renderLayer->targetTileId);
+                }
+                std::sort(it->second.begin(), it->second.end(), [&tileDistance](const RenderTileLayer* layer1, const RenderTileLayer* layer2) {
                     // Retained blend-out (proxy) tiles first: without the stencil masks nothing
                     // else stops a stale tile kept for the crossfade from painting over the live
                     // tile that replaced it, and the two overlap exactly during a LOD change.
                     if (layer1->active != layer2->active) {
                         return layer2->active;
                     }
-                    cglib::vec3<double> center1 = _transformer->calculateTileBBox(layer1->targetTileId).center();
-                    cglib::vec3<double> center2 = _transformer->calculateTileBBox(layer2->targetTileId).center();
-                    return cglib::length(center1 - _viewState.origin) < cglib::length(center2 - _viewState.origin);
+                    return tileDistance(layer1->targetTileId) < tileDistance(layer2->targetTileId);
                 });
             }
         }
