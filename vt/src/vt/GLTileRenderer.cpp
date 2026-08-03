@@ -199,6 +199,12 @@ namespace carto::vt {
         _terrainLayerOrdinalBase = base;
     }
 
+    int GLTileRenderer::getStyleLayerCount() const {
+        std::lock_guard<std::mutex> lock(_mutex);
+
+        return _terrainStyleLayersDrawn;
+    }
+
     void GLTileRenderer::setTerrainEdgeStitching(bool enabled) {
         std::lock_guard<std::mutex> lock(_mutex);
 
@@ -2638,6 +2644,7 @@ namespace carto::vt {
         // tens. The base separates one tile layer's style layers from another's, since every tile
         // layer has a renderer of its own.
         int layerOrdinal = _terrainLayerOrdinalBase;
+        _terrainStyleLayersDrawn = static_cast<int>(renderLayerMap.size()); // the owner numbers the next renderer from here
         for (auto it = renderLayerMap.begin(); it != renderLayerMap.end(); it++, layerOrdinal++) {
             const std::vector<const RenderTileLayer*>& renderLayers = it->second;
             if (renderLayers.empty()) {

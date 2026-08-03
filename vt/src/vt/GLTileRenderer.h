@@ -148,6 +148,11 @@ namespace carto::vt {
         // renderGeometry2D). Every tile layer has its own renderer and its own style layers, so
         // without a base they would all claim ordinal 0 and fight each other once content writes.
         void setTerrainLayerOrdinalBase(int base);
+        // How many style layers this renderer drew last frame, so the owner can number the stack
+        // DENSELY: the ordinal feeds a constant-NDC pull, whose eye tolerance grows as distance^2,
+        // and a fixed stride per renderer inflates the total into the range that saw through ridges
+        // in rounds 45-56. Tangram's ordinals are dense because it has one style list.
+        int getStyleLayerCount() const;
         // Cross-LOD edge stitching for the shared regular grid surfaces: on an edge shared with
         // a coarser neighbouring tile, the surface follows the neighbour's coarser lattice so
         // the two tiles agree along the edge instead of cracking open. No effect without the
@@ -570,6 +575,7 @@ namespace carto::vt {
         bool _terrainPainterOrder = false;       // tangram painter-order depth model (no surface occluder / no slack); implies regular grid
         float _terrainDrawLayerOffset = 0.0f;    // painter-order per-draw (proxy - layer) offset
         int _terrainLayerOrdinalBase = 0;        // first style-layer ordinal of this renderer in the stack
+        int _terrainStyleLayersDrawn = 0;        // style layers drawn last frame (the owner's dense numbering)
         bool _terrainDrapeFills = false;         // maplibre-style: bake polygon fills flat to a per-tile texture, sampled on the surface
         bool _terrainDrapeLines = false;         // also bake vt tile lines into the drape texture (softer, but zero leak/hug error)
         int _drapeTextureSize = 512;             // per-tile drape texture resolution
