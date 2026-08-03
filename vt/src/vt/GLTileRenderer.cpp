@@ -268,6 +268,12 @@ namespace carto::vt {
         _terrainPaintOnGround = enabled;
     }
 
+    void GLTileRenderer::setTerrainDemTaps(int taps) {
+        std::lock_guard<std::mutex> lock(_mutex);
+
+        _terrainDemTaps = taps;
+    }
+
     void GLTileRenderer::setTerrainShadowMap(GLuint texture, int mapSize, int cascades, const std::array<float, MAX_SHADOW_CASCADES>& depthBiases, float strength, float softness, const std::array<cglib::mat4x4<double>, MAX_SHADOW_CASCADES>& lightViewProjs) {
         std::lock_guard<std::mutex> lock(_mutex);
 
@@ -3464,7 +3470,7 @@ namespace carto::vt {
         // grid resolution - a property of the tile+texture, so it is identical for the
         // surface and every draped layer regardless of their coordinate frame. Off (0) in
         // adaptive mode: geometry then samples the full DEM detail with the calibrated slack.
-        if (_terrainRegularGrid && _terrainRegularGridResolution > 0) {
+        if (_terrainRegularGrid && _terrainRegularGridResolution > 0 && _terrainDemTaps >= 16) {
             double worldTileSize = std::abs(_transformer->calculateTileMatrix(tileId, 1.0f)(0, 0));
             float latticeCellX = static_cast<float>(worldTileSize * invSizeX / _terrainRegularGridResolution);
             float latticeCellY = static_cast<float>(worldTileSize * invSizeY / _terrainRegularGridResolution);
@@ -5499,6 +5505,12 @@ namespace carto::vt {
                 if (flags & flagDefine.first) {
                     defs.insert(flagDefine.second);
                 }
+            }
+            // Central, so every terrain program picks it up without threading the flag through
+            // each buildShaderProgram call site. Read once at startup, so the program cache key
+            // does not have to carry it.
+            if ((flags & TERRAIN_VTF_FLAG) && _terrainDemTaps <= 1) {
+                defs.insert("DEM_HW_FILTER");
             }
 
             std::string lightingVsh;

@@ -83,7 +83,8 @@ namespace carto::vt {
         TERRAIN_SHADOW_FLAG = 256,
         PAINT_SURFACE_FLAG = 1024,
         FOG_FLAG = 512,
-        GROUND_BASE_FLAG = 2048
+        GROUND_BASE_FLAG = 2048,
+        DEM_HW_FILTER_FLAG = 4096
     };
 
     static const std::map<std::string, int> attribMap = {
@@ -161,7 +162,8 @@ namespace carto::vt {
         { TERRAIN_SHADOW_FLAG, "TERRAIN_SHADOW" },
         { PAINT_SURFACE_FLAG, "PAINT_SURFACE" },
         { FOG_FLAG, "FOG" },
-        { GROUND_BASE_FLAG, "GROUND_BASE" }
+        { GROUND_BASE_FLAG, "GROUND_BASE" },
+        { DEM_HW_FILTER_FLAG, "DEM_HW_FILTER" }
     };
 
     static const std::string textureFiltersFsh = R"GLSL(
@@ -316,6 +318,15 @@ namespace carto::vt {
             return dot(texture2D(uElevationTexture, uv), uElevationDecode);
         }
         // Full DEM detail: manual bilinear of the elevation texture at uv (4 texel-center taps).
+        // DEM_HW_FILTER collapses it to ONE hardware-filtered fetch, which is what tangram's
+        // terrain vertex does. It exists because some mobile GPUs ignore LINEAR for vertex texture
+        // fetch and return NEAREST, which shows as terraced geometry - so it is a measurement
+        // switch, not a default, until a device says the filtering is honoured.
+        #ifdef DEM_HW_FILTER
+        float demMeters(highp vec2 uv) {
+            return sampleElevation(uv);
+        }
+        #else
         float demMeters(highp vec2 uv) {
             highp vec2 texelPos = uv * uElevationTexelSize.xy - 0.5;
             highp vec2 texelBase = floor(texelPos);
@@ -327,6 +338,7 @@ namespace carto::vt {
             float h11 = sampleElevation(uv00 + uElevationTexelSize.zw);
             return mix(mix(h00, h10, f.x), mix(h01, h11, f.x), f.y);
         }
+        #endif
         vec3 applyTerrain(vec3 pos) {
             highp vec2 uv = uElevationUV.xy + pos.xy * uElevationUV.zw;
             float meters;

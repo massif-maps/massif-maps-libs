@@ -182,6 +182,11 @@ namespace carto::vt {
         // is drawn below the paint's layer - or when those fills are translucent, which is what
         // tangram's 'translucent-polygons' earth style is for.
         void setTerrainPaintOnGround(bool enabled);
+        // Texture fetches per terrain vertex: 16 = the lattice clamp (4 grid corners x a 4-tap
+        // manual bilinear each), 4 = the manual bilinear alone, 1 = a single hardware-filtered
+        // fetch, which is what tangram's terrain vertex does. Vertex texture fetch is expensive on
+        // mobile GPUs, so this is the first thing to measure when the frame sits in the swap wait.
+        void setTerrainDemTaps(int taps);
         // The terrain tiles a paint covers when it draws itself (no drape to bake into). A paint
         // has no tile set, so the owner hands it the terrain's own cover.
         void setTerrainPaintTiles(const std::vector<TileId>& tileIds);
@@ -619,6 +624,7 @@ namespace carto::vt {
         TerrainLighting _terrainLighting;
         TerrainPaint _terrainPaint;
         bool _terrainPaintOnGround = false;      // the paint replaces the ground fill (see setTerrainPaintOnGround)
+        int _terrainDemTaps = 16;                // texture fetches per terrain vertex (see setTerrainDemTaps)
         std::vector<TileId> _terrainPaintTiles; // what a paint covers when it draws itself
         GLuint _terrainShadowTexture = 0;
         int _terrainShadowMapSize = 0;
