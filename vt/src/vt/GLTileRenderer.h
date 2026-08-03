@@ -408,6 +408,11 @@ namespace carto::vt {
         static constexpr float STROKE_UV_SCALE = 2.857f; // stroked line UV scale factor
         static constexpr float POLYGON3D_HEIGHT_SCALE = 10018754.17f; // scaling factor for zoom 0 heights
         static constexpr float TERRAIN_LAYER_DEPTH_DELTA = 1.0f / 524288.0f; // 2^-19: NDC depth separation per draped layer bias unit (GPU terrain draping mode)
+        // How far back a retained (proxy) tile is pushed under a shared ground, in units of
+        // TERRAIN_LAYER_DEPTH_DELTA. It has to beat the depth noise between two programs drawing
+        // the same displaced mesh, and stay well under the constant-NDC pull that opened the
+        // see-through of rounds 45-56 (which started to bite in the low hundreds).
+        static constexpr float TERRAIN_PROXY_DEPTH_UNITS = 8.0f;
         static constexpr float TERRAIN_PAINTER_SURFACE_BACK = 2.0f; // painter-order: clip-slack units the depth-writing surface is pushed BACK (same magnitude as the regular-grid geometry forward slack); geometry then draws at its real depth with the same twist clearance but no forward pull, so it can not leak in front of a near ridge
         static constexpr float TERRAIN_EXTRUSION_DEPTH_DELTAS = 24.0f; // 3D extrusions vs the terrain surface pre-pass in the 3D overlay. A wall stands ON the ground it is tested against, so the pair is only separable to the depth buffer's resolution, which in eye units grows like distance^2/near - the same law a constant-NDC bias follows, which is why the clearance is expressed here and not as clip slack. Measured on the demo: 1 delta eats most of a 40 m building at a few km, 24 restores it, 64 adds nothing (and every extra delta is a wider band in which an extrusion behind a crest can show through it)
         static constexpr float TERRAIN_DEPTH_CLIP_SLACK = 1.0e-3f; // clip-space depth shift per bias unit at the reference tile size, scaled by tile size (quadratic law, see setupTerrainUniforms) and |proj m22|
