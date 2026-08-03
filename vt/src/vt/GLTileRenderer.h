@@ -570,6 +570,7 @@ namespace carto::vt {
         std::vector<GLuint> _drapeTexturePool;   // recycled textures, so panning does not churn GL allocations
         std::vector<GLuint> _drapeStaleTextures; // wrong-size textures awaiting deletion on the GL thread
         bool _terrainSharedGround = false;       // the owner draws one ground pass for the whole layer stack
+        Color _terrainGroundColor;               // what the ground pass painted; a background repeating it is skipped
         std::vector<TileId> _terrainGroundTiles; // the shared ground cover, in the owner's order
         mutable std::unordered_map<TileId, std::vector<TileId>> _groundLeafCache; // render tile -> its cover leaves
         bool _externalDrapeTarget = false;       // drape textures are owned by the caller (cross-layer stacks)

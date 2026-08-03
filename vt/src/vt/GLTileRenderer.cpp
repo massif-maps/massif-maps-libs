@@ -2801,6 +2801,13 @@ namespace carto::vt {
                         setCompOp(backgroundCompOp);
                         currentCompOp = backgroundCompOp;
                     }
+                    // The ground pass has already painted this colour over the same tiles with the
+                    // same displaced grid: drawing it again is a second full surface pass per tile
+                    // for no pixels. Only a patternless background of exactly the ground colour can
+                    // be skipped - a pattern or a different colour is real content.
+                    if (_terrainSharedGround && !background->getPattern() && background->getColorFunc()(_viewState) == _terrainGroundColor) {
+                        continue;
+                    }
                     for (const TileId& groundTileId : groundTiles) {
                         // The pattern is anchored in the tile's own uv, so a leaf covering a
                         // quarter of the tile repeats it a quarter as often.
@@ -3694,6 +3701,7 @@ namespace carto::vt {
         setCompOp(CompOp::SRC_OVER);
         _terrainDrawDepthBias = _terrainDepthBias;
         _terrainDrawDepthClipUnits = 0.0f;
+        _terrainGroundColor = color;
 
         int surfaceDraws = 0;
         for (const TileId& tileId : _terrainGroundTiles) {
@@ -4029,6 +4037,8 @@ namespace carto::vt {
 
             disableVertexAttrib(shaderProgram.attribs[A_VERTEXPOSITION]);
         }
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
         checkGLError();
         return primitives;
     }
@@ -4055,7 +4065,12 @@ namespace carto::vt {
         glDisable(GL_STENCIL_TEST);
         glEnable(GL_BLEND);
         setCompOp(CompOp::SRC_OVER);
-        _terrainDrawDepthBias = _terrainDepthBias;
+        // Under a shared ground the paint draws the SAME grid, displaced by the same DEM, as the
+        // ground pass already drew - but from a different program, so the two clip z values differ
+        // in the last float bits and GL_LEQUAL drops a scatter of fragments, showing the bare
+        // ground colour through the shading as white speckles. One delta of clearance (the value
+        // backgrounds carry over the surface they share) is all it takes.
+        _terrainDrawDepthBias = _terrainDepthBias + (_terrainSharedGround ? TERRAIN_LAYER_DEPTH_DELTA : 0.0f);
         _terrainDrawDepthClipUnits = 0.0f;
 
         int draws = 0;
@@ -4096,6 +4111,12 @@ namespace carto::vt {
             }
         }
         glDepthMask(GL_FALSE);
+        // Leaving the surface VBOs bound corrupts every later draw that feeds a CLIENT-SIDE array:
+        // a bound GL_ARRAY_BUFFER turns the pointer into an offset into it. The sky is exactly
+        // that (SkyRenderer draws its quad from a static array), and its quad flew off screen -
+        // the terrain rendered while the sky went black.
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
         checkGLError();
         return draws;
     }
