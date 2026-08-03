@@ -978,6 +978,32 @@ namespace carto::vt {
     )GLSL";
 
     static const std::string terrainPaintFsh = R"GLSL(
+        #if defined(PAINT_SURFACE) && defined(TERRAIN_LIGHT)
+        // Drawn as the terrain surface, so it takes the sun and the shadow map the surface takes -
+        // otherwise the paint covers a lit, shadowed ground with an unlit copy of it and the
+        // shadows simply disappear under the hillshade. The uniforms the paint prelude already
+        // declares (elevation sampler, texel size, vElevUV) are NOT redeclared here: a second
+        // declaration of the same name is a link error.
+        uniform mediump vec3 uSunDir;          // east, north, up - the frame the tile mesh lives in
+        uniform lowp vec4 uSunColor;           // rgb = colour, a = unused
+        uniform mediump vec2 uLightParams;     // x = sun intensity, y = ambient intensity
+        uniform highp vec2 uTerrainSlopeScale; // metres of height -> world units, per elevation-uv unit
+
+        // The GEOMETRIC normal, from the true slope scale - not terrainPaintDeriv(), whose scale
+        // carries the hillshade's own height scale and relief boost and would light the ground
+        // several times too hard.
+        mediump vec3 terrainSurfaceNormal() {
+            highp vec2 st = uElevationTexelSize.zw;
+            highp float hL = sampleElevation(vElevUV - vec2(st.x, 0.0));
+            highp float hR = sampleElevation(vElevUV + vec2(st.x, 0.0));
+            highp float hD = sampleElevation(vElevUV - vec2(0.0, st.y));
+            highp float hU = sampleElevation(vElevUV + vec2(0.0, st.y));
+            highp float dx = (hR - hL) * uTerrainSlopeScale.x * vElevCosh / (2.0 * st.x);
+            highp float dy = (hU - hD) * uTerrainSlopeScale.y * vElevCosh / (2.0 * st.y);
+            return normalize(vec3(-dx, -dy, 1.0));
+        }
+        #endif
+
         void main(void) {
             mediump vec2 deriv = terrainPaintDeriv();
             // applyLighting() recovers the gradient as vec2(-n.x, n.y)/n.z, so hand it a normal
@@ -986,7 +1012,18 @@ namespace carto::vt {
             mediump vec3 normal = normalize(vec3(-deriv.x, deriv.y, 1.0));
             lowp vec4 color = applyLighting(vec4(uPaintParams.x), normal, vec3(0.0, 0.0, 1.0), 0.0);
         #ifdef PAINT_SURFACE
-            gl_FragColor = applyFog(color * uPaintParams.y); // drawn in the scene, so it fogs with it
+            color = color * uPaintParams.y;
+        #if defined(TERRAIN_LIGHT)
+            // Same normalised Lambert and the same final-colour shadow multiply as the terrain
+            // surface itself (backgroundFsh), so ground and paint agree about what a shadow is.
+            mediump float ndl = max(0.0, dot(terrainSurfaceNormal(), uSunDir));
+            mediump vec3 lit = vec3(uLightParams.y) + uSunColor.rgb * ((1.0 - uLightParams.y) * ndl * uLightParams.x);
+        #ifdef TERRAIN_SHADOW
+            lit *= shadowFactorSlope(ndl);
+        #endif
+            color = vec4(min(color.rgb * lit, vec3(color.a)), color.a);
+        #endif
+            gl_FragColor = applyFog(color); // drawn in the scene, so it fogs with it
         #else
             gl_FragColor = color * uPaintParams.y;
         #endif

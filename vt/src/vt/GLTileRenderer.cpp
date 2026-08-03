@@ -4073,6 +4073,13 @@ namespace carto::vt {
         _terrainDrawDepthBias = _terrainDepthBias + (_terrainSharedGround ? TERRAIN_LAYER_DEPTH_DELTA : 0.0f);
         _terrainDrawDepthClipUnits = 0.0f;
 
+        // The paint COVERS the ground it is drawn on, so it has to carry the ground's sun and
+        // shadow too: lighting only the surface underneath leaves the shading over it unlit and
+        // the shadows invisible wherever the paint is opaque.
+        bool litSurface = _terrainSharedGround && _terrainLighting.enabled;
+        bool shadowedSurface = litSurface && _terrainShadowTexture != 0 && _terrainShadowStrength > 0.0f;
+        unsigned int lightFlags = (litSurface ? TERRAIN_LIGHT_FLAG : 0) | (shadowedSurface ? TERRAIN_SHADOW_FLAG | DERIVATIVES_FLAG : 0);
+
         int draws = 0;
         for (const TileId& tileId : paintTiles) {
             const std::pair<bool, TerrainTexture>& resolved = resolveTerrainTexture(tileId);
@@ -4084,11 +4091,27 @@ namespace carto::vt {
                 const TileSurface::VertexGeometryLayoutParameters& vertexGeomLayoutParams = tileSurface->getVertexGeometryLayoutParameters();
                 const CompiledSurface& compiledTileSurface = _compiledTileSurfaceMap[tileSurface];
 
-                const ShaderProgram& shaderProgram = buildShaderProgram("terrainpaintsurface", terrainPaintVsh, terrainPaintFsh, LightingMode::TERRAINPAINT, RasterFilterMode::NONE, TERRAIN_FLAG | TERRAIN_VTF_FLAG | PAINT_SURFACE_FLAG | fogFlag());
+                const ShaderProgram& shaderProgram = buildShaderProgram("terrainpaintsurface", terrainPaintVsh, terrainPaintFsh, LightingMode::TERRAINPAINT, RasterFilterMode::NONE, TERRAIN_FLAG | TERRAIN_VTF_FLAG | PAINT_SURFACE_FLAG | lightFlags | fogFlag());
                 useProgram(shaderProgram);
                 setupFogUniforms(shaderProgram);
                 glUniform1f(shaderProgram.uniforms[U_DEPTHBIAS], _terrainDrawDepthBias);
-                setupTerrainUniforms(shaderProgram, tileId, surfaceFrame, true);
+                bool hasElevation = setupTerrainUniforms(shaderProgram, tileId, surfaceFrame, true);
+                if (litSurface) {
+                    setupTerrainLightingUniforms(shaderProgram, tileId, surfaceFrame);
+                }
+                if (shadowedSurface) {
+                    std::array<cglib::mat4x4<float>, MAX_SHADOW_CASCADES> shadowMatrices;
+                    for (int i = 0; i < MAX_SHADOW_CASCADES; i++) {
+                        shadowMatrices[i] = cglib::mat4x4<float>::convert(_terrainShadowViewProjs[i] * surfaceFrame);
+                    }
+                    glUniformMatrix4fv(shaderProgram.uniforms[U_SHADOWMATRIX], MAX_SHADOW_CASCADES, GL_FALSE, shadowMatrices[0].data());
+                    glActiveTexture(GL_TEXTURE2);
+                    glBindTexture(GL_TEXTURE_2D, _terrainShadowTexture);
+                    glUniform1i(shaderProgram.uniforms[U_SHADOWTEXTURE], 2);
+                    glActiveTexture(GL_TEXTURE0);
+                    glUniform4f(shaderProgram.uniforms[U_SHADOWPARAMS], 1.0f / std::max(1, _terrainShadowMapSize), hasElevation ? _terrainShadowStrength : 0.0f, _terrainShadowSoftness, 1.0f / _terrainShadowCascades);
+                    glUniform4f(shaderProgram.uniforms[U_SHADOWBIAS], _terrainShadowBiases[0], _terrainShadowBiases[1], _terrainShadowBiases[2], _terrainShadowBiases[3]);
+                }
 
                 float slopeScale = _terrainPaint.heightScale * calculateTerrainPaintReliefBoost(resolved.second.metersPerTexel) / resolved.second.metersPerTexel;
                 glUniform2f(shaderProgram.uniforms[U_PAINTSLOPESCALE], slopeScale, slopeScale);
