@@ -187,6 +187,10 @@ namespace carto::vt {
         // fetch, which is what tangram's terrain vertex does. Vertex texture fetch is expensive on
         // mobile GPUs, so this is the first thing to measure when the frame sits in the swap wait.
         void setTerrainDemTaps(int taps);
+        // Keep drawing a per-tile background mesh per LAYER under a shared ground. Tangram has no
+        // such thing - its map background is the framebuffer clear colour, once per frame - so this
+        // is off by default and exists to measure what those draws cost.
+        void setTerrainTileBackgrounds(bool enabled);
         // The terrain tiles a paint covers when it draws itself (no drape to bake into). A paint
         // has no tile set, so the owner hands it the terrain's own cover.
         void setTerrainPaintTiles(const std::vector<TileId>& tileIds);
@@ -625,6 +629,7 @@ namespace carto::vt {
         TerrainPaint _terrainPaint;
         bool _terrainPaintOnGround = false;      // the paint replaces the ground fill (see setTerrainPaintOnGround)
         int _terrainDemTaps = 16;                // texture fetches per terrain vertex (see setTerrainDemTaps)
+        bool _terrainTileBackgrounds = false;    // per-layer per-tile background meshes (see setTerrainTileBackgrounds)
         std::vector<TileId> _terrainPaintTiles; // what a paint covers when it draws itself
         GLuint _terrainShadowTexture = 0;
         int _terrainShadowMapSize = 0;

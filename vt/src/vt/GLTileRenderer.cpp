@@ -274,6 +274,12 @@ namespace carto::vt {
         _terrainDemTaps = taps;
     }
 
+    void GLTileRenderer::setTerrainTileBackgrounds(bool enabled) {
+        std::lock_guard<std::mutex> lock(_mutex);
+
+        _terrainTileBackgrounds = enabled;
+    }
+
     void GLTileRenderer::setTerrainShadowMap(GLuint texture, int mapSize, int cascades, const std::array<float, MAX_SHADOW_CASCADES>& depthBiases, float strength, float softness, const std::array<cglib::mat4x4<double>, MAX_SHADOW_CASCADES>& lightViewProjs) {
         std::lock_guard<std::mutex> lock(_mutex);
 
@@ -2876,11 +2882,16 @@ namespace carto::vt {
                         setCompOp(backgroundCompOp);
                         currentCompOp = backgroundCompOp;
                     }
-                    // The ground pass has already painted this colour over the same tiles with the
-                    // same displaced grid: drawing it again is a second full surface pass per tile
-                    // for no pixels. Only a patternless background of exactly the ground colour can
-                    // be skipped - a pattern or a different colour is real content.
-                    if (_terrainSharedGround && !background->getPattern() && background->getColorFunc()(_viewState) == _terrainGroundColor) {
+                    // Tangram has NO per-tile background mesh at all: the map background is the
+                    // framebuffer clear colour, applied once per frame
+                    // (core/src/map.cpp, FrameBuffer::apply(..., background.toColorF())). Ours gives
+                    // every tile layer a Map{background-color} and drew it as a full grid per cover
+                    // tile PER LAYER - with three layers over a 28-tile cover that is ~84 grid
+                    // draws a frame for pixels the ground pass already painted.
+                    // Under a shared ground the ground pass owns the ground colour, so a patternless
+                    // background is skipped whatever its colour. A PATTERN is real content (a
+                    // texture over the ground) and still draws; tangram has no equivalent of it.
+                    if (_terrainSharedGround && !background->getPattern() && !_terrainTileBackgrounds) {
                         continue;
                     }
                     for (const TileId& groundTileId : groundTiles) {
