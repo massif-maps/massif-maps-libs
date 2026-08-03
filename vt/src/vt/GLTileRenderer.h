@@ -175,6 +175,13 @@ namespace carto::vt {
         // paint for every draped tile and nothing else. Only effective under a cross-layer drape
         // target, which is where the layer order is resolved.
         void setTerrainPaint(const TerrainPaint& paint);
+        // Draw the paint AS the ground (tangram's arrangement: the shading is a block on the
+        // terrain draw, one draw per tile, at the bottom of the order) instead of as its layer's
+        // own surface over the ground. Cheaper by one full-surface draw per tile, but it puts the
+        // shading UNDER every ground-shaped fill, so it only looks right when nothing ground-shaped
+        // is drawn below the paint's layer - or when those fills are translucent, which is what
+        // tangram's 'translucent-polygons' earth style is for.
+        void setTerrainPaintOnGround(bool enabled);
         // The terrain tiles a paint covers when it draws itself (no drape to bake into). A paint
         // has no tile set, so the owner hands it the terrain's own cover.
         void setTerrainPaintTiles(const std::vector<TileId>& tileIds);
@@ -499,7 +506,10 @@ namespace carto::vt {
         // data for the tile yet, so the owner can tell it apart from a finished bake).
         int renderTerrainPaint(const TileId& targetTileId);
         // Draws the paint as the terrain surface, one draw per covered tile. Returns the draws.
-        int renderTerrainPaintSurfaces();
+        // asGround: the paint IS the ground pass - it carries the ground colour as its base and
+        // writes depth, so no separate fill draw is needed for the tiles it covers, and it sits at
+        // the bottom of the stack's depth order instead of at its layer's place in it.
+        int renderTerrainPaintSurfaces(bool asGround = false);
         // The zoom-dependent relief boost of the paint, matching the normal-map path.
         float calculateTerrainPaintReliefBoost(float metersPerTexel) const;
         void renderTileSurfaceFill(const TileId& tileId, const Color& color, bool lit = false);
@@ -608,6 +618,7 @@ namespace carto::vt {
         bool _debugSurfacePrefill = false;
         TerrainLighting _terrainLighting;
         TerrainPaint _terrainPaint;
+        bool _terrainPaintOnGround = false;      // the paint replaces the ground fill (see setTerrainPaintOnGround)
         std::vector<TileId> _terrainPaintTiles; // what a paint covers when it draws itself
         GLuint _terrainShadowTexture = 0;
         int _terrainShadowMapSize = 0;

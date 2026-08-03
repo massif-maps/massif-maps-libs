@@ -67,7 +67,8 @@ namespace carto::vt {
         U_LABELAXISX,
         U_LABELAXISY,
         U_PAINTSLOPESCALE,
-        U_PAINTPARAMS
+        U_PAINTPARAMS,
+        U_GROUNDCOLOR
     };
 
     enum : unsigned int {
@@ -81,7 +82,8 @@ namespace carto::vt {
         TERRAIN_LIGHT_FLAG = 128,
         TERRAIN_SHADOW_FLAG = 256,
         PAINT_SURFACE_FLAG = 1024,
-        FOG_FLAG = 512
+        FOG_FLAG = 512,
+        GROUND_BASE_FLAG = 2048
     };
 
     static const std::map<std::string, int> attribMap = {
@@ -143,7 +145,8 @@ namespace carto::vt {
         { "uLabelAxisX",        U_LABELAXISX },
         { "uLabelAxisY",        U_LABELAXISY },
         { "uPaintSlopeScale",   U_PAINTSLOPESCALE },
-        { "uPaintParams",       U_PAINTPARAMS }
+        { "uPaintParams",       U_PAINTPARAMS },
+        { "uGroundColor",       U_GROUNDCOLOR }
     };
 
     static const std::map<unsigned int, std::string> flagDefineMap = {
@@ -157,7 +160,8 @@ namespace carto::vt {
         { TERRAIN_LIGHT_FLAG, "TERRAIN_LIGHT" },
         { TERRAIN_SHADOW_FLAG, "TERRAIN_SHADOW" },
         { PAINT_SURFACE_FLAG, "PAINT_SURFACE" },
-        { FOG_FLAG, "FOG" }
+        { FOG_FLAG, "FOG" },
+        { GROUND_BASE_FLAG, "GROUND_BASE" }
     };
 
     static const std::string textureFiltersFsh = R"GLSL(
@@ -978,6 +982,13 @@ namespace carto::vt {
     )GLSL";
 
     static const std::string terrainPaintFsh = R"GLSL(
+        #ifdef GROUND_BASE
+        // The paint IS the ground in this mode, so it carries the ground's own colour underneath
+        // its shading and there is no separate fill draw - tangram's arrangement, where the terrain
+        // raster's `color` block starts from a base colour (res/scenes/hillshade.yaml:
+        // `base_color = vec4(0.88, 0.88, 0.88, 1.0)` under TANGRAM_TERRAIN_3D) and shades THAT.
+        uniform lowp vec4 uGroundColor;
+        #endif
         #ifdef PAINT_SURFACE
         // Contour lines as a fragment block on the terrain draw, which is where tangram puts them
         // (res/scenes/hillshade.yaml computes hillshade, hypsometric tint and contours in the
@@ -1048,6 +1059,12 @@ namespace carto::vt {
                 color.rgb = u_contourColor.rgb * cov + color.rgb * (1.0 - cov);
                 color.a = cov + color.a * (1.0 - cov);
             }
+        #ifdef GROUND_BASE
+            // Over the ground colour, premultiplied - the shade already is. One opaque draw per
+            // tile then covers what the fill pass used to draw underneath it.
+            color = vec4(color.rgb + uGroundColor.rgb * uGroundColor.a * (1.0 - color.a),
+                         color.a + uGroundColor.a * (1.0 - color.a));
+        #endif
             gl_FragColor = applyFog(color); // drawn in the scene, so it fogs with it
         #else
             gl_FragColor = color * uPaintParams.y;

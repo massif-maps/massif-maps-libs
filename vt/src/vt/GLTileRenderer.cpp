@@ -262,6 +262,12 @@ namespace carto::vt {
         _terrainPaint = paint;
     }
 
+    void GLTileRenderer::setTerrainPaintOnGround(bool enabled) {
+        std::lock_guard<std::mutex> lock(_mutex);
+
+        _terrainPaintOnGround = enabled;
+    }
+
     void GLTileRenderer::setTerrainShadowMap(GLuint texture, int mapSize, int cascades, const std::array<float, MAX_SHADOW_CASCADES>& depthBiases, float strength, float softness, const std::array<cglib::mat4x4<double>, MAX_SHADOW_CASCADES>& lightViewProjs) {
         std::lock_guard<std::mutex> lock(_mutex);
 
@@ -1490,8 +1496,10 @@ namespace carto::vt {
                 glDepthFunc(GL_LEQUAL);
             }
 
-            if (_terrainPaint.enabled && !_externalDrapeTarget) {
-                // A paint with no drape draws itself here, in this layer's place in the order.
+            if (_terrainPaint.enabled && !_externalDrapeTarget && !(_terrainPaintOnGround && _terrainSharedGround)) {
+                // A paint with no drape draws itself here, in this layer's place in the order -
+                // unless it IS the ground, in which case the ground pass already drew it, once per
+                // tile, at the bottom of the order.
                 renderTerrainPaintSurfaces();
             }
             // A shared ground has already been drawn once for the whole stack, so this layer must
@@ -3784,8 +3792,20 @@ namespace carto::vt {
         _terrainDrawDepthClipUnits = 0.0f;
         _terrainGroundColor = color;
 
+        // With the paint AS the ground there is one draw per tile, not two: the paint carries this
+        // colour as its base and shades it, which is tangram's terrain raster. The fill is then
+        // only needed where the paint cannot draw - a tile whose elevation has not arrived, which
+        // the paint skips - or the ground would have a hole showing the flat background plane.
+        bool paintIsGround = _terrainPaintOnGround && _terrainPaint.enabled && _lightingShaderNormalMap && !_lightingShaderNormalMap->perVertex && _terrainRegularGrid && _terrainTextureProvider;
+
         int surfaceDraws = 0;
         for (std::size_t i = 0; i < _terrainGroundTiles.size(); i++) {
+            if (paintIsGround) {
+                const std::pair<bool, TerrainTexture>& resolved = resolveTerrainTexture(_terrainGroundTiles[i]);
+                if (resolved.first && resolved.second.textureId != 0 && resolved.second.metersPerTexel > 0.0f) {
+                    continue; // the paint draws this tile, base colour included
+                }
+            }
             // The bottom of the stack (offset 0) unless this tile is standing in on a coarser
             // level, in which case it is pushed back hard - tangram's `proxy *= 48` for the terrain
             // raster. A stand-in is a DIFFERENT height field: where it rises above the level it
@@ -3795,6 +3815,13 @@ namespace carto::vt {
             surfaceDraws++;
         }
         _terrainDrawLayerOffset = 0.0f;
+        if (paintIsGround) {
+            surfaceDraws += renderTerrainPaintSurfaces(true);
+            resetProgramState(); // the paint bound its own program and buffers
+            glEnable(GL_DEPTH_TEST);
+            glDepthFunc(GL_LESS);
+            glDepthMask(GL_TRUE);
+        }
 
         glDepthMask(GL_FALSE);
         glEnable(GL_CULL_FACE);
@@ -4130,7 +4157,7 @@ namespace carto::vt {
         return primitives;
     }
 
-    int GLTileRenderer::renderTerrainPaintSurfaces() {
+    int GLTileRenderer::renderTerrainPaintSurfaces(bool asGround) {
         // No drape to bake into: draw the paint as the terrain surface itself, one draw per tile
         // over the shared grid VBO - which is what tangram does (the hillshade is a raster style
         // drawn on the tile's terrain mesh). The tiles come from the owner, because a paint has no
@@ -4148,7 +4175,9 @@ namespace carto::vt {
 
         glDisable(GL_CULL_FACE);
         glEnable(GL_DEPTH_TEST);
-        glDepthMask(_terrainSharedGround ? GL_FALSE : GL_TRUE); // this IS the terrain surface for this layer, so it writes depth
+        // Writes depth unless a ground pass already established it. As the ground it MUST write:
+        // there is no fill draw underneath it any more.
+        glDepthMask(_terrainSharedGround && !asGround ? GL_FALSE : GL_TRUE);
         glDisable(GL_STENCIL_TEST);
         glEnable(GL_BLEND);
         setCompOp(CompOp::SRC_OVER);
@@ -4157,10 +4186,14 @@ namespace carto::vt {
         // in the last float bits and GL_LEQUAL drops a scatter of fragments, showing the bare
         // ground colour through the shading as white speckles. One delta of clearance (the value
         // backgrounds carry over the surface they share) is all it takes.
-        _terrainDrawDepthBias = _terrainDepthBias + (_terrainSharedGround ? TERRAIN_LAYER_DEPTH_DELTA : 0.0f);
+        // As the ground there is no second copy of the surface to clear, so no delta is needed -
+        // and none is wanted, since the delta exists to lift the paint off a fill it no longer has.
+        _terrainDrawDepthBias = _terrainDepthBias + (_terrainSharedGround && !asGround ? TERRAIN_LAYER_DEPTH_DELTA : 0.0f);
         _terrainDrawDepthClipUnits = 0.0f;
-        // At this layer's place in the stack's depth order, like any other content of it.
-        _terrainDrawLayerOffset = (_terrainSharedGround ? -static_cast<float>(_terrainLayerOrdinalBase) : 0.0f);
+        // At this layer's place in the stack's depth order, like any other content of it - or at
+        // the BOTTOM of it (ordinal 0) when the paint is the ground, which is where tangram draws
+        // the terrain raster (`order: global.earth_order`, 0 in their demo scene).
+        _terrainDrawLayerOffset = (_terrainSharedGround && !asGround ? -static_cast<float>(_terrainLayerOrdinalBase) : 0.0f);
 
         // The paint COVERS the ground it is drawn on, so it has to carry the ground's sun and
         // shadow too: lighting only the surface underneath leaves the shading over it unlit and
@@ -4171,7 +4204,7 @@ namespace carto::vt {
         // way to know whether the layer asked for contours (the interval arrives as a uniform, set
         // by the shared normal-map setup func). The NORMALMAP path does the same for the same
         // reason - harmless when contours are off, since the branch is not taken.
-        unsigned int lightFlags = (litSurface ? TERRAIN_LIGHT_FLAG : 0) | (shadowedSurface ? TERRAIN_SHADOW_FLAG : 0) | DERIVATIVES_FLAG;
+        unsigned int lightFlags = (litSurface ? TERRAIN_LIGHT_FLAG : 0) | (shadowedSurface ? TERRAIN_SHADOW_FLAG : 0) | DERIVATIVES_FLAG | (asGround ? GROUND_BASE_FLAG : 0);
 
         int draws = 0;
         for (std::size_t paintIndex = 0; paintIndex < paintTiles.size(); paintIndex++) {
@@ -4179,7 +4212,8 @@ namespace carto::vt {
             // The paint is drawn ON the ground, so it carries the ground's proxy push as well -
             // otherwise a stand-in tile's shading separates from the surface it shades.
             if (_terrainSharedGround && paintIndex < _terrainGroundProxyDepths.size()) {
-                _terrainDrawLayerOffset = -static_cast<float>(_terrainLayerOrdinalBase) + _terrainGroundProxyDepths[paintIndex] * TERRAIN_RASTER_PROXY_SCALE;
+                float paintOrdinal = (asGround ? 0.0f : static_cast<float>(_terrainLayerOrdinalBase));
+                _terrainDrawLayerOffset = -paintOrdinal + _terrainGroundProxyDepths[paintIndex] * TERRAIN_RASTER_PROXY_SCALE;
             }
             const std::pair<bool, TerrainTexture>& resolved = resolveTerrainTexture(tileId);
             if (!resolved.first || resolved.second.textureId == 0 || resolved.second.metersPerTexel <= 0.0f) {
@@ -4215,6 +4249,9 @@ namespace carto::vt {
                 float slopeScale = _terrainPaint.heightScale * calculateTerrainPaintReliefBoost(resolved.second.metersPerTexel) / resolved.second.metersPerTexel;
                 glUniform2f(shaderProgram.uniforms[U_PAINTSLOPESCALE], slopeScale, slopeScale);
                 glUniform4f(shaderProgram.uniforms[U_PAINTPARAMS], _terrainPaint.contrast, _terrainPaint.opacity, 0.0f, 0.0f);
+                if (asGround) {
+                    glUniform4f(shaderProgram.uniforms[U_GROUNDCOLOR], _terrainGroundColor[0], _terrainGroundColor[1], _terrainGroundColor[2], _terrainGroundColor[3]);
+                }
                 _lightingShaderNormalMap->setupFunc(shaderProgram.program, _viewState);
 
                 glBindBuffer(GL_ARRAY_BUFFER, compiledTileSurface.vertexGeometryVBO);
