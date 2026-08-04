@@ -833,6 +833,91 @@ namespace carto::vt {
             return false; // the line is genuinely too short to carry the text
         }
         penStart = std::min(std::max(penStart, -overhang), total - runLength + overhang);
+
+        // WHICH WAY THE WORD READS, decided on the projected line - tangram's rule, ported from
+        // CurvedLabel::updateScreenTransform. Three parts, all measured over the span the glyphs
+        // actually cover:
+        //  - a segment pointing right beyond the tolerance means the word must run forwards there,
+        //    one pointing left means it must run backwards; needing BOTH is a line that cannot
+        //    carry the text either way round, and the label is dropped rather than drawn as a
+        //    mixture (their "Cannot reverse the direction when some glyphs must be placed in
+        //    forward direction and vice versa");
+        //  - otherwise the run is reversed when its end lands left of its start;
+        //  - a hairpin inside the run - two segments within a short window pointing back at each
+        //    other - is dropped. Arc length keeps growing around a hairpin while the screen
+        //    position barely moves, so the pen advances but the glyphs land on top of each other.
+        //    Their chord limit is |dir(k) + dir(i)|^2 < 1.7^2, i.e. an inner angle under ~120 deg.
+        // The anchor's own tangent, which the placement-level autoflip uses, is not enough: on a
+        // curving line it can point the opposite way to the word as a whole.
+        {
+            float flipTolerance = std::sin(45.0f * 3.14159265f / 180.0f);
+            bool mustForward = false, mustReverse = false;
+            bool hairpin = false;
+            std::size_t first = 0, last = points.size() - 2;
+            while (first < last && lengths[first + 1] < penStart) {
+                first++;
+            }
+            while (last > first && lengths[last] > penStart + runLength) {
+                last--;
+            }
+            auto segmentDir = [&points](std::size_t i) {
+                cglib::vec2<float> v = points[i + 1] - points[i];
+                return (cglib::norm(v) > 0 ? cglib::unit(v) : cglib::vec2<float>(0, 0));
+            };
+            for (std::size_t i = first; i <= last; i++) {
+                cglib::vec2<float> dir = segmentDir(i);
+                if (dir == cglib::vec2<float>(0, 0)) {
+                    continue;
+                }
+                mustForward = mustForward || dir(0) > flipTolerance;
+                mustReverse = mustReverse || dir(0) < -flipTolerance;
+                for (std::size_t k = i; k-- > first; ) {
+                    if (cglib::norm(segmentDir(k) + dir) < LINE_HAIRPIN_CHORD * LINE_HAIRPIN_CHORD) {
+                        hairpin = true;
+                        break;
+                    }
+                    if (lengths[k] < lengths[i] - LINE_DIRECTION_WINDOW) {
+                        break;
+                    }
+                }
+                if (hairpin) {
+                    break;
+                }
+            }
+            if (hairpin || (mustForward && mustReverse)) {
+                return false;
+            }
+            // Which way the word reads is decided by the run's CHORD alone. Tangram lets a single
+            // segment pointing the wrong way (their mustReverse) force the reversal, and on a line
+            // that wiggles - a contour does constantly - one such segment turns a run that reads
+            // perfectly well upside down. Their own comment there is "TODO use better heuristic to
+            // decide flipping"; the segment test is kept, but only for the REJECTION above, where
+            // it is unambiguous.
+            cglib::vec2<float> startPoint = pointAt(penStart);
+            cglib::vec2<float> endPoint = pointAt(penStart + runLength);
+            float dx = endPoint(0) - startPoint(0);
+            float dy = endPoint(1) - startPoint(1);
+            if (std::abs(dx) < LINE_VERTICAL_RUN_FRACTION * runLength) {
+                // A run this close to vertical has no meaningful left or right, and a test on dx
+                // alone picks one at random there. Map convention is that a vertical label reads
+                // bottom to top, so the run must head UP the screen.
+                _lineReversed = (dy < 0);
+            }
+            else {
+                // Hysteresis, so a run whose chord is near the vertical band does not flip back and
+                // forth on the smallest camera step.
+                float bias = (_lineReversed ? LINE_REVERSE_HYSTERESIS : -LINE_REVERSE_HYSTERESIS) * runLength;
+                _lineReversed = (dx < bias);
+            }
+            if (_lineReversed) {
+                std::reverse(points.begin(), points.end());
+                for (std::size_t i = 0; i < points.size(); i++) {
+                    lengths[i] = (i > 0 ? lengths[i - 1] + cglib::length(points[i] - points[i - 1]) : 0.0f);
+                }
+                penStart = total - (penStart + runLength);
+            }
+        }
+
         float offset = penStart;
 
         // Readability is judged against the direction the run takes as a whole, not against its
@@ -997,6 +1082,15 @@ namespace carto::vt {
         }
 
         if (!_style->autoflip) {
+            return _placement;
+        }
+
+        // A LINE label decides this in buildLineVertexData instead, from the PROJECTED run's own
+        // start and end - tangram's rule (CurvedLabel::updateScreenTransform). The anchor tangent
+        // used below is only the direction at one point of the line: a curving line (a contour, a
+        // bending street) can leave the anchor pointing right while the word runs left, and the
+        // label then reads upside down. Flipping the placement here as well would fight that.
+        if (_style->orientation == LabelOrientation::LINE) {
             return _placement;
         }
 

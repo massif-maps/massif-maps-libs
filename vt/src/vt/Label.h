@@ -100,6 +100,14 @@ namespace carto::vt {
         static constexpr float MAX_LINE_RUN_ANGLE_SPREAD_KEEP = 1.57f; // the same, for a run that is already laid out (hysteresis)
         static constexpr int LINE_LAYOUT_FAILURE_GRACE = 4; // layouts a run that is already on screen may fail before it is dropped
         static constexpr float MIN_LINE_GLYPH_SPAN = 0.5f; // shortest span a glyph takes its direction from, in glyph units
+        // Tangram's hairpin test (CurvedLabel::updateScreenTransform): two segments within a short
+        // window whose directions sum to less than this chord point back at each other - an inner
+        // angle under ~120 degrees - and the glyphs pile up on each other there. Their window is 20
+        // screen pixels; in glyph units (1 unit = the font size) that is a little over one glyph.
+        static constexpr float LINE_HAIRPIN_CHORD = 1.7f;
+        static constexpr float LINE_DIRECTION_WINDOW = 1.5f; // glyph units
+        static constexpr float LINE_REVERSE_HYSTERESIS = 0.02f; // fraction of the run length
+        static constexpr float LINE_VERTICAL_RUN_FRACTION = 0.2f; // |dx| below this fraction of the run counts as vertical
         static constexpr double PLACEMENT_ROOM_FACTOR = 1.25; // room the glyph run is given on the line, relative to its own length
         static constexpr double PLACEMENT_SMOOTH_TEXT_FRACTION = 1.0 / 3.0; // line detail below this fraction of the text length is smoothed away before laying out glyphs
         static constexpr double SNAP_MOVE_EPSILON = 1.0e-9; // internal world units (1 unit ~ 38m); a 1px anchor drift is ~1e-4 at z15
@@ -261,6 +269,7 @@ namespace carto::vt {
         // Verdict of the last line layout, kept across cache rebuilds (and carried over by
         // snapPlacement) so the readability test below can be hysteretic.
         mutable bool _lineLayoutValid = false;
+        mutable bool _lineReversed = false; // the projected run reads right to left, so the glyphs walk the line backwards
         mutable int _lineLayoutFailures = 0;
 
         mutable bool _cachedValid = false;
