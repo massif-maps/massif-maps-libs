@@ -45,6 +45,7 @@ namespace carto::vt {
         U_ELEVATIONTEXTURE,
         U_ELEVATIONUV,
         U_ELEVATIONDECODE,
+        U_ELEVATIONOFFSET,
         U_ELEVATIONSCALE,
         U_ELEVATIONTEXELSIZE,
         U_ELEVATIONLATTICECELL,
@@ -124,6 +125,7 @@ namespace carto::vt {
         { "uElevationTexture", U_ELEVATIONTEXTURE },
         { "uElevationUV",      U_ELEVATIONUV },
         { "uElevationDecode",  U_ELEVATIONDECODE },
+        { "uElevationOffset",  U_ELEVATIONOFFSET },
         { "uElevationScale",   U_ELEVATIONSCALE },
         { "uElevationTexelSize", U_ELEVATIONTEXELSIZE },
         { "uElevationLatticeCell", U_ELEVATIONLATTICECELL },
@@ -293,7 +295,8 @@ namespace carto::vt {
         #ifdef TERRAIN
         uniform sampler2D uElevationTexture;
         uniform highp vec4 uElevationUV;     // elevation texture uv = uv.xy + pos.xy * uv.zw
-        uniform vec4 uElevationDecode;       // meters = dot(texture sample, decode)
+        uniform vec4 uElevationDecode;       // meters = dot(texture sample, decode) + offset
+        uniform float uElevationOffset;      // the constant term: a 2-channel texture has no free channel to carry it
         uniform highp vec4 uElevationScale;  // x: meters to vertex z units (equator), y/z: mercator y = y + pos.y * z, w: vertex frame z offset
         uniform highp vec4 uElevationTexelSize; // xy: texture size in texels, zw: 1 / size
         uniform highp vec2 uElevationLatticeCell; // regular-grid surface cell size in elevation-uv units (0 = off = sample the full DEM detail)
@@ -315,7 +318,10 @@ namespace carto::vt {
         // the vertex frame (tile surface frames are origin-relative and the origin can
         // have a non-zero z).
         float sampleElevation(highp vec2 uv) {
-            return dot(texture2D(uElevationTexture, uv), uElevationDecode);
+            // The elevation texture is LUMINANCE_ALPHA: the height's high byte arrives in .rgb and
+            // its low byte in .a, so the decode is linear in both and the constant term needs a
+            // uniform of its own (RGBA had a spare channel pinned to 1 to carry it).
+            return dot(texture2D(uElevationTexture, uv), uElevationDecode) + uElevationOffset;
         }
         // Full DEM detail: manual bilinear of the elevation texture at uv (4 texel-center taps).
         // DEM_HW_FILTER collapses it to ONE hardware-filtered fetch, which is what tangram's

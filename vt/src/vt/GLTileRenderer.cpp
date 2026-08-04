@@ -3463,6 +3463,7 @@ namespace carto::vt {
             glUniform1i(shaderProgram.uniforms[U_ELEVATIONTEXTURE], 1);
             glUniform4f(shaderProgram.uniforms[U_ELEVATIONUV], 0.0f, 0.0f, 0.0f, 0.0f);
             glUniform4f(shaderProgram.uniforms[U_ELEVATIONDECODE], 0.0f, 0.0f, 0.0f, 0.0f);
+            glUniform1f(shaderProgram.uniforms[U_ELEVATIONOFFSET], 0.0f);
             glUniform4f(shaderProgram.uniforms[U_ELEVATIONSCALE], 0.0f, 0.0f, 0.0f, 0.0f);
             glUniform4f(shaderProgram.uniforms[U_ELEVATIONTEXELSIZE], 1.0f, 1.0f, 1.0f, 1.0f);
             glUniform2f(shaderProgram.uniforms[U_ELEVATIONLATTICECELL], 0.0f, 0.0f);
@@ -3486,6 +3487,7 @@ namespace carto::vt {
             static_cast<float>(frameScale(0) * invSizeX),
             static_cast<float>(frameScale(1) * invSizeY));
         glUniform4f(shaderProgram.uniforms[U_ELEVATIONDECODE], terrainTexture.decode(0), terrainTexture.decode(1), terrainTexture.decode(2), terrainTexture.decode(3));
+        glUniform1f(shaderProgram.uniforms[U_ELEVATIONOFFSET], terrainTexture.decodeOffset);
         float texelSizeX = static_cast<float>(std::max(1, terrainTexture.textureSize(0)));
         float texelSizeY = static_cast<float>(std::max(1, terrainTexture.textureSize(1)));
         glUniform4f(shaderProgram.uniforms[U_ELEVATIONTEXELSIZE], texelSizeX, texelSizeY, 1.0f / texelSizeX, 1.0f / texelSizeY);
