@@ -18,7 +18,13 @@
 
 namespace carto::vt {
     inline constexpr int GLYPH_RENDER_SIZE = 27;
-    inline constexpr int GLYPH_RENDER_SPREAD = 4; // NOTE: keep it equal or smaller than BITMAP_SDF_SCALE
+    // The SDF spread FreeType renders, and it must MATCH the range the field is encoded over
+    // (BITMAP_SDF_SCALE): with a smaller spread the distance field is truncated mid-gradient at the
+    // glyph bitmap's edge - the outermost texel lands at ~63/255 instead of 0 - so the quad's border
+    // renders as a grey fringe hanging off every letter. Tangram ties the two together the same way
+    // (core/src/text/fontContext.cpp: m_sdfRadius is the encode range, the atlas padding AND the
+    // maximum stroke width).
+    inline constexpr int GLYPH_RENDER_SPREAD = 8; // NOTE: keep it equal to BITMAP_SDF_SCALE
 
     class Font {
     public:
