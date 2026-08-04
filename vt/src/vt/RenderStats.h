@@ -125,6 +125,7 @@ namespace carto::vt {
         static inline std::atomic<long long> demPatchNs{0};
         static inline std::atomic<long long> demTexturesLive{0}; // textures in the cache (gauge)
         static inline std::atomic<long long> demTexturesResolved{0}; // distinct textures a frame resolves (gauge)
+        static inline std::atomic<long long> demTileZoomGap{0};      // render tile zoom - elevation tile zoom (gauge)
 
         // Where a single renderTileGeometry call goes, in nanoseconds, split at the
         // boundaries a fix would actually move. Only meaningful divided by geometryDraws.
