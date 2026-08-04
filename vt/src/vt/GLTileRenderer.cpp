@@ -220,6 +220,12 @@ namespace carto::vt {
         _terrainSlackScale = slackScale;
     }
 
+    void GLTileRenderer::setTerrainLineClearance(float clearance) {
+        std::lock_guard<std::mutex> lock(_mutex);
+
+        _terrainLineClearance = clearance;
+    }
+
     void GLTileRenderer::setTerrainContentDepthShift(float depthShift) {
         std::lock_guard<std::mutex> lock(_mutex);
 
@@ -2944,6 +2950,16 @@ namespace carto::vt {
                     if (_terrainSharedGround) {
                         // Geometry writes as well (tangram writes for opaque AND translucent) and
                         // carries the same ordinal as the backgrounds and rasters of its own layer.
+                        // The ordinal term is tangram's flat per-step shift, and it separates
+                        // coplanar style layers - it is NOT a budget to spread over the stack.
+                        // Scaling it by the ordinal span put ten times their pull on every layer,
+                        // which is what let far content over a near ridge. An un-subdivided AREA
+                        // FILL that chords over the ground needs more clearance than one step
+                        // gives, and there is no room for it here: measured at zoom 14, a fill
+                        // slack of half a step leaves the slivers and two steps hides the ground
+                        // paint under the fill. That one is tangram-unreachable (their terrain base
+                        // map is a raster inside the ground draw, so no vector fill ever chords
+                        // over their terrain) and it is open - do not pay for it out of this term.
                         _terrainDrawDepthBias = _terrainDepthBias;
                         _terrainDrawDepthClipUnits = 0.0f;
                         _terrainDrawLayerOffset = proxyDepth(renderLayer) - layerOrdinal;
@@ -3002,7 +3018,18 @@ namespace carto::vt {
                             glEnable(GL_POLYGON_OFFSET_FILL);
                             glPolygonOffset(-2.0f, -8.0f);
                         }
+                        // A line is a chain of quads: between two vertices it chords over the
+                        // relief the ground follows, so under a depth-writing ground it is cut into
+                        // fragments wherever it sags. The clearance is a fixed number of METRES -
+                        // the sag does not care how far away the line is - which neither the
+                        // ordinal pull (clip-constant, worth distance/near) nor a depth bias
+                        // (ndc-constant, worth distance^2/near) can express without leaking through
+                        // ridges at range.
+                        if (lineDecal) {
+                            _terrainDrawClearance = _terrainLineClearance;
+                        }
                         renderTileGeometry(renderLayer->sourceTileId, renderLayer->targetTileId, renderLayer->blend, geometryOpacity, renderLayer->tileSize, geometry);
+                        _terrainDrawClearance = 0.0f;
                         if (lineDecal) {
                             glDisable(GL_POLYGON_OFFSET_FILL);
                             glPolygonOffset(0.0f, 0.0f);
@@ -3441,6 +3468,13 @@ namespace carto::vt {
         // would leak over a ridge.
         double depthShift = (_terrainSharedGround ? _terrainContentDepthShift : 0.0);
         glUniform1f(shaderProgram.uniforms[U_DEPTHSHIFT], static_cast<float>(depthShift));
+
+        // Metre-constant clearance (see applyDepthBias). proj[2][3] is -2*far*near/(far-near), the
+        // term that turns an eye distance into ndc, so multiplying the clearance in world units by
+        // it gives the clip offset that the shader divides by w. Set per draw and zero for
+        // everything that does not chord over the ground - the surfaces, the backgrounds and the
+        // rasters ARE the ground.
+        glUniform1f(shaderProgram.uniforms[U_DEPTHCLEARANCE], static_cast<float>(_terrainDrawClearance * _viewState.projectionMatrix(2, 3)));
 
         // Cross-LOD edge stitching applies to the shared grid SURFACE only: its vertices are
         // the tile-local unit square, so the edge test in the shader is meaningful. Draped

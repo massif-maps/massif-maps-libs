@@ -169,6 +169,11 @@ namespace carto::vt {
          * is only correct while geometry is subdivided to follow it.
          */
         void setTerrainContentDepthShift(float depthShift);
+        // Clearance a draped LINE is drawn in front of the ground with, in world units, constant in
+        // METRES at every distance (see applyDepthBias). A line chords over the relief between its
+        // vertices by a fixed number of metres; a clip- or ndc-constant bias cannot pay for that
+        // without being worth hundreds of metres at range, which is what leaks through ridges.
+        void setTerrainLineClearance(float clearance);
         void setTerrainDrapeFills(bool enabled, bool includeLines);
         void setTerrainDrapeResolution(int resolution);
         void setTerrainLighting(const TerrainLighting& lighting);
@@ -603,6 +608,8 @@ namespace carto::vt {
         std::vector<std::shared_ptr<TileSurface>> _terrainFlatSurfaces; // 1x1 grid for the flat drape bake // the single shared unit-grid surface, drawn per tile
         bool _terrainPainterOrder = false;       // tangram painter-order depth model (no surface occluder / no slack); implies regular grid
         float _terrainDrawLayerOffset = 0.0f;    // painter-order per-draw (proxy - layer) offset
+        float _terrainLineClearance = 0.0f;      // world units a draped line clears the ground by, constant in metres at any range
+        float _terrainDrawClearance = 0.0f;      // per-draw METRE-constant clearance in world units (applyDepthBias); non-zero only for content that chords over the ground
         int _terrainLayerOrdinalBase = 0;        // first style-layer ordinal of this renderer in the stack
         std::set<int> _terrainStyleLayerIndices; // every style layer index this renderer has drawn - the stable order list
         int _terrainStyleLayersDrawn = 0;        // size of the order list above (the owner's dense numbering)

@@ -52,6 +52,7 @@ namespace carto::vt {
         U_TERRAINEDGECOARSENING,
         U_LAYERDEPTHOFFSET,
         U_DEPTHSHIFT,
+        U_DEPTHCLEARANCE,
         U_DRAPETEXTURE,
         U_SUNDIR,
         U_SUNCOLOR,
@@ -132,6 +133,7 @@ namespace carto::vt {
         { "uTerrainEdgeCoarsening", U_TERRAINEDGECOARSENING },
         { "uLayerDepthOffset",  U_LAYERDEPTHOFFSET },
         { "uDepthShift",        U_DEPTHSHIFT },
+        { "uDepthClearance",    U_DEPTHCLEARANCE },
         { "uDrapeTexture",      U_DRAPETEXTURE },
         { "uSunDir",            U_SUNDIR },
         { "uSunColor",          U_SUNCOLOR },
@@ -249,6 +251,7 @@ namespace carto::vt {
                                       // surface and geometry meshes (tangram depth_shift)
         uniform float uLayerDepthOffset; // painter-order model: (proxy - layer). 0 in slack mode
         uniform float uDepthShift;       // painter-order near-camera separation boost
+        uniform float uDepthClearance;   // METRE-constant clearance: proj[2][3] * metres (see below)
         // Two depth models share this function, selected by which uniforms are non-zero:
         //  - slack (occluder) model: pull the draw towards the viewer by
         //    (uDepthBias*w + uDepthBiasClip) so draped content clears the surface pre-pass.
@@ -256,9 +259,18 @@ namespace carto::vt {
         //    per-layer delta, uLayerDepthOffset*(DELTA*w + uDepthShift), DELTA = 2^-19. The
         //    surface is just the bottom layer; there is no occluder and no distance-growing
         //    slack, so far content can not leak in front of a near ridge.
+        // uDepthClearance is the third form, and the only one that is worth the SAME DISTANCE at
+        // every range. With ndc = -proj[2][2] + proj[2][3]/d, moving a vertex d -> d - c changes ndc
+        // by proj[2][3]*c/d^2, so the clip term is proj[2][3]*c/w - the 1/w below. A constant-NDC
+        // bias is worth distance^2/near metres and a constant-CLIP one distance/near, which is why
+        // both are a choice between a line cut into the ground up close and a line leaking through
+        // a ridge far away; this one is c metres at 100 m and c metres at 5 km. It is what a draped
+        // LINE needs: between two of its vertices it chords over relief the ground has, by a fixed
+        // number of metres that does not care how far away the line is.
         vec4 applyDepthBias(vec4 clipPos) {
             float z = clipPos.z
                 + uLayerDepthOffset * (0.0000019073486328125 * clipPos.w + uDepthShift)
+                + uDepthClearance / clipPos.w
                 - (uDepthBias * clipPos.w + uDepthBiasClip);
             return vec4(clipPos.xy, z, clipPos.w);
         }
