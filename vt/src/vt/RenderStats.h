@@ -112,6 +112,20 @@ namespace carto::vt {
         static inline std::atomic<long long> drapeBakeNs{0};
         static inline std::atomic<long long> geometrySkips{0};   // renderTileGeometry calls that set up and then bailed out (invisible)
 
+        // Elevation texture pipeline (the SDK's ElevationTextureCache, which feeds the terrain
+        // texture provider). Extra DEM detail multiplies the tiles by four a level, and these say
+        // which end of the pipeline pays for it: the encode worker, the per-frame upload budget,
+        // or simply having more distinct textures to bind.
+        static inline std::atomic<long long> demEncodes{0};      // full padded-texture encodes on the worker
+        static inline std::atomic<long long> demBorderPatches{0}; // border-ring-only encodes
+        static inline std::atomic<long long> demEncodeNs{0};     // worker time in both
+        static inline std::atomic<long long> demUploads{0};      // glTexImage2D uploads on the GL thread
+        static inline std::atomic<long long> demUploadNs{0};
+        static inline std::atomic<long long> demPatchUploads{0}; // glTexSubImage2D border patches
+        static inline std::atomic<long long> demPatchNs{0};
+        static inline std::atomic<long long> demTexturesLive{0}; // textures in the cache (gauge)
+        static inline std::atomic<long long> demTexturesResolved{0}; // distinct textures a frame resolves (gauge)
+
         // Where a single renderTileGeometry call goes, in nanoseconds, split at the
         // boundaries a fix would actually move. Only meaningful divided by geometryDraws.
         static inline std::atomic<long long> geomProgramNs{0};   // shader program selection, useProgram, fog uniforms
