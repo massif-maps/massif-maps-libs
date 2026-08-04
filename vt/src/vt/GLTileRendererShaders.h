@@ -671,19 +671,39 @@ namespace carto::vt {
         varying highp vec2 vElevUV;
         varying mediump float vElevCosh;
 
-        // Central difference on the DEM, one texel each way. The surface is displaced by exactly
-        // this height field in the vertex stage, so the normal is the normal of what is drawn -
-        // no second DEM decode, no pre-baked normal map, and it follows the live sun.
+        // The DEM gradient at this fragment, as tangram takes it (res/scenes/hillshade.yaml, the
+        // `normal` block): a 3x3 stencil at TEXEL CENTERS, then a quadratic expansion around the
+        // center texel so the gradient varies LINEARLY inside the texel. A plain central
+        // difference at a fixed texel step is constant over each texel cell, which shades the
+        // ground in texel-sized facets - very visible close up, where one DEM texel covers many
+        // pixels. The extra taps are free next to the fill they light.
+        // The surface is displaced by exactly this height field in the vertex stage, so the normal
+        // is the normal of what is drawn - no second DEM decode, no pre-baked normal map, and it
+        // follows the live sun.
+        // No decode offset is needed: only differences of heights are used, and it cancels.
+        // Heights are metres and reach several thousand: mediump would quantise them to whole
+        // metres and the differences would be mostly rounding noise.
         mediump vec3 terrainNormal() {
-            // Heights are metres and reach several thousand: mediump would quantise them to
-            // whole metres and the central difference would be mostly rounding noise.
-            highp vec2 st = uElevationTexelSize.zw;
-            highp float hL = dot(texture2D(uElevationTexture, vElevUV - vec2(st.x, 0.0)), uElevationDecode);
-            highp float hR = dot(texture2D(uElevationTexture, vElevUV + vec2(st.x, 0.0)), uElevationDecode);
-            highp float hD = dot(texture2D(uElevationTexture, vElevUV - vec2(0.0, st.y)), uElevationDecode);
-            highp float hU = dot(texture2D(uElevationTexture, vElevUV + vec2(0.0, st.y)), uElevationDecode);
-            highp float dx = (hR - hL) * uTerrainSlopeScale.x * vElevCosh / (2.0 * st.x);
-            highp float dy = (hU - hD) * uTerrainSlopeScale.y * vElevCosh / (2.0 * st.y);
+            highp vec2 duv = uElevationTexelSize.zw;
+            highp vec2 ij = vElevUV * uElevationTexelSize.xy;
+            highp vec2 cen = floor(ij) + 0.5;
+            highp vec2 uv = cen * duv;
+            highp float h00 = dot(texture2D(uElevationTexture, uv - duv), uElevationDecode);
+            highp float h01 = dot(texture2D(uElevationTexture, uv + vec2(-duv.x, 0.0)), uElevationDecode);
+            highp float h02 = dot(texture2D(uElevationTexture, uv + vec2(-duv.x, duv.y)), uElevationDecode);
+            highp float h10 = dot(texture2D(uElevationTexture, uv + vec2(0.0, -duv.y)), uElevationDecode);
+            highp float h11 = dot(texture2D(uElevationTexture, uv), uElevationDecode);
+            highp float h12 = dot(texture2D(uElevationTexture, uv + vec2(0.0, duv.y)), uElevationDecode);
+            highp float h20 = dot(texture2D(uElevationTexture, uv + vec2(duv.x, -duv.y)), uElevationDecode);
+            highp float h21 = dot(texture2D(uElevationTexture, uv + vec2(duv.x, 0.0)), uElevationDecode);
+            highp float h22 = dot(texture2D(uElevationTexture, uv + duv), uElevationDecode);
+            highp vec2 f = ij - cen;
+            highp float ddxy = (h22 - h20 - h02 + h00) * 0.25;
+            highp mat2 curv = mat2(h21 - 2.0 * h11 + h01, ddxy, ddxy, h12 - 2.0 * h11 + h10);
+            highp vec2 grad0 = vec2(h21 - h01, h12 - h10) * 0.5;
+            highp vec2 grad = grad0 + curv * f; // metres per texel
+            highp float dx = grad.x * uTerrainSlopeScale.x * vElevCosh / duv.x;
+            highp float dy = grad.y * uTerrainSlopeScale.y * vElevCosh / duv.y;
             return normalize(vec3(-dx, -dy, 1.0));
         }
         #endif
@@ -936,6 +956,7 @@ namespace carto::vt {
         // Precision qualifiers must match the vertex-stage declarations exactly, or the program
         // fails to LINK (same name, different precision is an error in GLSL ES 1.00).
         uniform highp vec4 uElevationDecode;
+        uniform highp float uElevationOffset;   // the decode's constant term (the texture carries no spare channel for it)
         uniform highp vec4 uElevationTexelSize; // xy: texture size in texels, zw: 1 / size
         uniform highp vec2 uPaintSlopeScale;    // metres per texel -> the dimensionless slope the hillshade algorithms expect (height scale folded in)
         uniform mediump vec4 uPaintParams;      // x = contrast, y = opacity, zw reserved
@@ -944,33 +965,66 @@ namespace carto::vt {
         varying mediump float vElevCosh;
 
         highp float sampleElevation(highp vec2 uv) {
-            return dot(texture2D(uElevationTexture, uv), uElevationDecode);
+            return dot(texture2D(uElevationTexture, uv), uElevationDecode) + uElevationOffset;
         }
+
+        // Tangram's DEM sample, ported whole from the `normal` block of res/scenes/hillshade.yaml.
+        // Both outputs come from ONE 3x3 stencil taken at TEXEL CENTERS (cen_ij = floor(ij) + 0.5),
+        // so the taps are exact whatever the hardware filter does, plus a quadratic Taylor
+        // expansion around the center texel:
+        //   grad = grad0 + curv * f     (gradient varies LINEARLY inside the texel)
+        //   elev = h11 + f.grad0 + 0.5 * f.curv.f
+        // The gradient is what makes the difference: a plain central difference at a fixed texel
+        // step is CONSTANT over each texel cell, so the shading breaks into texel-sized facets -
+        // the "pixelated hillshade" seen close up, where one DEM texel covers many screen pixels.
+        // Interpolating it through the curvature costs nothing (the 9 taps replace the 8 the Sobel
+        // took) and makes the shading continuous across texel boundaries.
+        // Heights are metres and reach several thousand: mediump would quantise them to whole
+        // metres and the differences would be mostly rounding noise.
+        // Tangram extrapolates the stencil at the texture edges; our elevation textures carry a
+        // 1-texel border taken from the neighbouring DEM tiles instead, so the stencil always
+        // reads real data and no edge case is needed here.
+        // The stencil is taken ONCE per fragment, by terrainPaintPrepare() at the top of main, and
+        // read from here by everything that needs it (the hillshade slope, the sun normal, the
+        // contours, a custom shader's getElevation()). Sampling it per consumer would be three
+        // 9-tap stencils on the ground pass.
+        highp float gTerrainElev;      // metres at this fragment
+        highp vec2 gTerrainGrad;       // metres per elevation texel, (du, dv), v growing north
+
+        void terrainPaintSample(out highp float elev, out highp vec2 gradPerTexel) {
+            highp vec2 duv = uElevationTexelSize.zw;
+            highp vec2 ij = vElevUV * uElevationTexelSize.xy;
+            highp vec2 cen = floor(ij) + 0.5;
+            highp vec2 uv = cen * duv;
+            highp float h00 = sampleElevation(uv - duv);
+            highp float h01 = sampleElevation(uv + vec2(-duv.x, 0.0));
+            highp float h02 = sampleElevation(uv + vec2(-duv.x, duv.y));
+            highp float h10 = sampleElevation(uv + vec2(0.0, -duv.y));
+            highp float h11 = sampleElevation(uv);
+            highp float h12 = sampleElevation(uv + vec2(0.0, duv.y));
+            highp float h20 = sampleElevation(uv + vec2(duv.x, -duv.y));
+            highp float h21 = sampleElevation(uv + vec2(duv.x, 0.0));
+            highp float h22 = sampleElevation(uv + duv);
+            highp vec2 f = ij - cen;
+            highp float ddxy = (h22 - h20 - h02 + h00) * 0.25;
+            highp mat2 curv = mat2(h21 - 2.0 * h11 + h01, ddxy, ddxy, h12 - 2.0 * h11 + h10);
+            highp vec2 grad0 = vec2(h21 - h01, h12 - h10) * 0.5;
+            gradPerTexel = grad0 + curv * f;
+            elev = h11 + dot(f, grad0) + 0.5 * dot(f, curv * f);
+        }
+
+        void terrainPaintPrepare() { terrainPaintSample(gTerrainElev, gTerrainGrad); }
+
         // The same contract the normal-map path offers custom shaders, backed by the shared DEM.
-        highp float getElevation() { return sampleElevation(vElevUV); }
+        highp float getElevation() { return gTerrainElev; }
         highp float getMapZoom() { return u_zoom; }
         lowp vec4 getRawColor() { return texture2D(uElevationTexture, vElevUV); }
 
-        // 3x3 Sobel over the DEM - the same operator NormalMapBuilder ran on the CPU - so the
-        // slope handed to the hillshade algorithms is the one they were tuned against. Heights
-        // are metres and reach several thousand: mediump would quantise them to whole metres and
-        // the difference would be mostly rounding noise. The mercator 1/cos(latitude) stretch is
-        // per fragment; everything constant over the tile is in uPaintSlopeScale.
+        // The slope handed to the hillshade algorithms, in the (dh/dEast, -dh/dNorth) convention
+        // the normal map encoded - v grows NORTH in the elevation texture. The mercator 1/cos
+        // stretch is per fragment; everything constant over the tile is in uPaintSlopeScale.
         mediump vec2 terrainPaintDeriv() {
-            highp vec2 st = uElevationTexelSize.zw;
-            highp float h00 = sampleElevation(vElevUV + vec2(-st.x, -st.y));
-            highp float h01 = sampleElevation(vElevUV + vec2(-st.x,   0.0));
-            highp float h02 = sampleElevation(vElevUV + vec2(-st.x,  st.y));
-            highp float h10 = sampleElevation(vElevUV + vec2(  0.0, -st.y));
-            highp float h12 = sampleElevation(vElevUV + vec2(  0.0,  st.y));
-            highp float h20 = sampleElevation(vElevUV + vec2( st.x, -st.y));
-            highp float h21 = sampleElevation(vElevUV + vec2( st.x,   0.0));
-            highp float h22 = sampleElevation(vElevUV + vec2( st.x,  st.y));
-            highp float gu = (h20 + 2.0 * h21 + h22) - (h00 + 2.0 * h01 + h02);
-            highp float gv = (h02 + 2.0 * h12 + h22) - (h00 + 2.0 * h10 + h20);
-            // v grows NORTH in the elevation texture, and the algorithms expect
-            // (dh/dEast, -dh/dNorth) - the convention the normal map encoded.
-            return vec2(gu, -gv) * (0.125 * vElevCosh) * uPaintSlopeScale;
+            return vec2(gTerrainGrad.x, -gTerrainGrad.y) * vElevCosh * uPaintSlopeScale;
         }
     )GLSL";
 
@@ -1034,18 +1088,18 @@ namespace carto::vt {
         // carries the hillshade's own height scale and relief boost and would light the ground
         // several times too hard.
         mediump vec3 terrainSurfaceNormal() {
+            // Same stencil as the hillshade (terrainPaintSample): the gradient interpolated
+            // through the curvature, not a per-texel-constant central difference, so the sun
+            // lighting does not facet at texel boundaries either.
             highp vec2 st = uElevationTexelSize.zw;
-            highp float hL = sampleElevation(vElevUV - vec2(st.x, 0.0));
-            highp float hR = sampleElevation(vElevUV + vec2(st.x, 0.0));
-            highp float hD = sampleElevation(vElevUV - vec2(0.0, st.y));
-            highp float hU = sampleElevation(vElevUV + vec2(0.0, st.y));
-            highp float dx = (hR - hL) * uTerrainSlopeScale.x * vElevCosh / (2.0 * st.x);
-            highp float dy = (hU - hD) * uTerrainSlopeScale.y * vElevCosh / (2.0 * st.y);
+            highp float dx = gTerrainGrad.x * uTerrainSlopeScale.x * vElevCosh / st.x;
+            highp float dy = gTerrainGrad.y * uTerrainSlopeScale.y * vElevCosh / st.y;
             return normalize(vec3(-dx, -dy, 1.0));
         }
         #endif
 
         void main(void) {
+            terrainPaintPrepare(); // the one DEM stencil this fragment takes
             mediump vec2 deriv = terrainPaintDeriv();
             // applyLighting() recovers the gradient as vec2(-n.x, n.y)/n.z, so hand it a normal
             // that reproduces this deriv exactly. The surface normal is the flat one: the paint
@@ -1069,7 +1123,8 @@ namespace carto::vt {
                 // change, gives a screen-space width that stays constant as the ground tilts away.
                 // Composited OVER the shaded ground, premultiplied - the same order and the same
                 // result as normalmapFsh, so switching a layer to the paint does not move the lines.
-                highp_opt float e = sampleElevation(vElevUV);
+                highp_opt float e = getElevation(); // the quadratic reconstruction: contours that
+                                                    // do not kink at every texel boundary
                 highp_opt float frac = fract(e / u_contourInterval);
                 highp_opt float distM = min(frac, 1.0 - frac) * u_contourInterval;
                 mediump float px = distM / max(fwidth(e), 1e-4);
