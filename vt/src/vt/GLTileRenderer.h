@@ -197,6 +197,12 @@ namespace carto::vt {
         // such thing - its map background is the framebuffer clear colour, once per frame - so this
         // is off by default and exists to measure what those draws cost.
         void setTerrainTileBackgrounds(bool enabled);
+        // Stamp the stencil tile masks that clip content to its own tile's screen footprint.
+        // Tangram has no stencil at all; under a shared ground the masks are already gone (the
+        // depth model replaces them), and this switches them off in the DRAPE path too, where
+        // they cost a full displaced surface draw per tile per stencil reset - two thirds of all
+        // the surface geometry a terrain frame submits.
+        void setTileMasks(bool enabled);
         // The terrain tiles a paint covers when it draws itself (no drape to bake into). A paint
         // has no tile set, so the owner hands it the terrain's own cover.
         void setTerrainPaintTiles(const std::vector<TileId>& tileIds);
@@ -288,6 +294,12 @@ namespace carto::vt {
         void setTerrainDepthWrite(bool enabled);
         void setTerrainTextureProvider(TerrainTextureProvider provider);
         void setDebugWireframe(bool enabled);
+        // Outline every tile this renderer draws, on the ground: colour per zoom level,
+        // brightness alternating with the tile parity, half opacity for a tile standing in with
+        // another tile's data. What it is for is seeing WHICH tiles a layer draws and where their
+        // footprints overlap - a coarser tile set under a finer one, an overzoomed ancestor, or a
+        // retained tile still owning pixels.
+        void setDebugTileBorders(bool enabled);
         void setDebugSurfacePrefill(bool enabled);
         void setTerrainBackgroundColor(const Color& color);
         void setLabelElevationProvider(std::function<double(const cglib::vec3<double>&)> provider);
@@ -540,6 +552,7 @@ namespace carto::vt {
         cglib::mat4x4<float> calculateDrapeMVPMatrix(const TileId& sourceTileId, const TileId& targetTileId) const;
         std::size_t calculateDrapeFingerprint(const RenderTile& renderTile) const;
         void renderTileWireframe(const TileId& tileId);
+        void renderTileBorder(const TileId& tileId, const TileId& sourceTileId);
         void renderTileBackground(const TileId& tileId, float blend, float opacity, float tileSize, const std::shared_ptr<TileBackground>& background);
         void renderTileBitmap(const TileId& sourceTileId, const TileId& targetTileId, float blend, float opacity, const std::shared_ptr<TileBitmap>& bitmap);
         void renderTileGeometry(const TileId& sourceTileId, const TileId& targetTileId, float blend, float opacity, float tileSize, const std::shared_ptr<TileGeometry>& geometry);
@@ -621,6 +634,7 @@ namespace carto::vt {
         std::map<TileId, std::size_t> _drapeFingerprints; // what each cached texture was baked from; a change means it is stale
         std::vector<GLuint> _drapeTexturePool;   // recycled textures, so panning does not churn GL allocations
         std::vector<GLuint> _drapeStaleTextures; // wrong-size textures awaiting deletion on the GL thread
+        bool _tileMasks = true;                  // stamp the stencil tile masks (see setTileMasks)
         bool _terrainSharedGround = false;       // the owner draws one ground pass for the whole layer stack
         Color _terrainGroundColor;               // what the ground pass painted; a background repeating it is skipped
         std::vector<TileId> _terrainGroundTiles; // the shared ground cover, in the owner's order
@@ -632,6 +646,10 @@ namespace carto::vt {
         const cglib::mat4x4<double>* _shadowCasterViewProj = nullptr; // set during the shadow caster pass
         const cglib::mat4x4<float>* _drapeMVPOverride = nullptr; // when set, renderTileGeometry draws flat into the drape FBO
         bool _debugWireframe = false;
+        bool _debugTileBorders = false;
+        GLuint _tileBorderVBO = 0;               // the tile outline, in tile-local coordinates
+        GLsizei _tileBorderVertexCount = 0;
+        static constexpr int TILE_BORDER_SEGMENTS = 16; // per edge, so the line follows the terrain
         bool _debugSurfacePrefill = false;
         TerrainLighting _terrainLighting;
         TerrainPaint _terrainPaint;

@@ -286,6 +286,12 @@ namespace carto::vt {
         _terrainTileBackgrounds = enabled;
     }
 
+    void GLTileRenderer::setTileMasks(bool enabled) {
+        std::lock_guard<std::mutex> lock(_mutex);
+
+        _tileMasks = enabled;
+    }
+
     void GLTileRenderer::setTerrainShadowMap(GLuint texture, int mapSize, int cascades, const std::array<float, MAX_SHADOW_CASCADES>& depthBiases, float strength, float softness, const std::array<cglib::mat4x4<double>, MAX_SHADOW_CASCADES>& lightViewProjs) {
         std::lock_guard<std::mutex> lock(_mutex);
 
@@ -951,6 +957,12 @@ namespace carto::vt {
 
         _terrainTextureProvider = std::move(provider);
         updateTerrainSkirts();
+    }
+
+    void GLTileRenderer::setDebugTileBorders(bool enabled) {
+        std::lock_guard<std::mutex> lock(_mutex);
+
+        _debugTileBorders = enabled;
     }
 
     void GLTileRenderer::setDebugWireframe(bool enabled) {
@@ -1619,9 +1631,21 @@ namespace carto::vt {
             // retained tile from the previous zoom paints its whole footprint through every gap in
             // the new tile's content: the same roads twice, one zoom level apart, blinking as the
             // blend runs.
-            renderGeometry2D(*_visibleRenderTiles, _terrainSharedGround ? 0 : stencilBits);
+            renderGeometry2D(*_visibleRenderTiles, _terrainSharedGround || !_tileMasks ? 0 : stencilBits);
             if (leEqualDepth) {
                 glDepthFunc(GL_LESS);
+            }
+
+            // Debug: outline every tile this layer draws, on the ground.
+            if (_debugTileBorders) {
+                glDisable(GL_DEPTH_TEST);
+                glDisable(GL_STENCIL_TEST);
+                for (const RenderTile& renderTile : *_visibleRenderTiles) {
+                    if (renderTile.visible) {
+                        renderTileBorder(renderTile.targetTileId, renderTile.tile ? renderTile.tile->getTileId() : renderTile.targetTileId);
+                    }
+                }
+                glEnable(GL_DEPTH_TEST);
             }
 
             // Debug: overlay the FINAL stencil buffer contents (stencil-tested fullscreen
@@ -4817,6 +4841,68 @@ namespace carto::vt {
 
             checkGLError();
         }
+    }
+
+    void GLTileRenderer::renderTileBorder(const TileId& tileId, const TileId& sourceTileId) {
+        // Debug view: the outline of the tile as it is actually drawn - displaced by the terrain,
+        // so the line lies ON the ground and a tile whose footprint overlaps its neighbour's is
+        // visible as such. The colour comes from the tile's own zoom, so a layer drawing a coarser
+        // tile set than the one under it stands out, and the brightness alternates with the tile
+        // parity so two tiles of the same zoom never share an edge colour. Drawn without depth,
+        // because the point is to see where the tiles ARE, including the ones being occluded.
+        if (_tileBorderVBO == 0) {
+            std::vector<float> border;
+            border.reserve((TILE_BORDER_SEGMENTS * 4 + 1) * 3);
+            auto push = [&border](float x, float y) { border.push_back(x); border.push_back(y); border.push_back(0.0f); };
+            for (int i = 0; i < TILE_BORDER_SEGMENTS; i++) { push(static_cast<float>(i) / TILE_BORDER_SEGMENTS, 0.0f); }
+            for (int i = 0; i < TILE_BORDER_SEGMENTS; i++) { push(1.0f, static_cast<float>(i) / TILE_BORDER_SEGMENTS); }
+            for (int i = 0; i < TILE_BORDER_SEGMENTS; i++) { push(1.0f - static_cast<float>(i) / TILE_BORDER_SEGMENTS, 1.0f); }
+            for (int i = 0; i < TILE_BORDER_SEGMENTS; i++) { push(0.0f, 1.0f - static_cast<float>(i) / TILE_BORDER_SEGMENTS); }
+            push(0.0f, 0.0f);
+            _tileBorderVertexCount = static_cast<GLsizei>(border.size() / 3);
+            glGenBuffers(1, &_tileBorderVBO);
+            glBindBuffer(GL_ARRAY_BUFFER, _tileBorderVBO);
+            glBufferData(GL_ARRAY_BUFFER, border.size() * sizeof(float), border.data(), GL_STATIC_DRAW);
+            glBindBuffer(GL_ARRAY_BUFFER, 0);
+        }
+
+        bool gridMode = _terrainRegularGrid && _terrainMode && static_cast<bool>(_terrainTextureProvider);
+        cglib::mat4x4<double> surfaceFrame = calculateTileMatrix(tileId, 1.0f);
+        unsigned int terrainFlag = (_terrainMode && _terrainTextureProvider ? TERRAIN_VTF_FLAG : 0);
+        const ShaderProgram& shaderProgram = buildShaderProgram("tilemask", backgroundVsh, backgroundFsh, LightingMode::NONE, RasterFilterMode::NONE, terrainFlag);
+        useProgram(shaderProgram);
+        if (terrainFlag != 0) {
+            setupTerrainUniforms(shaderProgram, tileId, surfaceFrame, gridMode);
+        }
+
+        glBindBuffer(GL_ARRAY_BUFFER, _tileBorderVBO);
+        enableVertexAttrib(shaderProgram.attribs[A_VERTEXPOSITION], 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), bufferGLOffset(0));
+
+        cglib::mat4x4<float> mvpMatrix = calculateTileMVPMatrix(tileId, 1.0f);
+        glUniformMatrix4fv(shaderProgram.uniforms[U_MVPMATRIX], 1, GL_FALSE, mvpMatrix.data());
+
+        static const float ZOOM_COLORS[6][3] = {
+            { 1.0f, 0.0f, 0.0f }, { 1.0f, 0.6f, 0.0f }, { 0.9f, 0.9f, 0.0f },
+            { 0.0f, 0.9f, 0.2f }, { 0.0f, 0.6f, 1.0f }, { 0.8f, 0.0f, 1.0f }
+        };
+        const float* rgb = ZOOM_COLORS[((tileId.zoom % 6) + 6) % 6];
+        float shade = ((tileId.x + tileId.y) & 1) != 0 ? 0.55f : 1.0f;
+        // A tile whose DATA comes from another tile is a stand-in (an overzoomed ancestor, or a
+        // retained tile from another zoom): halve its opacity, so the tiles that legitimately own
+        // their pixels read as the solid ones.
+        float opacity = (sourceTileId == tileId ? 1.0f : 0.5f);
+        Color color(rgb[0] * shade * opacity, rgb[1] * shade * opacity, rgb[2] * shade * opacity, opacity);
+        glUniform4fv(shaderProgram.uniforms[U_COLOR], 1, color.rgba().data());
+        glUniform1f(shaderProgram.uniforms[U_OPACITY], 1.0f);
+
+        glLineWidth(2.0f); // drivers may clamp this to 1, in which case the outline is hairline
+        glDrawArrays(GL_LINE_STRIP, 0, _tileBorderVertexCount);
+        glLineWidth(1.0f);
+
+        disableVertexAttrib(shaderProgram.attribs[A_VERTEXPOSITION]);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+        checkGLError();
     }
 
     void GLTileRenderer::renderTileBackground(const TileId& tileId, float blend, float opacity, float tileSize, const std::shared_ptr<TileBackground>& background) {
