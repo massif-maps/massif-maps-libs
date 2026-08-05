@@ -197,12 +197,12 @@ namespace carto::vt {
         // such thing - its map background is the framebuffer clear colour, once per frame - so this
         // is off by default and exists to measure what those draws cost.
         void setTerrainTileBackgrounds(bool enabled);
-        // Stamp the stencil tile masks that clip content to its own tile's screen footprint.
-        // Tangram has no stencil at all; under a shared ground the masks are already gone (the
-        // depth model replaces them), and this switches them off in the DRAPE path too, where
-        // they cost a full displaced surface draw per tile per stencil reset - two thirds of all
-        // the surface geometry a terrain frame submits.
-        void setTileMasks(bool enabled);
+        // The stencil tile masks that clip content to its own tile's screen footprint:
+        // -1 = automatic (the default: off in a terrain frame, where a mask is a full displaced
+        // grid per tile per stencil reset, kept in 2D, where it is a two-triangle quad - and kept
+        // in both whenever a layer composites through a comp-op, which has no other clip), 0 =
+        // never, 1 = always. Tangram has no stencil at all.
+        void setTileMasks(int mode);
         // The terrain tiles a paint covers when it draws itself (no drape to bake into). A paint
         // has no tile set, so the owner hands it the terrain's own cover.
         void setTerrainPaintTiles(const std::vector<TileId>& tileIds);
@@ -634,7 +634,7 @@ namespace carto::vt {
         std::map<TileId, std::size_t> _drapeFingerprints; // what each cached texture was baked from; a change means it is stale
         std::vector<GLuint> _drapeTexturePool;   // recycled textures, so panning does not churn GL allocations
         std::vector<GLuint> _drapeStaleTextures; // wrong-size textures awaiting deletion on the GL thread
-        bool _tileMasks = true;                  // stamp the stencil tile masks (see setTileMasks)
+        int _tileMasks = -1;                     // -1 automatic, 0 never, 1 always (see setTileMasks)
         bool _terrainSharedGround = false;       // the owner draws one ground pass for the whole layer stack
         Color _terrainGroundColor;               // what the ground pass painted; a background repeating it is skipped
         std::vector<TileId> _terrainGroundTiles; // the shared ground cover, in the owner's order

@@ -286,10 +286,10 @@ namespace carto::vt {
         _terrainTileBackgrounds = enabled;
     }
 
-    void GLTileRenderer::setTileMasks(bool enabled) {
+    void GLTileRenderer::setTileMasks(int mode) {
         std::lock_guard<std::mutex> lock(_mutex);
 
-        _tileMasks = enabled;
+        _tileMasks = mode;
     }
 
     void GLTileRenderer::setTerrainShadowMap(GLuint texture, int mapSize, int cascades, const std::array<float, MAX_SHADOW_CASCADES>& depthBiases, float strength, float softness, const std::array<cglib::mat4x4<double>, MAX_SHADOW_CASCADES>& lightViewProjs) {
@@ -1631,7 +1631,7 @@ namespace carto::vt {
             // retained tile from the previous zoom paints its whole footprint through every gap in
             // the new tile's content: the same roads twice, one zoom level apart, blinking as the
             // blend runs.
-            renderGeometry2D(*_visibleRenderTiles, _terrainSharedGround || !_tileMasks ? 0 : stencilBits);
+            renderGeometry2D(*_visibleRenderTiles, _terrainSharedGround ? 0 : stencilBits);
             if (leEqualDepth) {
                 glDepthFunc(GL_LESS);
             }
@@ -2652,6 +2652,33 @@ namespace carto::vt {
             }
             return std::max(static_cast<float>(maxVisibleZoom - renderLayer->targetTileId.zoom), TERRAIN_PROXY_DEPTH_UNITS);
         };
+
+        // The stencil tile masks, and when they are worth their cost. They clip a tile's content
+        // to its own screen footprint, which is what stops a retained tile painting through the
+        // gaps of the tile that replaced it - and tangram has no stencil at all. In a TERRAIN
+        // frame a mask is a full displaced grid drawn per tile per stencil reset, two thirds of
+        // all the surface geometry a frame submits (device, north pan: 19.5 -> 23.5 fps without
+        // them), so they are dropped there. In 2D a mask is a two-triangle quad and costs nothing
+        // measurable (40.2 vs 40.7 fps), so 2D keeps them.
+        // A layer with a comp-op is the exception in both: it composites through the overlay
+        // buffer, which has its own stencil and no depth at all, so its content has nothing else
+        // to clip it to its tile.
+        if (stencilBits > 0 && _tileMasks < 0 && _terrainMode) {
+            bool anyCompOp = false;
+            for (auto it = renderLayerMap.begin(); it != renderLayerMap.end() && !anyCompOp; it++) {
+                for (const RenderTileLayer* renderLayer : it->second) {
+                    if (renderLayer->layer->getCompOp()) {
+                        anyCompOp = true;
+                        break;
+                    }
+                }
+            }
+            if (!anyCompOp) {
+                stencilBits = 0;
+            }
+        } else if (_tileMasks == 0) {
+            stencilBits = 0;
+        }
 
         // Allocate stencil value for each target tile
         std::map<TileId, GLint> tileStencilMap;
