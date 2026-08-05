@@ -3532,7 +3532,15 @@ namespace carto::vt {
         // grid resolution - a property of the tile+texture, so it is identical for the
         // surface and every draped layer regardless of their coordinate frame. Off (0) in
         // adaptive mode: geometry then samples the full DEM detail with the calibrated slack.
-        if (_terrainRegularGrid && _terrainRegularGridResolution > 0 && _terrainDemTaps >= 16) {
+        // THE SURFACE ITSELF DOES NOT NEED IT: its vertices ARE the lattice nodes, so the clamp
+        // returns the node's own bilinear height and costs four of them (16 texture fetches a
+        // vertex) to do it. The surface carries the bulk of the vertex work in a terrain frame -
+        // tangram's terrain vertex takes ONE fetch - so it takes the plain sample, which is the
+        // identical value. The exception is a tile whose edge is stitched to a coarser
+        // neighbour: there the clamp is what bends the outermost cell onto the neighbour's
+        // chords, so those tiles keep it.
+        bool latticeNodes = gridSurface && edgeCoarsening == cglib::vec4<float>(1, 1, 1, 1);
+        if (_terrainRegularGrid && _terrainRegularGridResolution > 0 && _terrainDemTaps >= 16 && !latticeNodes) {
             double worldTileSize = std::abs(_transformer->calculateTileMatrix(tileId, 1.0f)(0, 0));
             float latticeCellX = static_cast<float>(worldTileSize * invSizeX / _terrainRegularGridResolution);
             float latticeCellY = static_cast<float>(worldTileSize * invSizeY / _terrainRegularGridResolution);
