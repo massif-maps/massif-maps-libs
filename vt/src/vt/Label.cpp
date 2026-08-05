@@ -502,8 +502,9 @@ namespace carto::vt {
         if (_style->orientation == LabelOrientation::LINE) {
             // The run is laid out in glyph units on the camera axes (see buildLineVertexData), so
             // its envelope is the bounds of that run put back on those axes - the same shape the
-            // renderer draws.
-            updateLineVertexData(placement, scale, viewState);
+            // renderer draws. The envelope serves collision, so it takes the layout that is there
+            // rather than re-laying the run out for this caller's view (see updateLineVertexData).
+            updateLineVertexData(placement, scale, viewState, false);
 
             const cglib::vec3<float>& cameraXAxis = viewState.orientation[0];
             const cglib::vec3<float>& cameraYAxis = viewState.orientation[1];
@@ -569,7 +570,9 @@ namespace carto::vt {
         // Which frame the offsets below are expressed in; the shader reads it from attribs[3].
         std::int8_t billboardMode = CAMERA_AXIS_OFFSET;
         if (_style->orientation == LabelOrientation::LINE) {
-            updateLineVertexData(placement, scale, viewState);
+            // The drawn run has to follow the line as THIS view projects it - this is the caller
+            // that rebuilds it (see updateLineVertexData).
+            updateLineVertexData(placement, scale, viewState, true);
             VT_STAT_SPLIT(labelLineBuildNs, labelClock);
             if (_cachedVertices.size() > MAX_LABEL_VERTICES) {
                 return false;
@@ -692,7 +695,7 @@ namespace carto::vt {
         }
     }
 
-    bool Label::buildLineVertexData(const std::shared_ptr<const Placement>& placement, float scale, const ViewState& viewState, VertexArray<cglib::vec3<float>>& vertices, VertexArray<cglib::vec2<std::int16_t>>& texCoords, VertexArray<cglib::vec4<std::int8_t>>& attribs, VertexArray<std::uint16_t>& indices) const {
+    bool Label::buildLineVertexData(const std::shared_ptr<const Placement>& placement, float scale, const ViewState& viewState, const cglib::mat4x4<double>& mvpMatrix, VertexArray<cglib::vec3<float>>& vertices, VertexArray<cglib::vec2<std::int16_t>>& texCoords, VertexArray<cglib::vec4<std::int8_t>>& attribs, VertexArray<std::uint16_t>& indices) const {
         const std::vector<Placement::Edge>& edges = placement->edges;
         if (edges.empty() || !(scale > 0)) {
             return false;
@@ -709,8 +712,8 @@ namespace carto::vt {
         // Project through the view-projection, not just onto the camera axes: with a tilted view
         // the far half of a line is compressed by the perspective divide, and glyphs laid out on
         // an orthographic projection of it drift off the line and pick up the wrong angle. The
-        // basis is the anchor's own glyph unit, so the run stays in glyph units either way.
-        cglib::mat4x4<double> mvpMatrix = viewState.projectionMatrix * viewState.cameraMatrix;
+        // basis is the anchor's own glyph unit, so the run stays in glyph units either way. The
+        // matrix comes from the caller, which keys the cache on it (see updateLineVertexData).
         cglib::vec3<double> anchorPos = placement->position;
         auto projectPoint = [&mvpMatrix, &viewState](const cglib::vec3<double>& pos, cglib::vec2<float>& result) {
             cglib::vec4<double> clipPos = cglib::transform(cglib::vec4<double>(pos(0), pos(1), pos(2), 1), mvpMatrix);
@@ -1011,17 +1014,30 @@ namespace carto::vt {
         return valid;
     }
 
-    void Label::updateLineVertexData(const std::shared_ptr<const Placement>& placement, float scale, const ViewState& viewState) const {
-        // The run is built on the camera axes, so it has to be rebuilt when they turn, not only
-        // when the scale or the placement change.
-        if (scale == _cachedScale && placement == _cachedPlacement && viewState.orientation[0] == _cachedCameraXAxis && viewState.orientation[1] == _cachedCameraYAxis) {
+    void Label::updateLineVertexData(const std::shared_ptr<const Placement>& placement, float scale, const ViewState& viewState, bool rebuildForView) const {
+        // The run is laid out on the line AS THE CAMERA PROJECTS IT, so the view-projection is
+        // part of the key: keying on the camera axes alone kept a run laid out for the camera
+        // position it was built at, and a pan then left the glyphs following a projection of the
+        // road that no longer holds - the text drifts off the line, and can be laid out past the
+        // end of it, until a zoom (which changes the scale) rebuilds it.
+        //
+        // Only the RENDERER asks for a rebuild on a view change (rebuildForView). The culler runs
+        // on a worker thread whose view state lags the frame, and its layout decides both the
+        // envelope and, through _cachedValid, whether the label is drawn at all - re-laying the
+        // run out on that older camera judges the label against a view nobody sees, and the ones
+        // that no longer fit there are hidden even though they lay out fine at the frame's own
+        // camera. It reuses whatever layout is there (the renderer's, at most a frame old) and
+        // only builds one when there is none for this placement or scale.
+        cglib::mat4x4<double> mvpMatrix = viewState.projectionMatrix * viewState.cameraMatrix;
+        if (scale == _cachedScale && placement == _cachedPlacement && (mvpMatrix == _cachedMVPMatrix || !rebuildForView)) {
             return;
         }
+        VT_STAT_INC(lineLayoutBuilds);
         _cachedVertices.clear();
         _cachedTexCoords.clear();
         _cachedAttribs.clear();
         _cachedIndices.clear();
-        _cachedValid = buildLineVertexData(placement, scale, viewState, _cachedVertices, _cachedTexCoords, _cachedAttribs, _cachedIndices);
+        _cachedValid = buildLineVertexData(placement, scale, viewState, mvpMatrix, _cachedVertices, _cachedTexCoords, _cachedAttribs, _cachedIndices);
         // A run that is already on screen rides out a few failed layouts. The layout is judged on
         // the projected line, and it is judged from two different view states - the culler works
         // on the snapshot of its pass, the renderer on the current camera - so a run at the edge
@@ -1035,8 +1051,7 @@ namespace carto::vt {
         _lineLayoutValid = _cachedValid;
         _cachedScale = scale;
         _cachedPlacement = placement;
-        _cachedCameraXAxis = viewState.orientation[0];
-        _cachedCameraYAxis = viewState.orientation[1];
+        _cachedMVPMatrix = mvpMatrix;
     }
 
     void Label::setupCoordinateSystem(const ViewState& viewState, const std::shared_ptr<const Placement>& placement, cglib::vec3<float>& origin, cglib::vec3<float>& xAxis, cglib::vec3<float>& yAxis) const {

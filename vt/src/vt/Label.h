@@ -217,8 +217,8 @@ namespace carto::vt {
         float calculateTerrainScaleFactor(const cglib::vec3<double>& position, const ViewState& viewState) const;
         void setupCoordinateSystem(const ViewState& viewState, const std::shared_ptr<const Placement>& placement, cglib::vec3<float>& origin, cglib::vec3<float>& xAxis, cglib::vec3<float>& yAxis) const;
         void buildPointVertexData(VertexArray<cglib::vec3<float>>& vertices, VertexArray<cglib::vec2<std::int16_t>>& texCoords, VertexArray<cglib::vec4<std::int8_t>>& attribs, VertexArray<std::uint16_t>& indices) const;
-        void updateLineVertexData(const std::shared_ptr<const Placement>& placement, float scale, const ViewState& viewState) const;
-        bool buildLineVertexData(const std::shared_ptr<const Placement>& placement, float scale, const ViewState& viewState, VertexArray<cglib::vec3<float>>& vertices, VertexArray<cglib::vec2<std::int16_t>>& texCoords, VertexArray<cglib::vec4<std::int8_t>>& attribs, VertexArray<std::uint16_t>& indices) const;
+        void updateLineVertexData(const std::shared_ptr<const Placement>& placement, float scale, const ViewState& viewState, bool rebuildForView) const;
+        bool buildLineVertexData(const std::shared_ptr<const Placement>& placement, float scale, const ViewState& viewState, const cglib::mat4x4<double>& mvpMatrix, VertexArray<cglib::vec3<float>>& vertices, VertexArray<cglib::vec2<std::int16_t>>& texCoords, VertexArray<cglib::vec4<std::int8_t>>& attribs, VertexArray<std::uint16_t>& indices) const;
 
         cglib::bbox3<double> calculateGeometryBBox(const ViewState& viewState) const;
         static void smoothPlacementLine(const std::vector<cglib::vec3<double>>& vertices, std::size_t index, double minEdgeLength, std::vector<cglib::vec3<double>>& smoothedVertices, std::size_t& smoothedIndex);
@@ -274,8 +274,14 @@ namespace carto::vt {
 
         mutable bool _cachedValid = false;
         mutable float _cachedScale = 0;
-        mutable cglib::vec3<float> _cachedCameraXAxis = cglib::vec3<float>(0, 0, 0);
-        mutable cglib::vec3<float> _cachedCameraYAxis = cglib::vec3<float>(0, 0, 0);
+        // The view-projection the cached run was laid out for. The run follows the line as the
+        // camera PROJECTS it (see buildLineVertexData), so the whole matrix is the key - a
+        // camera that only moved leaves the axes and the scale alone while the perspective
+        // compression along the line changes, and the glyphs then walk a road the camera no
+        // longer sees that way. Tangram rebuilds its screen transform every frame for the same
+        // reason (LabelManager::updateLabelSet -> CurvedLabel::updateScreenTransform); this
+        // keeps the frame-to-frame reuse only for a camera that has not moved at all.
+        mutable cglib::mat4x4<double> _cachedMVPMatrix = cglib::mat4x4<double>::zero();
         mutable std::shared_ptr<const Placement> _cachedPlacement;
         mutable VertexArray<cglib::vec3<float>> _cachedVertices;
         mutable VertexArray<cglib::vec2<std::int16_t>> _cachedTexCoords;
