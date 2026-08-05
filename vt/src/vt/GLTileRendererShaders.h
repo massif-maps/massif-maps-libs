@@ -305,7 +305,7 @@ namespace carto::vt {
         }
         #endif
         #ifdef TERRAIN
-        uniform sampler2D uElevationTexture;
+        uniform highp sampler2D uElevationTexture;
         uniform highp vec4 uElevationUV;     // elevation texture uv = uv.xy + pos.xy * uv.zw
         uniform vec4 uElevationDecode;       // meters = dot(texture sample, decode) + offset
         uniform float uElevationOffset;      // the constant term: a 2-channel texture has no free channel to carry it
@@ -673,7 +673,7 @@ namespace carto::vt {
         #if defined(TERRAIN_LIGHT) && defined(TERRAIN)
         // Precision qualifiers must match the vertex-stage declarations exactly, or the
         // program fails to LINK (same name, different precision is an error in GLSL ES 1.00).
-        uniform sampler2D uElevationTexture;
+        uniform highp sampler2D uElevationTexture;
         uniform highp vec4 uElevationDecode; // 'vec4' in the vertex stage means highp there
         uniform highp vec4 uElevationTexelSize;
         uniform mediump vec3 uSunDir;         // east, north, up - the same frame the tile mesh lives in
@@ -964,7 +964,7 @@ namespace carto::vt {
     // and a surface pass. The lighting itself is unchanged: the same normal-map lighting
     // shader (built-in or custom) is injected and fed a normal rebuilt from the DEM gradient.
     static const std::string terrainPaintPrelude = R"GLSL(
-        uniform sampler2D uElevationTexture;
+        uniform highp sampler2D uElevationTexture;
         // Precision qualifiers must match the vertex-stage declarations exactly, or the program
         // fails to LINK (same name, different precision is an error in GLSL ES 1.00).
         uniform highp vec4 uElevationDecode;
