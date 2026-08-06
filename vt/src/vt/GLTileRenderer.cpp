@@ -5400,7 +5400,7 @@ namespace carto::vt {
         if (compiledGeometry.geometryVAO != 0) {
             _glExtensions->glBindVertexArrayOES(compiledGeometry.geometryVAO);
         }
-        if (compiledGeometry.geometryVAO == 0 || !compiledGeometry.geometryVAOInitialized) {
+        if (compiledGeometry.geometryVAO == 0 || compiledGeometry.geometryVAOProgram != shaderProgram.program) {
             glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, compiledGeometry.indicesVBO);
             glBindBuffer(GL_ARRAY_BUFFER, compiledGeometry.vertexGeometryVBO);
 
@@ -5479,11 +5479,11 @@ namespace carto::vt {
             disableVertexAttrib(shaderProgram.attribs[A_VERTEXPOSITION]);
         }
 
-        if (compiledGeometry.geometryVAO == 0 || !compiledGeometry.geometryVAOInitialized) {
+        if (compiledGeometry.geometryVAO == 0 || compiledGeometry.geometryVAOProgram != shaderProgram.program) {
             glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
             glBindBuffer(GL_ARRAY_BUFFER, 0);
 
-            compiledGeometry.geometryVAOInitialized = compiledGeometry.geometryVAO != 0;
+            compiledGeometry.geometryVAOProgram = (compiledGeometry.geometryVAO != 0 ? shaderProgram.program : 0);
         }
         
         if (styleParams.pattern) {

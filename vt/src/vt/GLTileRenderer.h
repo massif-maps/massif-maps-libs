@@ -416,9 +416,14 @@ namespace carto::vt {
             GLuint vertexGeometryVBO;
             GLuint indicesVBO;
             GLuint geometryVAO;
-            mutable bool geometryVAOInitialized;
+            // The program whose ATTRIBUTE LOCATIONS the VAO's pointers were set up for, or 0.
+            // A VAO records pointers per attribute INDEX, and the same geometry is drawn by more
+            // than one program - the shadow caster pass draws the extrusions with 'polygon3dshadow'
+            // rather than 'polygon3d' - whose locations need not match. Remembering only THAT it
+            // was initialised replayed the first program's layout for every later one.
+            mutable GLuint geometryVAOProgram;
 
-            CompiledGeometry() : vertexGeometryVBO(0), indicesVBO(0), geometryVAO(0), geometryVAOInitialized(false) { }
+            CompiledGeometry() : vertexGeometryVBO(0), indicesVBO(0), geometryVAO(0), geometryVAOProgram(0) { }
         };
 
         struct CompiledLabelBatch {
