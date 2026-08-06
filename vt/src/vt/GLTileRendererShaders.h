@@ -25,6 +25,7 @@ namespace carto::vt {
         U_TILEMATRIX,
         U_UVMATRIX,
         U_BINORMALSCALE,
+        U_ANTIALIASSCALE,
         U_TILEUNITSCALE,
         U_UVSCALE,
         U_HEIGHTSCALE,
@@ -107,6 +108,7 @@ namespace carto::vt {
         { "uTileMatrix",       U_TILEMATRIX },
         { "uUVMatrix",         U_UVMATRIX },
         { "uBinormalScale",    U_BINORMALSCALE },
+        { "uAntialiasScale",   U_ANTIALIASSCALE },
         { "uTileUnitScale",    U_TILEUNITSCALE },
         { "uUVScale",          U_UVSCALE },
         { "uHeightScale",      U_HEIGHTSCALE },
@@ -1562,6 +1564,7 @@ namespace carto::vt {
         uniform sampler2D uPattern;
         varying highp_opt vec2 vUV;
         #endif
+        uniform mediump float uAntialiasScale;
         uniform highp vec2 uTileUnitScale;
         varying mediump vec2 vTileUnit;
         varying lowp vec4 vColor;
@@ -1588,7 +1591,12 @@ namespace carto::vt {
                 }
             }
             float dist = vWidth - length(vDist);
-            lowp float a = clamp(dist, 0.0, 1.0);
+            // The antialias ramp is one unit of the quad, and a unit is NOT a pixel: line widths
+            // are given in unscaled-DPI units, so on a 2.6x display one unit covers about 1.8
+            // device pixels (uAntialiasScale is exactly that ratio, screen height over the
+            // normalized resolution). A contour a pixel wide was therefore mostly ramp - the blur.
+            // Ramping over one DEVICE pixel keeps a thin line a thin line at any density.
+            lowp float a = clamp(dist * uAntialiasScale, 0.0, 1.0);
         #ifdef PATTERN
             lowp vec4 color = texture2D(uPattern, vUV) * vColor * a;
         #else

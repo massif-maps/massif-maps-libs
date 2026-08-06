@@ -322,6 +322,7 @@ namespace carto::vt {
         void setRendererLayerIndexRange(const std::optional<std::pair<int, int>>& range);
         void setClickHandlerLayerFilter(const std::optional<std::regex>& filter);
         void setViewState(const ViewState& viewState);
+        void setLineAntialiasScale(float scale);
         void setVisibleTiles(const std::map<TileId, std::shared_ptr<const Tile>>& tiles);
         void teleportVisibleTiles(int dx, int dy);
 
@@ -602,6 +603,7 @@ namespace carto::vt {
         cglib::mat4x4<double> _cameraProjMatrix = cglib::mat4x4<double>::identity();
         float _fullResolution = 0;
         float _halfResolution = 0;
+        float _lineAntialiasScale = 1.0f; // device pixels per line-width unit (see lineFsh)
         int _screenWidth = 0;
         int _screenHeight = 0;
         cglib::vec3<double> _tileSurfaceBuilderOrigin = cglib::vec3<double>(0, 0, 0);

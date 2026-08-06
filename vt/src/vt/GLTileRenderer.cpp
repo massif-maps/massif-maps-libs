@@ -1063,6 +1063,16 @@ namespace carto::vt {
         _clickHandlerLayerFilter = filter;
     }
 
+    // Device pixels per line-width unit: line widths are in unscaled-DPI units, so on a dense
+    // screen one unit is worth more than one pixel and the antialias ramp - one unit wide - blurs
+    // a thin line. The host knows the real pixel size of the viewport; vt only has the normalized
+    // resolution. 1 = the old behaviour.
+    void GLTileRenderer::setLineAntialiasScale(float scale) {
+        std::lock_guard<std::mutex> lock(_mutex);
+
+        _lineAntialiasScale = std::max(1.0f, scale);
+    }
+
     void GLTileRenderer::setViewState(const ViewState& viewState) {
         std::lock_guard<std::mutex> lock(_mutex);
         
@@ -5363,6 +5373,7 @@ namespace carto::vt {
             }
 
             glUniform1f(shaderProgram.uniforms[U_BINORMALSCALE], vertexGeomLayoutParams.coordScale / (_halfResolution * vertexGeomLayoutParams.binormalScale * std::pow(2.0f, _viewState.zoom - sourceTileId.zoom)));
+            glUniform1f(shaderProgram.uniforms[U_ANTIALIASSCALE], _lineAntialiasScale);
             if (terrainVTF) {
                 // Screen-space line extrusion over terrain (see lineVsh): the aspect converts an
                 // NDC x offset into the same units as y, and one line-width unit is 1/halfResolution
