@@ -422,6 +422,23 @@ namespace carto::vt {
             return pos;
         }
         #endif
+        // Draped 2D content receiving terrain shadows needs the elevation uv of the fragment and
+        // the local mercator height stretch, so its fragment stage can take the SAME terrain
+        // normal the surface takes (see commonFsh). The surface shaders declare these themselves
+        // under TERRAIN_LIGHT - declaring them twice in one program is a link error, so this copy
+        // exists only for the programs that have no lighting of their own.
+        #if defined(TERRAIN) && defined(TERRAIN_SHADOW) && !defined(TERRAIN_LIGHT)
+        varying highp vec2 vElevUV;
+        varying mediump float vElevCosh;
+        void setTerrainSlopeVaryings(highp vec3 pos) {
+            vElevUV = uElevationUV.xy + pos.xy * uElevationUV.zw;
+            highp float slopeMY = uElevationScale.y + pos.y * uElevationScale.z;
+            vElevCosh = 0.5 * (exp(slopeMY) + exp(-slopeMY));
+        }
+        #else
+        void setTerrainSlopeVaryings(highp vec3 pos) {
+        }
+        #endif
     )GLSL";
 
     static const std::string commonFsh = R"GLSL(
@@ -454,6 +471,49 @@ namespace carto::vt {
         #else
         lowp vec4 applyFog(lowp vec4 color) {
             return color;
+        }
+        #endif
+        // The terrain normal at this fragment, for draped 2D content that receives shadows and has
+        // no lighting of its own. Same 3x3 stencil, same uniforms and same varyings as the surface
+        // takes (backgroundFsh), so a road and the ground it lies on get the SAME N.L - and with
+        // it the same slope-scaled shadow bias and the same back-face rule. Taken at normal
+        // incidence instead, a coplanar receiver gets the minimum bias against a caster it shares
+        // its depth with, so half the PCF taps fail and the whole ground shadows itself.
+        #if defined(TERRAIN) && defined(TERRAIN_SHADOW) && !defined(TERRAIN_LIGHT)
+        uniform highp sampler2D uElevationTexture;
+        uniform highp vec4 uElevationDecode; // 'vec4' in the vertex stage means highp there
+        uniform highp vec4 uElevationTexelSize;
+        uniform mediump vec3 uSunDir;          // east, north, up - the frame the tile mesh lives in
+        uniform highp vec2 uTerrainSlopeScale; // metres of height -> world units, per elevation-uv unit
+        varying highp vec2 vElevUV;
+        varying mediump float vElevCosh;
+
+        mediump float terrainNdl() {
+            highp vec2 duv = uElevationTexelSize.zw;
+            highp vec2 ij = vElevUV * uElevationTexelSize.xy;
+            highp vec2 cen = floor(ij) + 0.5;
+            highp vec2 uv = cen * duv;
+            highp float h00 = dot(texture2D(uElevationTexture, uv - duv), uElevationDecode);
+            highp float h01 = dot(texture2D(uElevationTexture, uv + vec2(-duv.x, 0.0)), uElevationDecode);
+            highp float h02 = dot(texture2D(uElevationTexture, uv + vec2(-duv.x, duv.y)), uElevationDecode);
+            highp float h10 = dot(texture2D(uElevationTexture, uv + vec2(0.0, -duv.y)), uElevationDecode);
+            highp float h11 = dot(texture2D(uElevationTexture, uv), uElevationDecode);
+            highp float h12 = dot(texture2D(uElevationTexture, uv + vec2(0.0, duv.y)), uElevationDecode);
+            highp float h20 = dot(texture2D(uElevationTexture, uv + vec2(duv.x, -duv.y)), uElevationDecode);
+            highp float h21 = dot(texture2D(uElevationTexture, uv + vec2(duv.x, 0.0)), uElevationDecode);
+            highp float h22 = dot(texture2D(uElevationTexture, uv + duv), uElevationDecode);
+            highp vec2 f = ij - cen;
+            highp float ddxy = (h22 - h20 - h02 + h00) * 0.25;
+            highp mat2 curv = mat2(h21 - 2.0 * h11 + h01, ddxy, ddxy, h12 - 2.0 * h11 + h10);
+            highp vec2 grad0 = vec2(h21 - h01, h12 - h10) * 0.5;
+            highp vec2 grad = grad0 + curv * f; // metres per texel
+            highp float dx = grad.x * uTerrainSlopeScale.x * vElevCosh / duv.x;
+            highp float dy = grad.y * uTerrainSlopeScale.y * vElevCosh / duv.y;
+            return max(0.0, dot(normalize(vec3(-dx, -dy, 1.0)), uSunDir));
+        }
+        #else
+        mediump float terrainNdl() {
+            return 1.0;
         }
         #endif
         #ifdef TERRAIN_SHADOW
@@ -1327,7 +1387,10 @@ namespace carto::vt {
         #ifdef LIGHTING_FSH
             vNormal = aVertexNormal;
         #endif
-            gl_Position = applyDepthBias(uMVPMatrix * vec4(applyTerrain(pos) + delta, 1.0));
+            setTerrainSlopeVaryings(pos);
+            highp vec3 terrainPos = applyTerrain(pos);
+            applyShadowPos(terrainPos);
+            gl_Position = applyDepthBias(uMVPMatrix * vec4(terrainPos + delta, 1.0));
         }
     )GLSL";
 
@@ -1357,6 +1420,18 @@ namespace carto::vt {
             // depth-writing terrain content: fully transparent fragments (sprite/dash
             // quad corners) must not write depth or they block later style layers
             if (color.a < 0.004) discard;
+        #endif
+        #ifdef TERRAIN_SHADOW
+            // 2D content standing ON the ground takes the ground's shadow: it is drawn in the 3D
+            // scene now that fills are the only thing baked into the drape, so a road crossing a
+            // shadowed slope stayed lit while the slope around it went dark.
+            // N.L comes from the terrain itself (terrainNdl, the same stencil the surface uses),
+            // NOT from the geometry - which has no meaningful normal, lying flat on the ground.
+            // It has to: this receiver is COPLANAR with the surface that cast into the shadow map,
+            // so at normal incidence it gets the minimum bias against its own depth, half the PCF
+            // taps fail, and the whole ground shadows itself.
+            // The colour is premultiplied, so scaling rgb alone keeps rgb <= a.
+            color = vec4(color.rgb * shadowFactorSlope(terrainNdl()), color.a);
         #endif
         #ifdef LIGHTING_FSH
             gl_FragColor = applyFog(applyLighting(color, normalize(vNormal)));
@@ -1439,7 +1514,9 @@ namespace carto::vt {
             // out of the rasteriser in gaps. So take only the DIRECTION of the displaced offset
             // and give it the nominal length in screen space. Both quad edges keep the centre
             // line's depth, so this cannot poke the line through the relief either.
+            setTerrainSlopeVaryings(pos);
             highp vec3 centerPos = applyTerrain(pos);
+            applyShadowPos(centerPos);
             highp vec4 centerClip = uMVPMatrix * vec4(centerPos, 1.0);
             highp vec4 edgeClip = uMVPMatrix * vec4(applyTerrain(pos + delta), 1.0);
             highp vec2 edgeDir = edgeClip.xy / edgeClip.w - centerClip.xy / centerClip.w;
@@ -1453,7 +1530,10 @@ namespace carto::vt {
             gl_Position = applyDepthBias(centerClip);
         #else
             // sample the terrain at the extruded position, so wide lines follow the slope
-            gl_Position = applyDepthBias(uMVPMatrix * vec4(applyTerrain(pos + delta), 1.0));
+            setTerrainSlopeVaryings(pos + delta);
+            highp vec3 flatTerrainPos = applyTerrain(pos + delta);
+            applyShadowPos(flatTerrainPos);
+            gl_Position = applyDepthBias(uMVPMatrix * vec4(flatTerrainPos, 1.0));
         #endif
         }
     )GLSL";
@@ -1482,6 +1562,10 @@ namespace carto::vt {
             // depth-writing terrain content: fully transparent fragments (AA aprons,
             // dash gaps) must not write depth or they block later style layers
             if (color.a < 0.004) discard;
+        #endif
+        #ifdef TERRAIN_SHADOW
+            // 2D content standing ON the ground takes the ground's shadow (see pointFsh).
+            color = vec4(color.rgb * shadowFactorSlope(terrainNdl()), color.a);
         #endif
         #ifdef LIGHTING_FSH
             gl_FragColor = applyFog(applyLighting(color, normalize(vNormal)));
@@ -1532,7 +1616,10 @@ namespace carto::vt {
         #ifdef LIGHTING_FSH
             vNormal = aVertexNormal;
         #endif
-            gl_Position = applyDepthBias(uMVPMatrix * vec4(applyTerrain(pos), 1.0));
+            setTerrainSlopeVaryings(pos);
+            highp vec3 terrainPos = applyTerrain(pos);
+            applyShadowPos(terrainPos);
+            gl_Position = applyDepthBias(uMVPMatrix * vec4(terrainPos, 1.0));
         }
     )GLSL";
 
@@ -1556,6 +1643,10 @@ namespace carto::vt {
             // depth-writing terrain content: fully transparent fragments (pattern
             // gaps) must not write depth or they block later style layers
             if (color.a < 0.004) discard;
+        #endif
+        #ifdef TERRAIN_SHADOW
+            // 2D content standing ON the ground takes the ground's shadow (see pointFsh).
+            color = vec4(color.rgb * shadowFactorSlope(terrainNdl()), color.a);
         #endif
         #ifdef LIGHTING_FSH
             gl_FragColor = applyFog(applyLighting(color, normalize(vNormal)));
@@ -1588,6 +1679,11 @@ namespace carto::vt {
         varying lowp float vSideVertex;
         varying mediump vec3 vNormal;
         #endif
+        #ifdef TERRAIN_SHADOW
+        // The extrusion's OWN normal, for the shadow's N.L. Separate from vNormal, which only
+        // exists when the lighting runs per fragment - the shadow needs it either way.
+        varying mediump vec3 vShadowNormal;
+        #endif
 
         void main(void) {
             int styleIndex = int(aVertexAttribs[0]);
@@ -1600,6 +1696,9 @@ namespace carto::vt {
             pos = applyTerrain(pos) + aVertexNormal * (aVertexHeight * uHeightScale);
             applyShadowPos(pos);
             vec3 normal = normalize(sideVertex > 0.0 ? aVertexBinormal : aVertexNormal);
+        #ifdef TERRAIN_SHADOW
+            vShadowNormal = normal;
+        #endif
             vec4 color = uColorTable[styleIndex];
             vTilePos = (uTileMatrix * vec3(aVertexUV * uUVScale, 1.0)).xy;
         #ifdef LIGHTING_VSH
@@ -1619,6 +1718,9 @@ namespace carto::vt {
     static const std::string polygon3DFsh = R"GLSL(
         varying highp_opt vec2 vTilePos;
         varying lowp vec4 vColor;
+        #ifdef TERRAIN_SHADOW
+        varying mediump vec3 vShadowNormal;
+        #endif
         #ifdef LIGHTING_FSH
         varying highp_opt float vHeight;
         varying lowp float vSideVertex;
@@ -1637,7 +1739,12 @@ namespace carto::vt {
         #ifdef TERRAIN_SHADOW
             // Extrusions receive as well as cast: a building in the shadow of a ridge, or of a
             // taller neighbour, darkens the same way the ground does.
-            gl_FragColor.rgb *= shadowFactor();
+            // N.L is the extrusion's own normal, not normal incidence: a roof IS its own caster,
+            // so at N.L = 1 it gets the minimum bias against its own depth in the map and speckles
+            // itself as soon as a shadow texel covers more ground than a roof is wide - which is
+            // what shredded the buildings on zooming out. It also lets the back-face rule shadow
+            // a wall facing away from the sun, which no depth comparison can decide.
+            gl_FragColor.rgb *= shadowFactorSlope(max(0.0, dot(normalize(vShadowNormal), uSunDir)));
         #endif
         }
     )GLSL";

@@ -5184,13 +5184,13 @@ namespace carto::vt {
         const ShaderProgram* shaderProgramPtr = nullptr;
         switch (geometry->getType()) {
         case TileGeometry::Type::POINT:
-            shaderProgramPtr = &buildShaderProgram("point", pointVsh, pointFsh, LightingMode::GEOMETRY2D, RasterFilterMode::NONE, (styleParams.pattern ? PATTERN_FLAG : 0) | (styleParams.translate ? TRANSFORM_FLAG : 0) | (styleOffsetting ? OFFSET_FLAG : 0) | terrainFlag | (shadowReceiver ? TERRAIN_SHADOW_FLAG : 0) | fogFlag());
+            shaderProgramPtr = &buildShaderProgram("point", pointVsh, pointFsh, LightingMode::GEOMETRY2D, RasterFilterMode::NONE, (styleParams.pattern ? PATTERN_FLAG : 0) | (styleParams.translate ? TRANSFORM_FLAG : 0) | (styleOffsetting ? OFFSET_FLAG : 0) | terrainFlag | (shadowReceiver ? TERRAIN_SHADOW_FLAG | DERIVATIVES_FLAG : 0) | fogFlag());
             break;
         case TileGeometry::Type::LINE:
-            shaderProgramPtr = &buildShaderProgram("line", lineVsh, lineFsh, LightingMode::GEOMETRY2D, RasterFilterMode::NONE, (styleParams.pattern ? PATTERN_FLAG : 0) | (styleParams.translate ? TRANSFORM_FLAG : 0) | (styleOffsetting ? OFFSET_FLAG : 0) | terrainFlag | (shadowReceiver ? TERRAIN_SHADOW_FLAG : 0) | fogFlag());
+            shaderProgramPtr = &buildShaderProgram("line", lineVsh, lineFsh, LightingMode::GEOMETRY2D, RasterFilterMode::NONE, (styleParams.pattern ? PATTERN_FLAG : 0) | (styleParams.translate ? TRANSFORM_FLAG : 0) | (styleOffsetting ? OFFSET_FLAG : 0) | terrainFlag | (shadowReceiver ? TERRAIN_SHADOW_FLAG | DERIVATIVES_FLAG : 0) | fogFlag());
             break;
         case TileGeometry::Type::POLYGON:
-            shaderProgramPtr = &buildShaderProgram("polygon", polygonVsh, polygonFsh, LightingMode::GEOMETRY2D, RasterFilterMode::NONE, (styleParams.pattern ? PATTERN_FLAG : 0) | (styleParams.translate ? TRANSFORM_FLAG : 0) | terrainFlag | (shadowReceiver ? TERRAIN_SHADOW_FLAG : 0) | fogFlag());
+            shaderProgramPtr = &buildShaderProgram("polygon", polygonVsh, polygonFsh, LightingMode::GEOMETRY2D, RasterFilterMode::NONE, (styleParams.pattern ? PATTERN_FLAG : 0) | (styleParams.translate ? TRANSFORM_FLAG : 0) | terrainFlag | (shadowReceiver ? TERRAIN_SHADOW_FLAG | DERIVATIVES_FLAG : 0) | fogFlag());
             break;
         case TileGeometry::Type::POLYGON3D:
             if (_shadowCasterViewProj) {
@@ -5259,6 +5259,11 @@ namespace carto::vt {
             glActiveTexture(GL_TEXTURE0);
             glUniform4f(shaderProgram.uniforms[U_SHADOWPARAMS], 1.0f / std::max(1, _terrainShadowMapSize), _terrainShadowStrength, _terrainShadowSoftness, 1.0f / _terrainShadowCascades);
             glUniform4f(shaderProgram.uniforms[U_SHADOWBIAS], _terrainShadowBiases[0], _terrainShadowBiases[1], _terrainShadowBiases[2], _terrainShadowBiases[3]);
+            // Draped 2D content takes its N.L from the TERRAIN, not from its own (meaningless)
+            // normal - see terrainNdl in commonFsh - so it needs the slope scale and the sun
+            // direction even though it carries no lighting of its own. The uniforms this also
+            // sets that such a program does not declare resolve to -1, where glUniform is a no-op.
+            setupTerrainLightingUniforms(shaderProgram, targetTileId, calculateTileMatrix(sourceTileId, 1.0f / vertexGeomLayoutParams.coordScale));
         }
         
         if (styleParams.translate) {
