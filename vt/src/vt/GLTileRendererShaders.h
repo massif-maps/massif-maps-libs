@@ -1524,15 +1524,16 @@ namespace carto::vt {
             vNormal = aVertexNormal;
         #endif
         #ifdef TERRAIN
-            // SCREEN-SPACE extrusion. The binormal offset is calibrated to project to
-            // 'roundedWidth' line-width units on the flat map; over terrain the quad is extruded
-            // horizontally and THEN displaced onto the slope, so what reaches the screen is
-            // anything but that width: stretched into a blurred band where the slope faces the
-            // camera (a contour line is the worst case - its width direction IS the gradient),
-            // and squeezed below a pixel where the ground is foreshortened, which drops the line
-            // out of the rasteriser in gaps. So take only the DIRECTION of the displaced offset
-            // and give it the nominal length in screen space. Both quad edges keep the centre
-            // line's depth, so this cannot poke the line through the relief either.
+            // Tangram's line model with a CEILING. Tangram extrudes in model space and displaces
+            // the extruded vertex onto the terrain (polyline.vs + terrain-3d.yaml), so a line is a
+            // world quad through the projection and tapers with distance like everything else -
+            // which is what a line on the ground should do. Left alone it also GROWS without bound
+            // towards the camera, and a near contour turns into a fat blob.
+            // So: take tangram's offset, measure what it is worth on screen, and shrink it back to
+            // the nominal width when it exceeds it. Never grow it - the factor is <= 1 by
+            // construction, so this can not manufacture the oversized quads an unbounded screen
+            // fit can. Far lines keep tangram's taper, near lines stop at the width the style asked
+            // for, which is the flat map's width.
             setTerrainSlopeVaryings(pos);
             vTileUnit = pos.xy * uTileUnitScale;
             highp vec3 centerPos = applyTerrain(pos);
@@ -1542,12 +1543,15 @@ namespace carto::vt {
             highp vec2 edgeDir = edgeClip.xy / edgeClip.w - centerClip.xy / centerClip.w;
             edgeDir = vec2(edgeDir.x * uScreenScale.x, edgeDir.y); // NDC is anisotropic, work in height units
             highp float edgeLen = length(edgeDir);
-            if (edgeLen > 0.0000001) {
-                edgeDir = edgeDir * (roundedWidth * uScreenScale.y / edgeLen);
+            highp float nominalLen = roundedWidth * uScreenScale.y;
+            if (edgeLen > nominalLen && nominalLen > 0.0) {
+                edgeDir = edgeDir * (nominalLen / edgeLen);
                 highp vec2 offset = vec2(edgeDir.x / uScreenScale.x, edgeDir.y);
                 centerClip = vec4((centerClip.xy / centerClip.w + offset) * centerClip.w, centerClip.z, centerClip.w);
+                gl_Position = applyDepthBias(centerClip);
+            } else {
+                gl_Position = applyDepthBias(uMVPMatrix * vec4(applyTerrain(pos + delta), 1.0));
             }
-            gl_Position = applyDepthBias(centerClip);
         #else
             // sample the terrain at the extruded position, so wide lines follow the slope
             vTileUnit = pos.xy * uTileUnitScale;
