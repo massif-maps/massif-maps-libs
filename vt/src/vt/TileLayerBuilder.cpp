@@ -947,8 +947,14 @@ namespace carto::vt {
             bounds.add(_coords[i1 + offset]);
             bounds.add(_coords[i2 + offset]);
             if (_polygonClipBox.inside(bounds)) {
-                std::array<std::size_t, 3> srcIndices = { { i0 + offset, i2 + offset, i1 + offset } };
-                _transformer->tesselateTriangles(srcIndices.data(), srcIndices.size(), _coords, _texCoords, _indices);
+                // NOT through the transformer's subdivision, unlike a draped 2D polygon: the
+                // walls below are already emitted as one quad per footprint edge, so subdividing
+                // the roof only buys a roof that follows the terrain more closely than the walls
+                // that hold it up - which is not what a roof does. Tangram tesselates its
+                // extrusions the same way (Builders::buildPolygon, no refinement), and the
+                // triangles saved are pure vertex work: measured on an Adreno 610, a 4x coarser
+                // subdivision threshold was already worth 0.5 ms of the extrusion pass.
+                _indices.append(i0 + offset, i2 + offset, i1 + offset);
             }
         }
 
