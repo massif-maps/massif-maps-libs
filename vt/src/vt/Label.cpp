@@ -455,13 +455,13 @@ namespace carto::vt {
     }
 
     float Label::calculateTerrainScaleFactor(const cglib::vec3<double>& position, const ViewState& viewState) const {
-        // With planar 3D terrain, labels keep a CONSTANT ON-SCREEN SIZE (tangram-style):
-        // the label world size is derived from the zoom level only, so the perspective
-        // divide would otherwise scale labels by their distance - drastically oversizing
-        // labels lifted onto high mountains and shrinking labels towards the horizon.
-        // Rescale by the ratio of the label view depth to the focus depth (where the view
+        // In a planar projection labels keep a CONSTANT ON-SCREEN SIZE (tangram-style): the
+        // label world size is derived from the zoom level only, so the perspective divide would
+        // otherwise scale labels by their distance - oversizing labels lifted onto high mountains,
+        // shrinking them towards the horizon, and on a tilted 2D map making the nearest ones far
+        // too big. Rescale by the ratio of the label view depth to the focus depth (where the view
         // axis meets the ground plane), which exactly cancels the perspective scaling.
-        if (!viewState.planarTerrain) {
+        if (!viewState.planarProjection) {
             return 1.0f;
         }
         cglib::vec3<double> viewDir = -cglib::vec3<double>::convert(viewState.orientation[2]);
@@ -1056,7 +1056,7 @@ namespace carto::vt {
 
     void Label::setupCoordinateSystem(const ViewState& viewState, const std::shared_ptr<const Placement>& placement, cglib::vec3<float>& origin, cglib::vec3<float>& xAxis, cglib::vec3<float>& yAxis) const {
         cglib::vec3<double> position = placement->position;
-        if (viewState.planarTerrain && _style->orientation != LabelOrientation::LINE && viewState.resolution > 0) {
+        if (viewState.planarProjection && _style->orientation != LabelOrientation::LINE && viewState.resolution > 0) {
             // Snap the label anchor to a quarter of the (normalized) pixel grid: glyphs then
             // rasterize at a stable subpixel phase, which keeps text noticeably sharper and
             // shimmer-free (tangram-style screen-space anchoring)
