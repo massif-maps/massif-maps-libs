@@ -26,6 +26,13 @@ namespace carto::vt {
     // maximum stroke width).
     inline constexpr int GLYPH_RENDER_SPREAD = 8; // NOTE: keep it equal to BITMAP_SDF_SCALE
 
+    // How much the sampled texture value (0..1) changes over one texel of signed distance:
+    // FreeType spreads +-GLYPH_RENDER_SPREAD texels over +-127, and FontManager rescales that by
+    // 4 / BITMAP_SDF_SCALE when it encodes the glyph (see addFreeTypeGlyph). The renderer needs it
+    // to size the antialias ramp - one screen pixel of distance is this times the number of glyph
+    // texels a screen pixel covers.
+    inline constexpr float GLYPH_SDF_UNIT = 127.0f * (4.0f / BITMAP_SDF_SCALE) / GLYPH_RENDER_SPREAD / 255.0f;
+
     class Font {
     public:
         using CodePoint = unsigned int;

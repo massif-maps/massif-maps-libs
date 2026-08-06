@@ -39,7 +39,7 @@ namespace carto::vt {
         U_BITMAP,
         U_TEXTURE,
         U_SDFSCALE,
-        U_DERIVSCALE,
+        U_SDFRAMP,
         U_DEPTHBIAS,
         U_DEPTHBIASCLIP,
         U_ELEVATIONTEXTURE,
@@ -120,7 +120,7 @@ namespace carto::vt {
         { "uColor",            U_COLOR },
         { "uOpacity",          U_OPACITY },
         { "uSDFScale",         U_SDFSCALE },
-        { "uDerivScale",       U_DERIVSCALE },
+        { "uSDFRamp",          U_SDFRAMP },
         { "uDepthBias",        U_DEPTHBIAS },
         { "uDepthBiasClip",    U_DEPTHBIASCLIP },
         { "uElevationTexture", U_ELEVATIONTEXTURE },
@@ -1197,6 +1197,7 @@ namespace carto::vt {
         uniform mat4 uMVPMatrix;
         uniform vec2 uUVScale;
         uniform float uSDFScale;
+        uniform float uSDFRamp;
         uniform vec4 uColorTable[16];
         uniform float uWidthTable[16];
         uniform float uStrokeWidthTable[16];
@@ -1213,7 +1214,10 @@ namespace carto::vt {
             float opacity = aVertexAttribs[2] * (1.0 / 127.0);
             vec4 color = aVertexAttribs[1] > 1.0 ? vec4(1.0, 1.0, 1.0, 1.0) : uColorTable[styleIndex];
             vUV = aVertexUV * uUVScale;
-            vAttribs = vec4(aVertexAttribs[1], uStrokeWidthTable[styleIndex], uSDFScale / size, size / uSDFScale);
+            // [2] is the halo width, [3] the antialias ramp - both in texture value units. They
+            // are not the same scale: the ramp is one screen pixel of signed distance, the halo
+            // is what HALO_RADIUS_SCALE says it is.
+            vAttribs = vec4(aVertexAttribs[1], uStrokeWidthTable[styleIndex], uSDFScale / size, uSDFRamp / size);
         #ifdef LIGHTING_VSH
             vColor = applyLighting(color, aVertexNormal) * opacity;
         #else
@@ -1231,9 +1235,6 @@ namespace carto::vt {
 
     static const std::string labelFsh = R"GLSL(
         uniform sampler2D uBitmap;
-        #ifdef DERIVATIVES
-        uniform highp_opt vec2 uDerivScale;
-        #endif
         varying lowp vec4 vColor;
         varying highp_opt vec2 vUV;
         varying mediump vec4 vAttribs;
@@ -1242,19 +1243,24 @@ namespace carto::vt {
         #endif
 
         void main(void) {
-            lowp vec4 color = texture2D(uBitmap, vUV);
+            // The signed distance is read at mediump on purpose: at lowp the 8-bit field is
+            // quantized coarser than the one-pixel ramp below, which shows up as banded glyph
+            // edges - and the derivative taken from it would be noise.
+            mediump vec4 color = texture2D(uBitmap, vUV);
             if (vAttribs[0] > 0.0) {
                 color = color * vColor;
             } else {
         #ifdef DERIVATIVES
-                float size = dot(uDerivScale, fwidth(vUV));
-                float scale = 1.0 / size;
+                // The gradient of the field itself is the width of one screen pixel expressed in
+                // the field's own units - it needs no constant and, unlike the per-batch value
+                // below, it follows a label the perspective magnifies (one lying on the ground
+                // under a tilt is drawn at a scale that varies over the label).
+                mediump float size = max(length(vec2(dFdx(color.r), dFdy(color.r))), 0.00001);
         #else
-                float size = vAttribs[2];
-                float scale = vAttribs[3];
+                mediump float size = vAttribs[3];
         #endif
                 float offset = 0.5 * (1.0 - size - vAttribs[1] * vAttribs[2]);
-                color = clamp((color.r - offset) * scale, 0.0, 1.0) * vColor;
+                color = clamp((color.r - offset) / size, 0.0, 1.0) * vColor;
             }
         #ifdef LIGHTING_FSH
             gl_FragColor = applyLighting(color, normalize(vNormal));

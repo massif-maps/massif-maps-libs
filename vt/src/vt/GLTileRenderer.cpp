@@ -5493,10 +5493,14 @@ namespace carto::vt {
         glUniformMatrix4fv(shaderProgram.uniforms[U_MVPMATRIX], 1, GL_FALSE, mvpMatrix.data());
 
         glUniform1f(shaderProgram.uniforms[U_SDFSCALE], labelBatchParams.glyphRenderSize / labelBatchParams.scale / _fullResolution / BITMAP_SDF_SCALE);
-        if (useDerivatives) {
-            float scale = 1.0f / labelBatchParams.scale / _fullResolution / BITMAP_SDF_SCALE;
-            glUniform2f(shaderProgram.uniforms[U_DERIVSCALE], bitmap->width * scale, bitmap->height * scale);
-        }
+        // The antialias ramp has to be one screen pixel wide, and it is expressed in the texture
+        // values the field is encoded in. One em is (glyphRenderSize - GLYPH_RENDER_SPREAD) glyph
+        // texels and is drawn over 'size * scale * _fullResolution / 2' screen pixels (vt's
+        // resolution is twice what one tile covers), so a screen pixel is that ratio of texels -
+        // GLYPH_SDF_UNIT turns texels into texture values. The batch has one scale for the whole
+        // label; the DERIVATIVES path in labelFsh measures it per fragment instead.
+        float glyphEmTexels = static_cast<float>(labelBatchParams.glyphRenderSize - GLYPH_RENDER_SPREAD);
+        glUniform1f(shaderProgram.uniforms[U_SDFRAMP], 2.0f * GLYPH_SDF_UNIT * glyphEmTexels / (labelBatchParams.scale * _fullResolution));
         // Camera axes for the shader-side billboarding (see labelVsh); the label matrix is
         // camera-relative, so these are the plain camera basis vectors.
         glUniform3f(shaderProgram.uniforms[U_LABELAXISX], _viewState.orientation[0](0), _viewState.orientation[0](1), _viewState.orientation[0](2));
