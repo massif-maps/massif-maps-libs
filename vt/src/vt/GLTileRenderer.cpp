@@ -1443,7 +1443,7 @@ namespace carto::vt {
         return refresh;
     }
     
-    void GLTileRenderer::renderGeometry(bool geom2D, bool geom3D) {
+    void GLTileRenderer::renderGeometry(bool geom2D, bool geom3D, bool inline3D) {
         std::lock_guard<std::mutex> lock(_mutex);
 
         resetProgramState(); // another renderer may have bound its own program since the last draw
@@ -1683,7 +1683,7 @@ namespace carto::vt {
             glCullFace(GL_BACK);
 
             // 3D polygon pass
-            renderGeometry3D(*_visibleRenderTiles);
+            renderGeometry3D(*_visibleRenderTiles, inline3D);
 
             // Restore GL state
             glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
@@ -3123,7 +3123,7 @@ namespace carto::vt {
         }
     }
     
-    void GLTileRenderer::renderGeometry3D(const std::vector<RenderTile>& renderTiles) {
+    void GLTileRenderer::renderGeometry3D(const std::vector<RenderTile>& renderTiles, bool allowInline) {
         // Extract layer tiles for each layers
         std::map<int, std::vector<const RenderTileLayer*>> renderLayerMap;
         for (const RenderTile& renderTile : renderTiles) {
@@ -3161,9 +3161,23 @@ namespace carto::vt {
             }
             CompOp layerCompOp = (layer->getCompOp() ? *layer->getCompOp() : CompOp::SRC_OVER);
 
-            // Always use separate rendering overlay with Z buffer. Prepare the overlay buffer.
+            // Tangram draws its extrusions straight into the main framebuffer, depth-tested
+            // against the ground it stands on - it has no per-layer 3D overlay at all. The
+            // overlay here buys exactly two things: comp-op compositing, and 'flatten the whole
+            // layer, then blend it once' semantics for a fading layer (overlapping translucent
+            // buildings must not blend against each other). Neither applies to an opaque layer
+            // with no comp-op, which is the normal case - and the overlay costs it a full-screen
+            // clear, a full terrain surface pre-pass (one displaced mesh draw per visible tile,
+            // only to re-seed a depth buffer the main framebuffer already holds) and a
+            // full-screen composite, every frame.
+            // Only when the caller says the extrusions are the last tile content of the frame
+            // (buildingOrder 1): drawn inline they WRITE depth into the main framebuffer, which
+            // would otherwise occlude the 2D content of the layers drawn after them.
+            bool useOverlay = !allowInline || static_cast<bool>(layer->getCompOp()) || geometryOpacity < 1.0f - 1.0f / 255.0f;
+
+            // Prepare the overlay buffer.
             GLint currentFBO = 0;
-            if (true) {
+            if (useOverlay) {
                 glGetIntegerv(GL_FRAMEBUFFER_BINDING, &currentFBO);
 
                 if (_overlayBuffer3D.fbo == 0) {
@@ -3191,12 +3205,11 @@ namespace carto::vt {
             // the 2D pass uses as its occluder restores the occlusion inside the overlay:
             // fragments behind a crest are simply never painted, so the composite leaves
             // the terrain pixels untouched.
-            // Done here rather than by rendering the extrusions into the main framebuffer
-            // because the overlay is also what gives 3D polygons their layer opacity /
-            // comp-op compositing and their own self-occlusion domain, and because the main
-            // framebuffer's depth belongs to whichever tile layer rendered last (with
-            // buildingOrder = 1 the extrusions are drawn from onDrawFrame3D, after every
-            // layer's 2D pass).
+            // Skipped on the inline path: there the extrusions ARE in the main framebuffer,
+            // whose depth already holds that same cover - the shared ground, or the last tile
+            // layer's own surface pre-pass (with buildingOrder = 1 the extrusions are drawn
+            // from onDrawFrame3D, after every layer's 2D pass). Re-seeding it would draw the
+            // same meshes a second time for the same result.
             // Only when this layer actually has extrusions to occlude: the map above also
             // collects comp-op layers that need the empty-blend overlay but contain no 3D
             // geometry at all, and the pre-pass is a full terrain surface draw.
@@ -3208,30 +3221,32 @@ namespace carto::vt {
                     });
                 });
             if (terrainOccluders) {
-                glEnable(GL_DEPTH_TEST);
-                glDepthFunc(GL_LESS);
-                glDepthMask(GL_TRUE);
-                glDisable(GL_CULL_FACE); // displaced surfaces can face away near ridge crests
-                glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
-                _terrainDrawDepthBias = _terrainDepthBias;
-                _terrainDrawDepthClipUnits = 0.0f; // TRUE depth: the occluder is never pushed back
-                // The overlay has its own depth buffer, so it needs its own seeding even under a
-                // shared ground - but from the SAME cover, so an extrusion is occluded by exactly
-                // the ridge that occludes it in the main framebuffer.
-                if (_terrainSharedGround) {
-                    for (const TileId& tileId : _terrainGroundTiles) {
-                        renderTileSurfaceFill(tileId, Color());
-                    }
-                } else {
-                    for (const RenderTile& renderTile : renderTiles) {
-                        if (renderTile.visible) {
-                            renderTileSurfaceFill(renderTile.targetTileId, Color());
+                if (useOverlay) {
+                    glEnable(GL_DEPTH_TEST);
+                    glDepthFunc(GL_LESS);
+                    glDepthMask(GL_TRUE);
+                    glDisable(GL_CULL_FACE); // displaced surfaces can face away near ridge crests
+                    glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+                    _terrainDrawDepthBias = _terrainDepthBias;
+                    _terrainDrawDepthClipUnits = 0.0f; // TRUE depth: the occluder is never pushed back
+                    // The overlay has its own depth buffer, so it needs its own seeding even under a
+                    // shared ground - but from the SAME cover, so an extrusion is occluded by exactly
+                    // the ridge that occludes it in the main framebuffer.
+                    if (_terrainSharedGround) {
+                        for (const TileId& tileId : _terrainGroundTiles) {
+                            renderTileSurfaceFill(tileId, Color());
+                        }
+                    } else {
+                        for (const RenderTile& renderTile : renderTiles) {
+                            if (renderTile.visible) {
+                                renderTileSurfaceFill(renderTile.targetTileId, Color());
+                            }
                         }
                     }
+                    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+                    glEnable(GL_CULL_FACE);
+                    glCullFace(GL_BACK);
                 }
-                glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-                glEnable(GL_CULL_FACE);
-                glCullFace(GL_BACK);
                 // Clearance for the extrusions themselves. Two separate errors to cover:
                 //  - the base ring samples the elevation texture at arbitrary xy while the
                 //    surface mesh interpolates it linearly over its cells (the same chord
@@ -3245,6 +3260,14 @@ namespace carto::vt {
                 // occlusion inside the overlay is unaffected.
                 _terrainDrawDepthBias = _terrainDepthBias + TERRAIN_EXTRUSION_DEPTH_DELTAS * TERRAIN_LAYER_DEPTH_DELTA;
                 _terrainDrawDepthClipUnits = (_terrainRegularGrid ? 2.0f : 12.0f);
+            }
+
+            if (!useOverlay) {
+                // Same depth state the overlay's pre-pass leaves behind, so an extrusion is
+                // resolved against the ground and against other extrusions exactly as before.
+                glEnable(GL_DEPTH_TEST);
+                glDepthFunc(GL_LESS);
+                glDepthMask(GL_TRUE);
             }
 
             // Render tile layers for this layer
@@ -3263,7 +3286,7 @@ namespace carto::vt {
             }
 
             // Blend the rendered layer with framebuffer
-            if (true) {
+            if (useOverlay) {
                 if (_glExtensions->GL_OES_packed_depth_stencil_supported() && !_overlayBuffer3D.depthStencilAttachments.empty()) {
                     // TODO: for now it crashes. See why
 //                    _glExtensions->glDiscardFramebufferEXT(GL_FRAMEBUFFER, static_cast<GLsizei>(_overlayBuffer3D.depthStencilAttachments.size()), _overlayBuffer3D.depthStencilAttachments.data());
@@ -5152,20 +5175,22 @@ namespace carto::vt {
         // displacement, NO depth bias, and a tile-local orthographic MVP (set by the caller).
         bool flatDrape = (_drapeMVPOverride != nullptr);
         bool terrainVTF = _terrainMode && (bool) _terrainTextureProvider && !flatDrape;
-        // 3D extrusions are the only tile content that receives shadows directly - everything
-        // else 2D is inside the drape texture and is shadowed by the surface it is painted on.
-        bool shadowReceiver = terrainVTF && !_shadowCasterViewProj && _terrainShadowTexture != 0 && _terrainShadowStrength > 0.0f && geometry->getType() == TileGeometry::Type::POLYGON3D;
+        // Every piece of tile content drawn in the 3D scene receives shadows. That used to mean
+        // the 3D extrusions alone, because everything 2D was baked into the drape texture and was
+        // shadowed by the surface it was painted on; with only the FILLS draped, the lines and
+        // points are in the scene and stayed lit while the slope under them went dark.
+        bool shadowReceiver = terrainVTF && !_shadowCasterViewProj && _terrainShadowTexture != 0 && _terrainShadowStrength > 0.0f;
         unsigned int terrainFlag = flatDrape ? 0 : ((_terrainMode ? TERRAIN_FLAG : 0) | (terrainVTF ? TERRAIN_VTF_FLAG : 0));
         const ShaderProgram* shaderProgramPtr = nullptr;
         switch (geometry->getType()) {
         case TileGeometry::Type::POINT:
-            shaderProgramPtr = &buildShaderProgram("point", pointVsh, pointFsh, LightingMode::GEOMETRY2D, RasterFilterMode::NONE, (styleParams.pattern ? PATTERN_FLAG : 0) | (styleParams.translate ? TRANSFORM_FLAG : 0) | (styleOffsetting ? OFFSET_FLAG : 0) | terrainFlag | fogFlag());
+            shaderProgramPtr = &buildShaderProgram("point", pointVsh, pointFsh, LightingMode::GEOMETRY2D, RasterFilterMode::NONE, (styleParams.pattern ? PATTERN_FLAG : 0) | (styleParams.translate ? TRANSFORM_FLAG : 0) | (styleOffsetting ? OFFSET_FLAG : 0) | terrainFlag | (shadowReceiver ? TERRAIN_SHADOW_FLAG : 0) | fogFlag());
             break;
         case TileGeometry::Type::LINE:
-            shaderProgramPtr = &buildShaderProgram("line", lineVsh, lineFsh, LightingMode::GEOMETRY2D, RasterFilterMode::NONE, (styleParams.pattern ? PATTERN_FLAG : 0) | (styleParams.translate ? TRANSFORM_FLAG : 0) | (styleOffsetting ? OFFSET_FLAG : 0) | terrainFlag | fogFlag());
+            shaderProgramPtr = &buildShaderProgram("line", lineVsh, lineFsh, LightingMode::GEOMETRY2D, RasterFilterMode::NONE, (styleParams.pattern ? PATTERN_FLAG : 0) | (styleParams.translate ? TRANSFORM_FLAG : 0) | (styleOffsetting ? OFFSET_FLAG : 0) | terrainFlag | (shadowReceiver ? TERRAIN_SHADOW_FLAG : 0) | fogFlag());
             break;
         case TileGeometry::Type::POLYGON:
-            shaderProgramPtr = &buildShaderProgram("polygon", polygonVsh, polygonFsh, LightingMode::GEOMETRY2D, RasterFilterMode::NONE, (styleParams.pattern ? PATTERN_FLAG : 0) | (styleParams.translate ? TRANSFORM_FLAG : 0) | terrainFlag | fogFlag());
+            shaderProgramPtr = &buildShaderProgram("polygon", polygonVsh, polygonFsh, LightingMode::GEOMETRY2D, RasterFilterMode::NONE, (styleParams.pattern ? PATTERN_FLAG : 0) | (styleParams.translate ? TRANSFORM_FLAG : 0) | terrainFlag | (shadowReceiver ? TERRAIN_SHADOW_FLAG : 0) | fogFlag());
             break;
         case TileGeometry::Type::POLYGON3D:
             if (_shadowCasterViewProj) {

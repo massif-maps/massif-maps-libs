@@ -332,7 +332,7 @@ namespace carto::vt {
         void deinitializeRenderer();
 
         bool startFrame(float dt);
-        void renderGeometry(bool geom2D, bool geom3D);
+        void renderGeometry(bool geom2D, bool geom3D, bool inline3D = false);
         void renderLabels(bool labels2D, bool labels3D);
         bool endFrame();
 
@@ -504,7 +504,7 @@ namespace carto::vt {
         void findTileBitmapIntersections(const TileId& tileId, const std::shared_ptr<const TileBitmap>& bitmap, const std::shared_ptr<const TileSurface>& tileSurface, const std::vector<cglib::ray3<double>>& rays, float tileSize, std::vector<BitmapIntersectionInfo>& results) const;
 
         void renderGeometry2D(const std::vector<RenderTile>& renderTiles, GLint stencilBits);
-        void renderGeometry3D(const std::vector<RenderTile>& renderTiles);
+        void renderGeometry3D(const std::vector<RenderTile>& renderTiles, bool allowInline);
         void renderLabels(const std::vector<std::shared_ptr<Label>>& labels, const std::shared_ptr<const Bitmap>& bitmap);
 
         float evaluateFloatFunc(const FloatFunction& func);
