@@ -3567,14 +3567,25 @@ namespace carto::vt {
         // the tile-local unit square, so the edge test in the shader is meaningful. Draped
         // content is drawn in its own frames and must keep the plain lattice (it follows the
         // surface everywhere except within the outermost cell, where the stitch bends it).
+        // Cross-LOD edge stitching: the shared edge with a COARSER neighbour is bent onto that
+        // neighbour's chords so the two grounds meet. Draped CONTENT takes it too - a road or a
+        // contour crossing the seam has to land on the same stitched edge as the ground it lies
+        // on, or its two halves meet at different heights (a step that only shows once the camera
+        // tilts). Only the outermost cell is affected; everything else keeps the plain lattice.
         cglib::vec4<float> edgeCoarsening(1, 1, 1, 1);
-        if (gridSurface && !_terrainEdgeCoarseningMap.empty()) {
+        if (!_terrainEdgeCoarseningMap.empty()) {
             auto edgeIt = _terrainEdgeCoarseningMap.find(tileId);
             if (edgeIt != _terrainEdgeCoarseningMap.end()) {
                 edgeCoarsening = edgeIt->second;
             }
         }
         glUniform4f(shaderProgram.uniforms[U_TERRAINEDGECOARSENING], edgeCoarsening(0), edgeCoarsening(1), edgeCoarsening(2), edgeCoarsening(3));
+        // Vertex frame units -> tile units, for the edge test above: 1 for the surface (its
+        // vertices are the unit square), the frame's scale over the tile's world size otherwise.
+        double tileWorldSize = std::abs(_transformer->calculateTileMatrix(tileId, 1.0f)(0, 0));
+        double unitScaleX = (tileWorldSize != 0 ? std::abs(vertexFrameMatrix(0, 0)) / tileWorldSize : 1.0);
+        double unitScaleY = (tileWorldSize != 0 ? std::abs(vertexFrameMatrix(1, 1)) / tileWorldSize : 1.0);
+        glUniform2f(shaderProgram.uniforms[U_TILEUNITSCALE], static_cast<float>(unitScaleX), static_cast<float>(unitScaleY));
 
         const std::pair<bool, TerrainTexture>& resolved = resolveTerrainTexture(tileId);
         bool valid = resolved.first;
@@ -3588,6 +3599,7 @@ namespace carto::vt {
             glUniform4f(shaderProgram.uniforms[U_ELEVATIONSCALE], 0.0f, 0.0f, 0.0f, 0.0f);
             glUniform4f(shaderProgram.uniforms[U_ELEVATIONTEXELSIZE], 1.0f, 1.0f, 1.0f, 1.0f);
             glUniform2f(shaderProgram.uniforms[U_ELEVATIONLATTICECELL], 0.0f, 0.0f);
+            glUniform2f(shaderProgram.uniforms[U_TILEUNITSCALE], 0.0f, 0.0f); // no tile clipping without elevation
             glUniform1f(shaderProgram.uniforms[U_LAYERDEPTHOFFSET], 0.0f);
             glUniform1f(shaderProgram.uniforms[U_DEPTHSHIFT], 0.0f);
             return false;

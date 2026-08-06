@@ -25,6 +25,7 @@ namespace carto::vt {
         U_TILEMATRIX,
         U_UVMATRIX,
         U_BINORMALSCALE,
+        U_TILEUNITSCALE,
         U_UVSCALE,
         U_HEIGHTSCALE,
         U_ABSHEIGHTSCALE,
@@ -106,6 +107,7 @@ namespace carto::vt {
         { "uTileMatrix",       U_TILEMATRIX },
         { "uUVMatrix",         U_UVMATRIX },
         { "uBinormalScale",    U_BINORMALSCALE },
+        { "uTileUnitScale",    U_TILEUNITSCALE },
         { "uUVScale",          U_UVSCALE },
         { "uHeightScale",      U_HEIGHTSCALE },
         { "uAbsHeightScale",   U_ABSHEIGHTSCALE },
@@ -304,6 +306,10 @@ namespace carto::vt {
         void applyShadowPos(highp vec3 pos) {
         }
         #endif
+        // Vertex frame units -> tile units (1 for the surface, whose vertices ARE the unit square).
+        // Declared in every mode: the flat line path carries it to the fragment stage too, and a
+        // uniform referenced without being declared fails the compile.
+        uniform highp vec2 uTileUnitScale;
         #ifdef TERRAIN
         uniform highp sampler2D uElevationTexture;
         uniform highp vec4 uElevationUV;     // elevation texture uv = uv.xy + pos.xy * uv.zw
@@ -313,6 +319,7 @@ namespace carto::vt {
         uniform highp vec4 uElevationTexelSize; // xy: texture size in texels, zw: 1 / size
         uniform highp vec2 uElevationLatticeCell; // regular-grid surface cell size in elevation-uv units (0 = off = sample the full DEM detail)
         uniform highp vec4 uTerrainEdgeCoarsening; // lattice cell scale (2^k, 1 = off) on the west/east/south/north tile edge
+
         // GPU terrain draping: the vertex z is REPLACED with the height sampled from the
         // elevation texture. Every draped layer samples the same textures, so all layers
         // agree on heights exactly and no geometric depth tolerances are needed.
@@ -383,11 +390,19 @@ namespace carto::vt {
                 // vertices ON that edge reproduces the neighbour's chords exactly. The factors
                 // are 1 for same-level or finer neighbours, i.e. a no-op by default. Corner
                 // vertices sit on a node of every lattice, so a double scaling is harmless.
+                // The edge test is in TILE units. The surface's vertices already are the unit
+                // square; draped CONTENT arrives in its own vertex frame, so it is converted -
+                // without this the test can never fire for content, and a road crossing the seam
+                // keeps this tile's own interpolation while its other half follows the coarse
+                // neighbour's chord. The ground is stitched and the road on it is not: the two
+                // halves meet at different heights, which is invisible looking straight down and
+                // steps as soon as the camera tilts.
+                highp vec2 unitPos = pos.xy * uTileUnitScale;
                 highp vec2 cell = uElevationLatticeCell;
-                if (pos.x < 0.00001) cell.y *= uTerrainEdgeCoarsening.x;       // west edge
-                else if (pos.x > 0.99999) cell.y *= uTerrainEdgeCoarsening.y;  // east edge
-                if (pos.y < 0.00001) cell.x *= uTerrainEdgeCoarsening.z;       // south edge
-                else if (pos.y > 0.99999) cell.x *= uTerrainEdgeCoarsening.w;  // north edge
+                if (unitPos.x < 0.00001) cell.y *= uTerrainEdgeCoarsening.x;       // west edge
+                else if (unitPos.x > 0.99999) cell.y *= uTerrainEdgeCoarsening.y;  // east edge
+                if (unitPos.y < 0.00001) cell.x *= uTerrainEdgeCoarsening.z;       // south edge
+                else if (unitPos.y > 0.99999) cell.x *= uTerrainEdgeCoarsening.w;  // north edge
                 highp vec2 rel = (uv - uElevationUV.xy) / cell;
                 highp vec2 gi = floor(rel);
                 highp vec2 fg = rel - gi;
@@ -1457,6 +1472,8 @@ namespace carto::vt {
         #ifdef TERRAIN
         uniform highp vec2 uScreenScale; // x = viewport aspect (w/h), y = NDC height of one line-width unit
         #endif
+        // Where this fragment sits in the TARGET tile, for the tile clipping in lineFsh.
+        varying mediump vec2 vTileUnit;
         #ifdef TRANSFORM
         uniform mat4 uTransformMatrix;
         #endif
@@ -1515,6 +1532,7 @@ namespace carto::vt {
             // and give it the nominal length in screen space. Both quad edges keep the centre
             // line's depth, so this cannot poke the line through the relief either.
             setTerrainSlopeVaryings(pos);
+            vTileUnit = pos.xy * uTileUnitScale;
             highp vec3 centerPos = applyTerrain(pos);
             applyShadowPos(centerPos);
             highp vec4 centerClip = uMVPMatrix * vec4(centerPos, 1.0);
@@ -1530,6 +1548,7 @@ namespace carto::vt {
             gl_Position = applyDepthBias(centerClip);
         #else
             // sample the terrain at the extruded position, so wide lines follow the slope
+            vTileUnit = pos.xy * uTileUnitScale;
             setTerrainSlopeVaryings(pos + delta);
             highp vec3 flatTerrainPos = applyTerrain(pos + delta);
             applyShadowPos(flatTerrainPos);
@@ -1543,6 +1562,8 @@ namespace carto::vt {
         uniform sampler2D uPattern;
         varying highp_opt vec2 vUV;
         #endif
+        uniform highp vec2 uTileUnitScale;
+        varying mediump vec2 vTileUnit;
         varying lowp vec4 vColor;
         varying highp_opt vec2 vDist;
         varying highp_opt float vWidth;
@@ -1551,6 +1572,21 @@ namespace carto::vt {
         #endif
 
         void main(void) {
+            // CLIP TO THE TILE. Lines are built with a buffer an eighth of a tile wide, so a tile
+            // carries a good stretch of its neighbours' roads. Every tile draws that overflow with
+            // ITS OWN elevation mapping - a different DEM level and a different lattice than the
+            // tile the overflow actually lies on - so the same road is painted twice at two
+            // different heights. Looking straight down the two copies coincide and it looks
+            // perfect; tilt, and the heights separate into the mismatch at tile junctions.
+            // The stencil tile masks used to clip this, but they need a stencil buffer and there
+            // is none here (GL_STENCIL_BITS = 0 on this target), so the masks never run. Doing it
+            // per fragment needs no attachment and no extra draw.
+            // uTileUnitScale is 0 when the tile has no elevation, which disables the test.
+            if (uTileUnitScale != vec2(0.0)) {
+                if (vTileUnit.x < -0.0005 || vTileUnit.x > 1.0005 || vTileUnit.y < -0.0005 || vTileUnit.y > 1.0005) {
+                    discard;
+                }
+            }
             float dist = vWidth - length(vDist);
             lowp float a = clamp(dist, 0.0, 1.0);
         #ifdef PATTERN
