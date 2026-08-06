@@ -3268,6 +3268,15 @@ namespace carto::vt {
                 glEnable(GL_DEPTH_TEST);
                 glDepthFunc(GL_LESS);
                 glDepthMask(GL_TRUE);
+                // A fading tile's extrusions are PREMULTIPLIED by their blend - colour and alpha
+                // both - and the overlay path resolved that in its composite. Drawn inline there is
+                // no composite, so they have to blend here or a half-faded building is written to
+                // the framebuffer as near-black: the dark flash at the start of a fade in and the
+                // end of a fade out. It also makes the degenerate first frames invisible rather
+                // than a black footprint, since an extrusion fades in by GROWING from zero height.
+                glEnable(GL_BLEND);
+                glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+                glBlendEquation(GL_FUNC_ADD);
             }
 
             // Render tile layers for this layer
@@ -3278,6 +3287,10 @@ namespace carto::vt {
                         renderTileGeometry(renderLayer->sourceTileId, renderLayer->targetTileId, renderLayer->blend, geometryOpacity, renderLayer->tileSize, geometry);
                     }
                 }
+            }
+
+            if (!useOverlay) {
+                glDisable(GL_BLEND); // the overlay path below composites instead
             }
 
             if (terrainOccluders) {
