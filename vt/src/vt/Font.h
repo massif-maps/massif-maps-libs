@@ -10,6 +10,7 @@
 #include "Bitmap.h"
 #include "GlyphMap.h"
 
+#include <array>
 #include <memory>
 #include <string>
 #include <cstdint>
@@ -32,6 +33,23 @@ namespace carto::vt {
     // to size the antialias ramp - one screen pixel of distance is this times the number of glyph
     // texels a screen pixel covers.
     inline constexpr float GLYPH_SDF_UNIT = 127.0f * (4.0f / BITMAP_SDF_SCALE) / GLYPH_RENDER_SPREAD / 255.0f;
+
+    // The em sizes a glyph may be rasterized at, as tangram has them (core/src/text/fontContext.cpp:
+    // s_fontRasterSizes = { 16, 28, 40 }): a label takes the smallest one that still covers it, and
+    // is only magnified past the last. One raster size for every label is what made large text soft
+    // - the field itself was undersampled, no antialiasing could put the detail back.
+    inline constexpr std::array<int, 3> GLYPH_RENDER_EM_SIZES = { { 16, 28, 40 } };
+
+    // The render size (em plus the SDF spread, which is what FontManager and the renderer count in)
+    // for a label drawn at emSizePixels screen pixels per em.
+    inline int pickGlyphRenderSize(float emSizePixels) {
+        for (int emSize : GLYPH_RENDER_EM_SIZES) {
+            if (emSizePixels <= static_cast<float>(emSize)) {
+                return emSize + GLYPH_RENDER_SPREAD;
+            }
+        }
+        return GLYPH_RENDER_EM_SIZES.back() + GLYPH_RENDER_SPREAD;
+    }
 
     class Font {
     public:
@@ -68,6 +86,9 @@ namespace carto::vt {
         virtual std::vector<Glyph> shapeGlyphs(const std::uint32_t* utf32Text, std::size_t len, float size, bool rtl) const = 0;
         virtual std::shared_ptr<GlyphMap> getGlyphMap() const = 0;
         virtual int getGlyphRenderSize() const = 0;
+        // The name it was resolved under, query parameters included - FontManager needs it to hand
+        // back the same font rasterized at another size.
+        virtual const std::string& getName() const = 0;
     };
 }
 

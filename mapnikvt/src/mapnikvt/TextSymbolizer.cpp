@@ -428,6 +428,16 @@ namespace carto::mvt {
                 }
             }
         }
+
+        // Rasterize the glyphs at a size that covers the label instead of magnifying one raster to
+        // every size, which is what left large text soft (tangram's s_fontRasterSizes ladder,
+        // core/src/text/fontContext.cpp). The style keeps the last word: a face named
+        // 'face?glyph_size=N' is handed back untouched.
+        const SymbolizerContext::Settings& settings = symbolizerContext.getSettings();
+        float emSizePixels = _size.getStaticValue(exprContext) * settings.getFontScale() * settings.getPixelScale();
+        if (std::shared_ptr<const vt::Font> sizedFont = symbolizerContext.getFontManager()->getFont(font, vt::pickGlyphRenderSize(emSizePixels))) {
+            font = sizedFont;
+        }
         return font;
     }
 
