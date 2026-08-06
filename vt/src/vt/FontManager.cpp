@@ -28,8 +28,12 @@ namespace carto::vt {
 
             FT_Init_FreeType(&_library);
 
+            // The glyph field is built from a rasterized coverage bitmap by the 'bsdf' module,
+            // never from the outline by the 'sdf' one - see addFreeTypeGlyph for why. Both carry
+            // their own spread, and both have to match the range the field is encoded over.
             FT_Int spread = GLYPH_RENDER_SPREAD;
             FT_Property_Set(_library, "sdf", "spread", &spread);
+            FT_Property_Set(_library, "bsdf", "spread", &spread);
         }
 
         ~FontManagerLibrary() {
@@ -191,6 +195,15 @@ namespace carto::vt {
         GlyphMap::GlyphId addFreeTypeGlyph(FT_Face face, CodePoint codePoint) const {
             FT_Error error = FT_Load_Glyph(face, codePoint, FT_LOAD_NO_BITMAP | FT_LOAD_NO_HINTING);
             if (error != 0) {
+                return 0;
+            }
+            // Rasterize coverage first, then let FreeType's 'bsdf' module build the field from
+            // that bitmap - the same thing tangram does (fontContext.cpp rasterizes, then
+            // sdfBuildDistanceFieldNoAlloc). FreeType's outline SDF ('sdf' module, which is what
+            // rendering straight to FT_RENDER_MODE_SDF uses) gets the sign wrong where a stem
+            // meets a shoulder, so the middle of a stroke reads as outside the glyph.
+            error = FT_Render_Glyph(face->glyph, FT_RENDER_MODE_NORMAL);
+            if (error != 0 && error != FT_Err_Cannot_Render_Glyph) {
                 return 0;
             }
             error = FT_Render_Glyph(face->glyph, FT_RENDER_MODE_SDF);
