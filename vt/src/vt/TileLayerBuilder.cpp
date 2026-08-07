@@ -13,6 +13,14 @@ namespace {
     // Triangles in the fan of a round line join - tangram's PolyLineBuilder value (JoinTypes::round,
     // core/src/util/builders.h). Each one costs a vertex and an index triple per join.
     static const std::size_t ROUND_JOIN_TRIANGLES = 5;
+
+    // Vertices closer together than this fraction of the line's own width are dropped before
+    // tesselation. Their direction - and so the join binormal - is dominated by tile-space
+    // quantisation, and the joins then fire in near-random directions and throw knife-edge
+    // spikes along the line. It only bites once a line is zoomed out far enough for its
+    // segments to approach that floor, which is why it surfaced when a source's own
+    // simplification was turned down.
+    static const float MIN_SEGMENT_WIDTH_FRACTION = 0.25f;
     // Below this turn (about 10 degrees) a round join is drawn as a plain miter. Tangram fans at
     // every angle, but their line shader has no antialias ramp: here five near-degenerate slivers
     // each carry their own ramp, and the ramps cut a hairline seam across the line.
@@ -985,9 +993,32 @@ namespace carto::vt {
             du_dl = _tileSize / stroke->scale;
         }
 
+        VertexArray<cglib::vec2<float>> rawPoints;
+        rawPoints.reserve(linePoints.size());
+        _transformer->tesselateLineString(linePoints.data(), linePoints.size(), rawPoints);
+
+        // Drop over-dense vertices (see MIN_SEGMENT_WIDTH_FRACTION). The width is a per-zoom
+        // function and a tile is decoded for ONE zoom, so it is evaluated at this tile's zoom;
+        // both endpoints are always kept, so the line neither shortens nor loses its cycle.
+        float minSegment = 0;
+        {
+            ViewState tileViewState;
+            tileViewState.zoom = static_cast<float>(_tileId.zoom);
+            tileViewState.zoomScale = std::pow(2.0f, -tileViewState.zoom);
+            float width = std::abs(style.widthFunc(tileViewState));
+            minSegment = MIN_SEGMENT_WIDTH_FRACTION * width / _tileSize;
+        }
         VertexArray<cglib::vec2<float>> points;
-        points.reserve(linePoints.size());
-        _transformer->tesselateLineString(linePoints.data(), linePoints.size(), points);
+        points.reserve(rawPoints.size());
+        points.append(rawPoints[0]);
+        for (std::size_t k = 1; k + 1 < rawPoints.size(); k++) {
+            if (cglib::length(rawPoints[k] - points[points.size() - 1]) >= minSegment) {
+                points.append(rawPoints[k]);
+            }
+        }
+        if (rawPoints.size() > 1) {
+            points.append(rawPoints[rawPoints.size() - 1]);
+        }
 
         bool cycle = points[0] == points[points.size() - 1];
         bool endpoints = !cycle && style.capMode != LineCapMode::NONE;
