@@ -1111,11 +1111,43 @@ namespace carto::vt {
                     }
 
                     // Winding mirrors with the turn side - back faces are culled for 2D geometry.
-                    if (innerSecond) {
-                        _indices.append(i0 + 1, i0 + 0, i0 + 2);
-                    } else {
-                        _indices.append(i0 + 0, i0 + 1, i0 + 3);
+                    // A round join must stay round HERE too: this branch takes over from the bevel
+                    // branch below at 90 degrees, and closing a hairpin with the single triangle
+                    // cuts its outer corner flat - the join reads as square, which is what a
+                    // simplified route shows at the zooms where simplification leaves a turn
+                    // sharper than a right angle.
+                    std::size_t hubIndex = i0 + (innerSecond ? 1 : 0);
+                    std::size_t lastRimIndex = i0 + (innerSecond ? 0 : 1);
+                    std::size_t outerIndexB = i0 + (innerSecond ? 2 : 3);
+                    std::size_t fanTriangles = (style.joinMode == LineJoinMode::ROUND ? ROUND_JOIN_TRIANGLES : 1);
+                    if (fanTriangles > 1) {
+                        cglib::vec2<float> outerA = (innerSecond ? -prevBinormal : prevBinormal);
+                        cglib::vec2<float> outerB = (innerSecond ? -binormal : binormal);
+                        float cross = outerA(0) * outerB(1) - outerA(1) * outerB(0);
+                        float turn = std::atan2(cross, cglib::dot_product(outerA, outerB));
+                        if (std::abs(cross) < 1.0e-4f) {
+                            // A line reversing exactly onto itself: the two outer offsets are
+                            // antiparallel and the cross product no longer carries the direction.
+                            // Sweep the half circle that faces AWAY from the incoming segment.
+                            cglib::vec2<float> ccwMid(-outerA(1), outerA(0));
+                            float halfTurn = boost::math::constants::pi<float>();
+                            turn = (cglib::dot_product(ccwMid, prevTangent) < 0 ? halfTurn : -halfTurn);
+                        }
+                        float step = turn / fanTriangles;
+                        float cosStep = std::cos(step), sinStep = std::sin(step);
+                        cglib::vec2<float> radial = outerA;
+                        for (std::size_t n = 1; n < fanTriangles; n++) {
+                            radial = cglib::vec2<float>(radial(0) * cosStep - radial(1) * sinStep, radial(0) * sinStep + radial(1) * cosStep);
+                            std::size_t radialIndex = _coords.size();
+                            _coords.append(p0);
+                            _texCoords.append(outerTexCoord);
+                            _binormals.append(radial);
+                            _attribs.append(outerAttribs);
+                            _indices.append(hubIndex, lastRimIndex, radialIndex);
+                            lastRimIndex = radialIndex;
+                        }
                     }
+                    _indices.append(hubIndex, lastRimIndex, outerIndexB);
                 }
             }
             else if ((style.joinMode == LineJoinMode::ROUND && dot < ROUND_JOIN_DOT_LIMIT) || dot < style.miterDotLimit) {
