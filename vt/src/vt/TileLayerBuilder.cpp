@@ -1005,7 +1005,15 @@ namespace carto::vt {
             ViewState tileViewState;
             tileViewState.zoom = static_cast<float>(_tileId.zoom);
             tileViewState.zoomScale = std::pow(2.0f, -tileViewState.zoom);
+            // The WIDEST style layer of this geometry decides, not the layer being tesselated.
+            // A casing and the line it sits under are separate style layers of the SAME feature,
+            // tesselated separately; taking each layer's own width drops a different vertex set
+            // from each, and the two geometries then no longer match - the casing wanders off the
+            // line, which is glaring when zoomed right in.
             float width = std::abs(style.widthFunc(tileViewState));
+            for (int k = 0; k < _builderParameters.parameterCount; k++) {
+                width = std::max(width, std::abs(_builderParameters.widthFuncs[k](tileViewState)));
+            }
             minSegment = MIN_SEGMENT_WIDTH_FRACTION * width / _tileSize;
         }
         VertexArray<cglib::vec2<float>> points;
