@@ -111,6 +111,9 @@ namespace carto::vt {
                 glyph.advance *= scale;
             }
         }
+        for (Font::Glyph& glyph : secondary) {
+            glyph.secondary = true;
+        }
         glyphs.insert(glyphs.end(), secondary.begin(), secondary.end());
 
         // The first run was aligned on its own width; the pair has to be aligned on theirs, so

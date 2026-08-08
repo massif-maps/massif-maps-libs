@@ -717,6 +717,8 @@ namespace carto::css {
         { "text-rank", "rank" },
         { "text-secondary-name", "secondary-name" },
         { "text-secondary-scale", "secondary-scale" },
+        { "text-secondary-fill", "secondary-fill" },
+        { "text-secondary-opacity", "secondary-opacity" },
         { "text-secondary-dx", "secondary-dx" },
         { "text-secondary-dy", "secondary-dy" },
         { "text-background-fill", "background-fill" },

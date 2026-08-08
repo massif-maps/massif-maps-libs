@@ -3408,6 +3408,7 @@ namespace carto::vt {
         int styleIndex = -1;
         int haloStyleIndex = -1;
         int backgroundStyleIndex = -1;
+        int secondaryStyleIndex = -1;
         for (const std::shared_ptr<Label>& label : labels) {
             if (!label->isValid()) {
                 continue;
@@ -3429,7 +3430,11 @@ namespace carto::vt {
 
                 cglib::vec4<float> backgroundColor = cglib::vec4<float>(labelStyle->backgroundColor.rgba());
                 bool hasBackground = labelStyle->backgroundColor.value() != 0 && labelStyle->backgroundGlyph;
-                if (labelStyle->transform || (lastLabelStyle && lastLabelStyle->transform) || labelBatchParams.scale != labelStyle->scale || labelBatchParams.glyphRenderSize != labelStyle->glyphRenderSize || labelBatchParams.parameterCount + (hasBackground ? 3 : 2) > LabelBatchParameters::MAX_PARAMETERS) {
+                // The second run of text may have its own colour, which is one more slot in the
+                // batch - exactly like the halo and the plate.
+                bool hasSecondaryColor = static_cast<bool>(labelStyle->secondaryColorFunc);
+                cglib::vec4<float> secondaryColor = hasSecondaryColor ? cglib::vec4<float>(evaluateColorFunc(*labelStyle->secondaryColorFunc).rgba()) : color;
+                if (labelStyle->transform || (lastLabelStyle && lastLabelStyle->transform) || labelBatchParams.scale != labelStyle->scale || labelBatchParams.glyphRenderSize != labelStyle->glyphRenderSize || labelBatchParams.parameterCount + (hasBackground ? 3 : 2) + (hasSecondaryColor ? 1 : 0) > LabelBatchParameters::MAX_PARAMETERS) {
                     renderLabelBatch(labelBatchParams, bitmap);
                     labelBatchParams.labelCount = 0;
                     labelBatchParams.parameterCount = 0;
@@ -3448,6 +3453,7 @@ namespace carto::vt {
                     styleIndex = -1;
                     haloStyleIndex = -1;
                     backgroundStyleIndex = -1;
+                    secondaryStyleIndex = -1;
                 } else {
                     for (styleIndex = labelBatchParams.parameterCount; --styleIndex >= 0; ) {
                         if (labelBatchParams.colorTable[styleIndex] == color && labelBatchParams.widthTable[styleIndex] == size && labelBatchParams.strokeWidthTable[styleIndex] == 0) {
@@ -3490,11 +3496,26 @@ namespace carto::vt {
                     }
                 }
 
+                secondaryStyleIndex = -1;
+                if (hasSecondaryColor) {
+                    for (secondaryStyleIndex = labelBatchParams.parameterCount; --secondaryStyleIndex >= 0; ) {
+                        if (labelBatchParams.colorTable[secondaryStyleIndex] == secondaryColor && labelBatchParams.widthTable[secondaryStyleIndex] == size && labelBatchParams.strokeWidthTable[secondaryStyleIndex] == 0) {
+                            break;
+                        }
+                    }
+                    if (secondaryStyleIndex < 0) {
+                        secondaryStyleIndex = labelBatchParams.parameterCount++;
+                        labelBatchParams.colorTable[secondaryStyleIndex] = secondaryColor;
+                        labelBatchParams.widthTable[secondaryStyleIndex] = size;
+                        labelBatchParams.strokeWidthTable[secondaryStyleIndex] = 0;
+                    }
+                }
+
                 lastLabelStyle = labelStyle;
             }
 
             VT_STAT_CLOCK(statClock);
-            label->calculateVertexData(labelBatchParams.widthTable[styleIndex], _viewState, styleIndex, haloStyleIndex, _labelVertices, _labelOffsets, _labelNormals, _labelTexCoords, _labelAttribs, _labelIndices, pass, pass == Label::DrawPass::CALLOUT_LINE ? -1 : backgroundStyleIndex);
+            label->calculateVertexData(labelBatchParams.widthTable[styleIndex], _viewState, styleIndex, haloStyleIndex, _labelVertices, _labelOffsets, _labelNormals, _labelTexCoords, _labelAttribs, _labelIndices, pass, pass == Label::DrawPass::CALLOUT_LINE ? -1 : backgroundStyleIndex, pass == Label::DrawPass::CALLOUT_LINE ? -1 : secondaryStyleIndex);
             VT_STAT_SPLIT(labelVertexBuildNs, statClock);
             VT_STAT_INC(labelsDrawnVertices);
 

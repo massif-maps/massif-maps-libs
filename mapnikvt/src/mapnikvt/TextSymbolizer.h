@@ -51,6 +51,8 @@ namespace carto::mvt {
             bindProperty("rank", &_rank);
             bindProperty("secondary-name", &_secondaryText);
             bindProperty("secondary-scale", &_secondaryScale);
+            bindProperty("secondary-fill", &_secondaryFill);
+            bindProperty("secondary-opacity", &_secondaryOpacity);
             bindProperty("secondary-dx", &_secondaryDx);
             bindProperty("secondary-dy", &_secondaryDy);
             bindProperty("background-fill", &_backgroundFill);
@@ -134,6 +136,9 @@ namespace carto::mvt {
         // label, same plate, same colour - only the size and the baseline differ.
         StringProperty _secondaryText = StringProperty("");
         FloatProperty _secondaryScale = FloatProperty(0.7f);
+        // Own colour for the second run; undefined leaves it the same as the label's fill.
+        ColorFunctionProperty _secondaryFill = ColorFunctionProperty("#000000");
+        FloatFunctionProperty _secondaryOpacity = FloatFunctionProperty(1.0f);
         FloatProperty _secondaryDx = FloatProperty(0.0f); // gap between the runs, pixels
         FloatProperty _secondaryDy = FloatProperty(0.0f); // baseline shift of the second run, pixels (down is positive, like dy)
         // A filled plate behind the text, for any placement - the classic-map use is a label over
@@ -155,6 +160,7 @@ namespace carto::mvt {
         HorizontalAlignmentProperty _horizontalAlignment = HorizontalAlignmentProperty("auto");
         VerticalAlignmentProperty _verticalAlignment = VerticalAlignmentProperty("auto");
 
+        ColorFunctionBuilder _secondaryFillFuncBuilder;
         ColorFunctionBuilder _fillFuncBuilder;
         FloatFunctionBuilder _sizeFuncBuilder;
         ColorFunctionBuilder _haloFillFuncBuilder;
