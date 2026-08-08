@@ -251,6 +251,10 @@ namespace carto::vt {
         // instead of the label's scale: the scale comes from the zoom, so converting with it makes
         // a callout's lift drift up and down the screen whenever the camera moves.
         float calculatePixelToWorld(const ViewState& viewState, const Placement& placement, float fallback) const;
+        // World units one glyph unit is worth. Zoom-derived for an ordinary label (that is what
+        // keeps it the same size as the rest of the map); taken off the projection for a CALLOUT,
+        // which is a screen object and has to keep its pixel size whatever the camera does.
+        float calculateLabelScale(float size, const ViewState& viewState, const std::shared_ptr<const Placement>& placement) const;
         // The lift to draw with: what the culler chose, corrected for how far the anchor has moved
         // on screen since (see setCalloutPlacement).
         float calculateCalloutLift(const ViewState& viewState) const;

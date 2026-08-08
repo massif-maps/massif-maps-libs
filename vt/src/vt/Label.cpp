@@ -502,10 +502,7 @@ namespace carto::vt {
 
     bool Label::calculateEnvelope(float size, float buffer, const ViewState& viewState, std::array<cglib::vec3<float>, 4>& envelope) const {
         std::shared_ptr<const Placement> placement = getPlacement(viewState);
-        float scale = size * viewState.zoomScale * _style->scale;
-        if (placement) {
-            scale *= calculateTerrainScaleFactor(*placement, viewState);
-        }
+        float scale = calculateLabelScale(size, viewState, placement);
         if (!placement || scale <= 0) {
             cglib::vec3<float> origin(0, 0, static_cast<float>(-viewState.origin(2)));
             for (int i = 0; i < 4; i++) {
@@ -593,10 +590,7 @@ namespace carto::vt {
         VT_STAT_CLOCK(labelClock);
         std::shared_ptr<const Placement> placement = getPlacement(viewState);
         VT_STAT_SPLIT(labelPlacementNs, labelClock);
-        float scale = size * viewState.zoomScale * _style->scale;
-        if (placement) {
-            scale *= calculateTerrainScaleFactor(*placement, viewState);
-        }
+        float scale = calculateLabelScale(size, viewState, placement);
         if (!placement || scale <= 0) {
             return false;
         }
@@ -770,12 +764,14 @@ namespace carto::vt {
         float cap = std::min(_style->backgroundRadius * pixelScale, (x1 - x0) * 0.5f);
         cap = std::max(cap, 0.0f);
 
-        // Atlas coordinates of the cell's left cap, middle column and right cap.
-        float u0 = static_cast<float>(glyph->x);
-        float u1 = static_cast<float>(glyph->x + glyph->width);
+        // Atlas coordinates of the cell's left cap, middle column and right cap. Sampled one texel
+        // INSIDE the cell: the outer texels blend into the transparent padding around it under
+        // linear filtering, which is what made the plate's edges look soft.
+        float u0 = static_cast<float>(glyph->x + 1);
+        float u1 = static_cast<float>(glyph->x + glyph->width - 1);
         float uMid = (u0 + u1) * 0.5f;
-        float v0 = static_cast<float>(glyph->y);
-        float v1 = static_cast<float>(glyph->y + glyph->height);
+        float v0 = static_cast<float>(glyph->y + 1);
+        float v1 = static_cast<float>(glyph->y + glyph->height - 1);
 
         struct Slice { float x0, x1, u0, u1; };
         const Slice slices[3] = {
@@ -876,6 +872,21 @@ namespace carto::vt {
         attribs.append(attrib, attrib, attrib, attrib);
 
         vertices.append(cglib::vec3<float>(-halfWidth, 0, 0), cglib::vec3<float>(halfWidth, 0, 0), cglib::vec3<float>(halfWidth, lift, 0), cglib::vec3<float>(-halfWidth, lift, 0));
+    }
+
+    float Label::calculateLabelScale(float size, const ViewState& viewState, const std::shared_ptr<const Placement>& placement) const {
+        if (!placement) {
+            return 0.0f;
+        }
+        float zoomScale = size * viewState.zoomScale * _style->scale * calculateTerrainScaleFactor(*placement, viewState);
+        if (_style->orientation != LabelOrientation::CALLOUT) {
+            return zoomScale;
+        }
+        // A callout is a screen object: its size is what the style asks for in pixels, taken off
+        // the projection (see calculatePixelToWorld) rather than off the zoom. The zoom-derived
+        // scale only holds a constant screen size while the camera distance follows the zoom, and
+        // free roam breaks that - lift the viewpoint or tilt and the names grow or shrink.
+        return size * calculatePixelToWorld(viewState, *placement, zoomScale / std::max(size, 1.0f));
     }
 
     float Label::calculateAnchorScreenY(const ViewState& viewState) const {
