@@ -1993,7 +1993,13 @@ namespace carto::vt {
                     findLabelIntersections(label, rays, buffer, resultsLocal);
                     
                     for (const GeometryIntersectionInfo& result : resultsLocal) {
-                        if (cglib::dot_product(label->getNormal(), cglib::vec3<float>::convert(rays[result.rayIndex].direction)) >= 0) {
+                        // "Is the label facing us" - the anchor's ground normal against the ray. A
+                        // CALLOUT is exempt: it is drawn where it is not anchored, its quad is
+                        // spanned on the camera axes so it always faces the viewer, and a label
+                        // lifted into the SKY is hit by an upward ray - which this test rejects.
+                        // That was "peak names below the horizon are clickable, the ones over the
+                        // sky are not".
+                        if (label->getStyle()->orientation != LabelOrientation::CALLOUT && cglib::dot_product(label->getNormal(), cglib::vec3<float>::convert(rays[result.rayIndex].direction)) >= 0) {
                             continue;
                         }
 
