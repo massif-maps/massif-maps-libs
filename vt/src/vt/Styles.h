@@ -33,8 +33,12 @@ namespace carto::vt {
         DARKEN, LIGHTEN
     };
     
+    // CALLOUT is a point label lifted away from its anchor in SCREEN space and joined back to it
+    // by a leader line: the culler moves it until it is free instead of hiding it, so a dense set
+    // of point features (summits in a panorama) is read as a stack of named lines rather than as
+    // whichever few labels happened to win.
     enum class LabelOrientation {
-        BILLBOARD_2D, BILLBOARD_3D, LINE_BILLBOARD_3D, POINT, LINE
+        BILLBOARD_2D, BILLBOARD_3D, LINE_BILLBOARD_3D, POINT, LINE, CALLOUT
     };
 
     enum class RasterFilterMode {
@@ -128,8 +132,14 @@ namespace carto::vt {
         cglib::vec2<float> backgroundOffset;
         std::shared_ptr<const BitmapImage> backgroundImage;
         float maxDistance; // meters from the camera beyond which the label is not placed; 0 = no limit
+        // CALLOUT orientation only, all in screen pixels except the anchor:
+        float calloutScreenAnchor; // where the label band sits, as a fraction of the screen height from the top; < 0 stacks it from its own anchor instead
+        float calloutOffset;       // minimum distance the label is lifted above its anchor
+        float calloutStep;         // how much further up the next stacking row is
+        int calloutMaxRows;        // how many rows may be tried before the label is hidden
+        float calloutLineWidth;    // leader line width, 0 draws no line
 
-        explicit TextLabelStyle(LabelOrientation orientation, ColorFunction colorFunc, FloatFunction sizeFunc, ColorFunction haloColorFunc, FloatFunction haloRadiusFunc, bool autoflip, float angle, float backgroundScale, const cglib::vec2<float>& backgroundOffset, std::shared_ptr<const BitmapImage> backgroundImage, float maxDistance = 0.0f) : orientation(orientation), colorFunc(std::move(colorFunc)), sizeFunc(std::move(sizeFunc)), haloColorFunc(std::move(haloColorFunc)), haloRadiusFunc(std::move(haloRadiusFunc)), autoflip(autoflip), angle(angle), backgroundScale(backgroundScale), backgroundOffset(backgroundOffset), backgroundImage(std::move(backgroundImage)), maxDistance(maxDistance) { }
+        explicit TextLabelStyle(LabelOrientation orientation, ColorFunction colorFunc, FloatFunction sizeFunc, ColorFunction haloColorFunc, FloatFunction haloRadiusFunc, bool autoflip, float angle, float backgroundScale, const cglib::vec2<float>& backgroundOffset, std::shared_ptr<const BitmapImage> backgroundImage, float maxDistance = 0.0f, float calloutScreenAnchor = -1.0f, float calloutOffset = 0.0f, float calloutStep = 0.0f, int calloutMaxRows = 8, float calloutLineWidth = 1.0f) : orientation(orientation), colorFunc(std::move(colorFunc)), sizeFunc(std::move(sizeFunc)), haloColorFunc(std::move(haloColorFunc)), haloRadiusFunc(std::move(haloRadiusFunc)), autoflip(autoflip), angle(angle), backgroundScale(backgroundScale), backgroundOffset(backgroundOffset), backgroundImage(std::move(backgroundImage)), maxDistance(maxDistance), calloutScreenAnchor(calloutScreenAnchor), calloutOffset(calloutOffset), calloutStep(calloutStep), calloutMaxRows(calloutMaxRows), calloutLineWidth(calloutLineWidth) { }
     };
 }
 

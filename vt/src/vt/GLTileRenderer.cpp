@@ -3384,6 +3384,19 @@ namespace carto::vt {
     }
     
     void GLTileRenderer::renderLabels(const std::vector<std::shared_ptr<Label>>& labels, const std::shared_ptr<const Bitmap>& bitmap) {
+        // Leader lines first, all of them, then all the text: a line that crossed a neighbouring
+        // label's glyphs would read as a strike-through. The extra pass only exists when some
+        // label actually has a line to draw.
+        bool anyCallout = std::any_of(labels.begin(), labels.end(), [](const std::shared_ptr<Label>& label) {
+            return label->getStyle()->orientation == LabelOrientation::CALLOUT && label->getStyle()->calloutLineGlyph;
+        });
+        if (anyCallout) {
+            renderLabelPass(labels, bitmap, Label::DrawPass::CALLOUT_LINE);
+        }
+        renderLabelPass(labels, bitmap, anyCallout ? Label::DrawPass::TEXT : Label::DrawPass::ALL);
+    }
+
+    void GLTileRenderer::renderLabelPass(const std::vector<std::shared_ptr<Label>>& labels, const std::shared_ptr<const Bitmap>& bitmap, Label::DrawPass pass) {
         LabelBatchParameters labelBatchParams;
         std::shared_ptr<const TileLabel::Style> lastLabelStyle;
         int styleIndex = -1;
@@ -3396,6 +3409,9 @@ namespace carto::vt {
                 continue;
             }
             const std::shared_ptr<const TileLabel::Style>& labelStyle = label->getStyle();
+            if (pass == Label::DrawPass::CALLOUT_LINE && !(labelStyle->orientation == LabelOrientation::CALLOUT && labelStyle->calloutLineGlyph)) {
+                continue;
+            }
 
             if (lastLabelStyle != labelStyle) {
                 cglib::vec4<float> color = cglib::vec4<float>(evaluateColorFunc(labelStyle->colorFunc).rgba());
@@ -3452,7 +3468,7 @@ namespace carto::vt {
             }
 
             VT_STAT_CLOCK(statClock);
-            label->calculateVertexData(labelBatchParams.widthTable[styleIndex], _viewState, styleIndex, haloStyleIndex, _labelVertices, _labelOffsets, _labelNormals, _labelTexCoords, _labelAttribs, _labelIndices);
+            label->calculateVertexData(labelBatchParams.widthTable[styleIndex], _viewState, styleIndex, haloStyleIndex, _labelVertices, _labelOffsets, _labelNormals, _labelTexCoords, _labelAttribs, _labelIndices, pass);
             VT_STAT_SPLIT(labelVertexBuildNs, statClock);
             VT_STAT_INC(labelsDrawnVertices);
 

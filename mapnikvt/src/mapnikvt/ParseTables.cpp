@@ -48,6 +48,7 @@ namespace carto::mvt {
             { "nutibillboard", vt::LabelOrientation::BILLBOARD_3D },
             { "nutibillboardline", vt::LabelOrientation::LINE_BILLBOARD_3D },
             { "nutipoint",     vt::LabelOrientation::POINT },
+            { "nuticallout",   vt::LabelOrientation::CALLOUT },
             { "line",          vt::LabelOrientation::LINE }
         };
         return labelOrientationTable;

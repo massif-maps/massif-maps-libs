@@ -40,6 +40,11 @@ namespace carto::mvt {
             bindProperty("placement-priority", &_placementPriority);
             bindProperty("minimum-distance", &_minimumDistance);
             bindProperty("max-distance", &_maxDistance);
+            bindProperty("callout-screen-anchor", &_calloutScreenAnchor);
+            bindProperty("callout-offset", &_calloutOffset);
+            bindProperty("callout-step", &_calloutStep);
+            bindProperty("callout-max-rows", &_calloutMaxRows);
+            bindProperty("callout-line-width", &_calloutLineWidth);
             bindProperty("allow-overlap", &_allowOverlap);
             bindProperty("allow-overlap-same-feature-id", &_allowOverlapSameFeatureId);
             bindProperty("same-feature-id-dependent", &_sameFeatureIdDependent);
@@ -93,6 +98,13 @@ namespace carto::mvt {
         FloatProperty _placementPriority = FloatProperty(0.0f);
         FloatProperty _minimumDistance = FloatProperty(0.0f);
         FloatProperty _maxDistance = FloatProperty(0.0f); // meters from the camera; 0 = no limit
+        // 'nuticallout' placement only (see vt::LabelOrientation::CALLOUT). Screen pixels, except
+        // the anchor: a fraction of the screen height from the top, < 0 = stack from the anchor.
+        FloatProperty _calloutScreenAnchor = FloatProperty(-1.0f);
+        FloatProperty _calloutOffset = FloatProperty(0.0f);
+        FloatProperty _calloutStep = FloatProperty(0.0f);
+        FloatProperty _calloutMaxRows = FloatProperty(8.0f);
+        FloatProperty _calloutLineWidth = FloatProperty(1.0f);
         BoolProperty _allowOverlap = BoolProperty(false);
         BoolProperty _clip = BoolProperty(false);
         BoolProperty _allowOverlapSameFeatureId = BoolProperty(false);

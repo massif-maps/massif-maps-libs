@@ -472,10 +472,27 @@ namespace carto::vt {
             || _labelStyle->transform != transform 
             || _labelStyle->glyphMap != font->getGlyphMap() 
             || _labelStyle->glyphRenderSize != glyphRenderSize
-            || _labelStyle->maxDistance != style.maxDistance;
-        
+            || _labelStyle->maxDistance != style.maxDistance
+            || _labelStyle->calloutScreenAnchor != style.calloutScreenAnchor
+            || _labelStyle->calloutOffset != style.calloutOffset
+            || _labelStyle->calloutStep != style.calloutStep
+            || _labelStyle->calloutMaxRows != style.calloutMaxRows
+            || _labelStyle->calloutLineWidth != style.calloutLineWidth;
+
         if (needsNewLabelStyle) {
-            _labelStyle = std::make_shared<TileLabel::Style>(style.orientation, style.colorFunc, style.sizeFunc, style.haloColorFunc, style.haloRadiusFunc, style.autoflip, scale, metrics.ascent, metrics.descent, transform, font->getGlyphMap(), glyphRenderSize, style.maxDistance);
+            std::optional<GlyphMap::Glyph> calloutLineGlyph;
+            if (style.orientation == LabelOrientation::CALLOUT && style.calloutLineWidth > 0) {
+                // The leader line is drawn as one more glyph quad, so it needs an opaque cell in
+                // the same atlas the text comes from - the quad is sized at draw time (the length
+                // is the culler's, and it changes every frame), so only the cell is loaded here.
+                // One shared instance: the glyph map dedupes by bitmap POINTER, so a new one per
+                // style would add a cell to the atlas every time a style is rebuilt.
+                static const std::shared_ptr<const Bitmap> whiteBitmap = std::make_shared<Bitmap>(4, 4, std::vector<std::uint32_t>(16, 0xffffffffU));
+                if (const GlyphMap::Glyph* lineGlyph = font->getGlyphMap()->getGlyph(font->getGlyphMap()->loadBitmapGlyph(whiteBitmap, GlyphMap::GlyphMode::BITMAP))) {
+                    calloutLineGlyph = *lineGlyph;
+                }
+            }
+            _labelStyle = std::make_shared<TileLabel::Style>(style.orientation, style.colorFunc, style.sizeFunc, style.haloColorFunc, style.haloRadiusFunc, style.autoflip, scale, metrics.ascent, metrics.descent, transform, font->getGlyphMap(), glyphRenderSize, style.maxDistance, style.calloutScreenAnchor, style.calloutOffset, style.calloutStep, style.calloutMaxRows, style.calloutLineWidth, calloutLineGlyph);
         }
 
         return [style, font, formatter, this](long long id, long long labelId, long long groupId, const std::optional<Vertex>& position, const Vertices& vertices, const std::string& text, float priority, float minimumGroupDistance, bool allowOverlapSameFeatureId, bool sameFeatureIdDependent, int geoPointIndex) {

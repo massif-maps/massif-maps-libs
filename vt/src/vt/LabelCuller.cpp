@@ -192,7 +192,7 @@ namespace carto::vt {
         std::unordered_map<long long, std::vector<const LabelInfo*>> groupMap;
         groupMap.reserve(validLabelList.size());
         bool changed = false;
-        for (const LabelInfo& labelInfo : validLabelList) {
+        for (LabelInfo& labelInfo : validLabelList) {
             std::lock_guard<std::mutex> labelLock(labelMutex);
 
             const std::shared_ptr<Label>& label = labelInfo.label;
@@ -200,7 +200,12 @@ namespace carto::vt {
             long long groupId = label->getGroupId();
 
             // Label is always visible if its group is set to negative value. Otherwise test visibility against other labels
-            bool visible = groupId >= 0 ? labelInfo.valid && testGridOverlap(labelInfo) : labelInfo.valid;
+            bool visible;
+            if (label->getStyle()->orientation == LabelOrientation::CALLOUT && groupId >= 0) {
+                visible = labelInfo.valid && placeCalloutLabel(labelInfo);
+            } else {
+                visible = groupId >= 0 ? labelInfo.valid && testGridOverlap(labelInfo) : labelInfo.valid;
+            }
 
             if (visible && groupId > 0) {
                 for (const LabelInfo* otherLabelInfo : groupMap[groupId]) {
@@ -274,6 +279,54 @@ namespace carto::vt {
             }
         }
         return (!labelInfo.label->sameFeatureIdDependent() || hasFoundTheSame);
+    }
+
+    bool LabelCuller::placeCalloutLabel(LabelInfo& labelInfo) {
+        const std::shared_ptr<Label>& label = labelInfo.label;
+        const std::shared_ptr<const TileLabel::Style>& style = label->getStyle();
+
+        auto envelopeAt = [this, &labelInfo, &label](float offset) {
+            label->setCalloutOffset(offset);
+            labelInfo.valid = calculateScreenEnvelope(label, labelInfo.size, labelInfo.cullRecord.envelope);
+            labelInfo.cullRecord.bounds = cglib::bbox2<float>::make_union(labelInfo.cullRecord.envelope.begin(), labelInfo.cullRecord.envelope.end());
+            return labelInfo.valid;
+        };
+
+        // Where the label wants to sit before anything else is taken into account: either a band
+        // at a fixed height on screen - which is what makes a panorama read as one row of names
+        // over the ridges - or straight above its own anchor.
+        if (!envelopeAt(0)) {
+            return false;
+        }
+        float offset = style->calloutOffset;
+        float height = labelInfo.cullRecord.bounds.max(1) - labelInfo.cullRecord.bounds.min(1);
+        if (style->calloutScreenAnchor >= 0) {
+            float bandY = (1.0f - style->calloutScreenAnchor) * _viewState.resolution;
+            offset = std::max(offset, bandY - labelInfo.cullRecord.bounds.min(1));
+        }
+        // Whatever the band asks for, the label has to stay on screen: it is lifted away from its
+        // anchor, so unlike every other label its own position is no evidence that it is in view.
+        // The margin is half a label: the culler works at its own scale (see the constructor), so
+        // the drawn glyphs are not pixel-identical to this envelope and a tight bound clips them.
+        float maxOffset = _viewState.resolution - height * 1.5f - labelInfo.cullRecord.bounds.min(1);
+
+        // Then up, one row at a time, until the screen is free. Stepping instead of hiding is the
+        // whole point of the orientation: a summit that loses its slot to a nearer one still gets
+        // its name, one line higher.
+        float step = (style->calloutStep > 0 ? style->calloutStep : labelInfo.size * 1.2f);
+        for (int row = 0; row < std::max(1, style->calloutMaxRows); row++) {
+            float rowOffset = offset + row * step;
+            if (rowOffset > maxOffset) {
+                break; // the rows only go up, so nothing beyond this one fits either
+            }
+            if (!envelopeAt(rowOffset)) {
+                return false;
+            }
+            if (testGridOverlap(labelInfo)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     bool LabelCuller::calculateScreenEnvelope(const std::shared_ptr<Label>& label, float size, std::array<cglib::vec2<float>, 4>& envelope) const {

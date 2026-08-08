@@ -45,8 +45,17 @@ namespace carto::vt {
             // labels a tile carries is already decided by the style at the TILE's zoom, so this is
             // the second half of that: how far the ones that exist may be seen.
             float maxDistance;
+            // CALLOUT orientation only - see LabelOrientation. Pixels, except the anchor, which is
+            // a fraction of the screen height from the top (< 0 = stack from the label's own
+            // anchor). lineGlyph is the atlas cell the leader line quad is textured from.
+            float calloutScreenAnchor;
+            float calloutOffset;
+            float calloutStep;
+            int calloutMaxRows;
+            float calloutLineWidth;
+            std::optional<GlyphMap::Glyph> calloutLineGlyph;
 
-            explicit Style(LabelOrientation orientation, ColorFunction colorFunc, FloatFunction sizeFunc, ColorFunction haloColorFunc, FloatFunction haloRadiusFunc, bool autoflip, float scale, float ascent, float descent, const std::optional<Transform>& transform, std::shared_ptr<const GlyphMap> glyphMap, int glyphRenderSize, float maxDistance = 0.0f) : orientation(orientation), colorFunc(std::move(colorFunc)), sizeFunc(std::move(sizeFunc)), haloColorFunc(std::move(haloColorFunc)), haloRadiusFunc(std::move(haloRadiusFunc)), autoflip(autoflip), scale(scale), ascent(ascent), descent(descent), transform(transform), glyphMap(std::move(glyphMap)), glyphRenderSize(glyphRenderSize), maxDistance(maxDistance) { }
+            explicit Style(LabelOrientation orientation, ColorFunction colorFunc, FloatFunction sizeFunc, ColorFunction haloColorFunc, FloatFunction haloRadiusFunc, bool autoflip, float scale, float ascent, float descent, const std::optional<Transform>& transform, std::shared_ptr<const GlyphMap> glyphMap, int glyphRenderSize, float maxDistance = 0.0f, float calloutScreenAnchor = -1.0f, float calloutOffset = 0.0f, float calloutStep = 0.0f, int calloutMaxRows = 8, float calloutLineWidth = 1.0f, const std::optional<GlyphMap::Glyph>& calloutLineGlyph = std::optional<GlyphMap::Glyph>()) : orientation(orientation), colorFunc(std::move(colorFunc)), sizeFunc(std::move(sizeFunc)), haloColorFunc(std::move(haloColorFunc)), haloRadiusFunc(std::move(haloRadiusFunc)), autoflip(autoflip), scale(scale), ascent(ascent), descent(descent), transform(transform), glyphMap(std::move(glyphMap)), glyphRenderSize(glyphRenderSize), maxDistance(maxDistance), calloutScreenAnchor(calloutScreenAnchor), calloutOffset(calloutOffset), calloutStep(calloutStep), calloutMaxRows(calloutMaxRows), calloutLineWidth(calloutLineWidth), calloutLineGlyph(calloutLineGlyph) { }
         };
 
         struct PlacementInfo {

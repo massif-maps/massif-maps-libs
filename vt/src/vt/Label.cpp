@@ -477,7 +477,12 @@ namespace carto::vt {
         // Quantize to ~1% steps: line label vertex data is cached by scale and would
         // otherwise be rebuilt on every frame while the camera moves
         factor = std::exp2(std::round(std::log2(factor) * 64.0f) / 64.0f);
-        return std::min(8.0f, std::max(0.05f, factor));
+        // The cap is what makes a label shrink again once it is very far away. In a panorama that
+        // is most of the frame - the focus is a few km out and the horizon a hundred - and a
+        // callout labelling a summit at that range is the whole point of the view, so it keeps its
+        // size all the way out.
+        float maxFactor = (_style->orientation == LabelOrientation::CALLOUT ? 4096.0f : 8.0f);
+        return std::min(maxFactor, std::max(0.05f, factor));
     }
 
     bool Label::calculateEnvelope(float size, float buffer, const ViewState& viewState, std::array<cglib::vec3<float>, 4>& envelope) const {
@@ -497,6 +502,12 @@ namespace carto::vt {
         float padding = buffer * viewState.zoomScale * _style->scale * calculateTerrainScaleFactor(*placement, viewState) / std::sqrt(2.0f);
         cglib::vec3<float> origin, xAxis, yAxis;
         setupCoordinateSystem(viewState, placement, origin, xAxis, yAxis);
+        if (_style->orientation == LabelOrientation::CALLOUT) {
+            // The lift the culler decided on. One pixel is scale/size world units (the glyph
+            // quads are in units of the font size), and the envelope has to move with the glyphs
+            // or the collision test is done where the label is not.
+            origin = origin + yAxis * (size > 0 ? _calloutOffset * scale / size : 0.0f);
+        }
 
         bool valid = cglib::dot_product(viewState.orientation[2], placement->normal) > MIN_BILLBOARD_VIEW_NORMAL_DOTPRODUCT;
         if (_style->orientation == LabelOrientation::LINE) {
@@ -553,7 +564,7 @@ namespace carto::vt {
         return valid;
     }
 
-    bool Label::calculateVertexData(float size, const ViewState& viewState, int styleIndex, int haloStyleIndex, VertexArray<cglib::vec3<float>>& vertices, VertexArray<cglib::vec3<float>>& offsets, VertexArray<cglib::vec3<float>>& normals, VertexArray<cglib::vec2<std::int16_t>>& texCoords, VertexArray<cglib::vec4<std::int8_t>>& attribs, VertexArray<std::uint16_t>& indices) const {
+    bool Label::calculateVertexData(float size, const ViewState& viewState, int styleIndex, int haloStyleIndex, VertexArray<cglib::vec3<float>>& vertices, VertexArray<cglib::vec3<float>>& offsets, VertexArray<cglib::vec3<float>>& normals, VertexArray<cglib::vec2<std::int16_t>>& texCoords, VertexArray<cglib::vec4<std::int8_t>>& attribs, VertexArray<std::uint16_t>& indices, DrawPass pass) const {
         VT_STAT_CLOCK(labelClock);
         std::shared_ptr<const Placement> placement = getPlacement(viewState);
         VT_STAT_SPLIT(labelPlacementNs, labelClock);
@@ -567,6 +578,10 @@ namespace carto::vt {
 
         // Build vertex data cache
         bool valid = cglib::dot_product(viewState.orientation[2], placement->normal) > MIN_BILLBOARD_VIEW_NORMAL_DOTPRODUCT;
+        if (pass == DrawPass::CALLOUT_LINE) {
+            appendCalloutLine(size, scale, viewState, placement, styleIndex, vertices, offsets, normals, texCoords, attribs, indices);
+            return valid;
+        }
         // Which frame the offsets below are expressed in; the shader reads it from attribs[3].
         std::int8_t billboardMode = CAMERA_AXIS_OFFSET;
         if (_style->orientation == LabelOrientation::LINE) {
@@ -605,10 +620,14 @@ namespace carto::vt {
             cglib::vec3<float> origin, xAxis, yAxis;
             setupCoordinateSystem(viewState, placement, origin, xAxis, yAxis);
             vertices.fill(origin, _cachedVertices.size());
-            if (_style->orientation == LabelOrientation::BILLBOARD_3D || _style->orientation == LabelOrientation::LINE_BILLBOARD_3D) {
-                // Axes are the camera's: leave them to the shader (see labelVsh).
+            if (_style->orientation == LabelOrientation::BILLBOARD_3D || _style->orientation == LabelOrientation::LINE_BILLBOARD_3D || _style->orientation == LabelOrientation::CALLOUT) {
+                // Axes are the camera's: leave them to the shader (see labelVsh). A callout is
+                // lifted along the camera up axis by what the culler decided (see
+                // setCalloutOffset); the anchor itself stays put, which is where its leader line
+                // starts from.
+                float calloutShift = (_style->orientation == LabelOrientation::CALLOUT && size > 0 ? _calloutOffset * scale / size : 0.0f);
                 for (const cglib::vec3<float>& vertex : _cachedVertices) {
-                    offsets.append(cglib::vec3<float>(vertex(0) * scale, vertex(1) * scale, 0));
+                    offsets.append(cglib::vec3<float>(vertex(0) * scale, vertex(1) * scale + calloutShift, 0));
                 }
             } else {
                 // Axes come from the placement (or from the placement normal and the camera
@@ -652,6 +671,10 @@ namespace carto::vt {
             }
         }
 
+        if (pass == DrawPass::ALL) {
+            appendCalloutLine(size, scale, viewState, placement, styleIndex, vertices, offsets, normals, texCoords, attribs, indices);
+        }
+
         VT_STAT_SPLIT(labelAttribNs, labelClock);
         return valid;
     }
@@ -693,6 +716,61 @@ namespace carto::vt {
             // Move pen
             pen += glyph.advance;
         }
+    }
+
+    void Label::appendCalloutLine(float size, float scale, const ViewState& viewState, const std::shared_ptr<const Placement>& placement, int styleIndex, VertexArray<cglib::vec3<float>>& vertices, VertexArray<cglib::vec3<float>>& offsets, VertexArray<cglib::vec3<float>>& normals, VertexArray<cglib::vec2<std::int16_t>>& texCoords, VertexArray<cglib::vec4<std::int8_t>>& attribs, VertexArray<std::uint16_t>& indices) const {
+        if (_style->orientation != LabelOrientation::CALLOUT || !_style->calloutLineGlyph || !(_style->calloutLineWidth > 0) || !(size > 0)) {
+            return;
+        }
+
+        VertexArray<cglib::vec3<float>> lineOffsets;
+        VertexArray<cglib::vec2<std::int16_t>> lineTexCoords;
+        VertexArray<cglib::vec4<std::int8_t>> lineAttribs;
+        VertexArray<std::uint16_t> lineIndices;
+        buildCalloutLineVertexData(scale / size, lineOffsets, lineTexCoords, lineAttribs, lineIndices);
+        if (lineOffsets.empty()) {
+            return;
+        }
+
+        std::uint16_t indexOffset = static_cast<std::uint16_t>(vertices.size());
+        cglib::vec3<float> lineOrigin, lineXAxis, lineYAxis;
+        setupCoordinateSystem(viewState, placement, lineOrigin, lineXAxis, lineYAxis);
+        vertices.fill(lineOrigin, lineOffsets.size());
+        offsets.copy(lineOffsets, 0, lineOffsets.size());
+        normals.fill(placement->normal, lineOffsets.size());
+        texCoords.copy(lineTexCoords, 0, lineTexCoords.size());
+        for (const cglib::vec4<std::int8_t>& attrib : lineAttribs) {
+            attribs.append(cglib::vec4<std::int8_t>(static_cast<std::int8_t>(styleIndex), attrib(1), static_cast<std::int8_t>(_opacity * 127.0f), CAMERA_AXIS_OFFSET));
+        }
+        for (std::uint16_t idx : lineIndices) {
+            indices.append(idx + indexOffset);
+        }
+    }
+
+    void Label::buildCalloutLineVertexData(float pixelScale, VertexArray<cglib::vec3<float>>& vertices, VertexArray<cglib::vec2<std::int16_t>>& texCoords, VertexArray<cglib::vec4<std::int8_t>>& attribs, VertexArray<std::uint16_t>& indices) const {
+        const std::optional<GlyphMap::Glyph>& lineGlyph = _style->calloutLineGlyph;
+        // The line runs from the anchor up to where the glyphs start, so a label sitting on its
+        // anchor has nothing to draw.
+        float length = _calloutOffset * pixelScale;
+        if (!lineGlyph || !(length > 0)) {
+            return;
+        }
+        float halfWidth = _style->calloutLineWidth * pixelScale * 0.5f;
+
+        std::uint16_t i0 = static_cast<std::uint16_t>(vertices.size());
+        indices.append(i0 + 0, i0 + 1, i0 + 2);
+        indices.append(i0 + 0, i0 + 2, i0 + 3);
+
+        // Sample the interior of the atlas cell: the outer texels blend into the transparent
+        // padding around it under linear filtering, which thins the line and fades its ends.
+        std::int16_t u0 = static_cast<std::int16_t>(lineGlyph->x + 1), u1 = static_cast<std::int16_t>(lineGlyph->x + lineGlyph->width - 1);
+        std::int16_t v0 = static_cast<std::int16_t>(lineGlyph->y + 1), v1 = static_cast<std::int16_t>(lineGlyph->y + lineGlyph->height - 1);
+        texCoords.append(cglib::vec2<std::int16_t>(u0, v1), cglib::vec2<std::int16_t>(u1, v1), cglib::vec2<std::int16_t>(u1, v0), cglib::vec2<std::int16_t>(u0, v0));
+
+        cglib::vec4<std::int8_t> attrib(0, static_cast<std::int8_t>(GlyphMap::GlyphMode::BITMAP), 0, 0);
+        attribs.append(attrib, attrib, attrib, attrib);
+
+        vertices.append(cglib::vec3<float>(-halfWidth, 0, 0), cglib::vec3<float>(halfWidth, 0, 0), cglib::vec3<float>(halfWidth, length, 0), cglib::vec3<float>(-halfWidth, length, 0));
     }
 
     bool Label::buildLineVertexData(const std::shared_ptr<const Placement>& placement, float scale, const ViewState& viewState, const cglib::mat4x4<double>& mvpMatrix, VertexArray<cglib::vec3<float>>& vertices, VertexArray<cglib::vec2<std::int16_t>>& texCoords, VertexArray<cglib::vec4<std::int8_t>>& attribs, VertexArray<std::uint16_t>& indices) const {
@@ -1081,6 +1159,7 @@ namespace carto::vt {
             break;
         case LabelOrientation::LINE_BILLBOARD_3D:
         case LabelOrientation::BILLBOARD_3D:
+        case LabelOrientation::CALLOUT:
             xAxis = viewState.orientation[0];
             yAxis = viewState.orientation[1];
             break;

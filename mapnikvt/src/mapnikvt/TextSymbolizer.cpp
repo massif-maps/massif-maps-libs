@@ -36,6 +36,11 @@ namespace carto::mvt {
         float minimumDistance = _minimumDistance.getValue(exprContext);
         float maxDistance = _maxDistance.getValue(exprContext);
         float placementPriority = _placementPriority.getValue(exprContext);
+        float calloutScreenAnchor = _calloutScreenAnchor.getValue(exprContext);
+        float calloutOffset = _calloutOffset.getValue(exprContext) * fontScale;
+        float calloutStep = _calloutStep.getValue(exprContext) * fontScale;
+        int calloutMaxRows = static_cast<int>(_calloutMaxRows.getValue(exprContext));
+        float calloutLineWidth = _calloutLineWidth.getValue(exprContext) * fontScale;
         float orientationAngle = _orientationAngle.getValue(exprContext);
         float sizeStatic = _size.getStaticValue(exprContext);
 
@@ -152,8 +157,8 @@ namespace carto::mvt {
             };
         }
 
-        return [compOp, fillFunc, haloFillFunc, sizeFunc, haloRadiusFunc, fontScale, placement, text, hash, orientationAngle, formatter, backgroundOffset, backgroundImage, spacing, textSize, tileId, tileSize, labelIdOverride, groupId, placementPriority, minimumDistance, maxDistance, allowOverlapSameFeatureId, sameFeatureIdDependent, this](const FeatureCollection& featureCollection, vt::TileLayerBuilder& layerBuilder) {
-            vt::TextLabelStyle style(placement, fillFunc, sizeFunc, haloFillFunc, haloRadiusFunc, true, orientationAngle, fontScale, backgroundOffset, backgroundImage, maxDistance);
+        return [compOp, fillFunc, haloFillFunc, sizeFunc, haloRadiusFunc, fontScale, placement, text, hash, orientationAngle, formatter, backgroundOffset, backgroundImage, spacing, textSize, tileId, tileSize, labelIdOverride, groupId, placementPriority, minimumDistance, maxDistance, calloutScreenAnchor, calloutOffset, calloutStep, calloutMaxRows, calloutLineWidth, allowOverlapSameFeatureId, sameFeatureIdDependent, this](const FeatureCollection& featureCollection, vt::TileLayerBuilder& layerBuilder) {
+            vt::TextLabelStyle style(placement, fillFunc, sizeFunc, haloFillFunc, haloRadiusFunc, true, orientationAngle, fontScale, backgroundOffset, backgroundImage, maxDistance, calloutScreenAnchor, calloutOffset, calloutStep, calloutMaxRows, calloutLineWidth);
             vt::TileLayerBuilder::TextLabelProcessor textProcessor;
             for (std::size_t featureIndex = 0; featureIndex < featureCollection.size(); featureIndex++) {
                 if (!textProcessor) {
@@ -390,7 +395,10 @@ namespace carto::mvt {
 
     vt::LabelOrientation TextSymbolizer::getPlacement(const ExpressionContext& exprContext) const {
         vt::LabelOrientation placement = _placement.getValue(exprContext);
-        if (placement != vt::LabelOrientation::LINE) {
+        // CALLOUT keeps its placement: the rotation is applied to the glyph quads by the style
+        // transform like any other billboard, and a rotated callout (the peak-finder look) is a
+        // normal thing to ask for.
+        if (placement != vt::LabelOrientation::LINE && placement != vt::LabelOrientation::CALLOUT) {
             if (_orientationAngle.isDefined()) { // if orientation is explictly defined, use POINT placement
                 placement = vt::LabelOrientation::POINT;
             }

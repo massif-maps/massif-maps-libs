@@ -58,6 +58,13 @@ namespace carto::vt {
         bool isActive() const { return _active; }
         void setActive(bool active) { _active = active; }
 
+        // CALLOUT orientation: how far the label is lifted from its anchor, in screen pixels along
+        // the camera up axis. Owned by LabelCuller, which is the only place that knows what else is
+        // on screen; the envelope and the vertex data both read it, so the leader line always ends
+        // where the glyphs actually are.
+        float getCalloutOffset() const { return _calloutOffset; }
+        void setCalloutOffset(float offset) { _calloutOffset = offset; }
+
         // Identifies the set of tile geometries this label was built from, so that a rebuild
         // can tell whether anything about its source actually changed (see
         // GLTileRenderer::buildLabelMaps). Order-independent: the merge order follows the
@@ -78,11 +85,15 @@ namespace carto::vt {
         bool updatePlacement(const ViewState& viewState);
         void updateElevation(const std::function<double(const cglib::vec3<double>&)>& heightFunc);
 
+        // Which part of a label a draw pass wants. CALLOUT leader lines are drawn in a pass of
+        // their own, BEFORE all text, so that no label's line crosses another label's glyphs.
+        enum class DrawPass { ALL, CALLOUT_LINE, TEXT };
+
         bool calculateCenter(cglib::vec3<double>& pos) const;
         bool calculateEnvelope(const ViewState& viewState, std::array<cglib::vec3<float>, 4>& envelope) const { return calculateEnvelope((_style->sizeFunc)(viewState), 0, viewState, envelope); }
         bool calculateEnvelope(float size, float buffer, const ViewState& viewState, std::array<cglib::vec3<float>, 4>& envelope) const;
-        bool calculateVertexData(const ViewState& viewState, int styleIndex, int haloStyleIndex, VertexArray<cglib::vec3<float>>& vertices, VertexArray<cglib::vec3<float>>& offsets, VertexArray<cglib::vec3<float>>& normals, VertexArray<cglib::vec2<std::int16_t>>& texCoords, VertexArray<cglib::vec4<std::int8_t>>& attribs, VertexArray<std::uint16_t>& indices) const { return calculateVertexData((_style->sizeFunc)(viewState), viewState, styleIndex, haloStyleIndex, vertices, offsets, normals, texCoords, attribs, indices); }
-        bool calculateVertexData(float size, const ViewState& viewState, int styleIndex, int haloStyleIndex, VertexArray<cglib::vec3<float>>& vertices, VertexArray<cglib::vec3<float>>& offsets, VertexArray<cglib::vec3<float>>& normals, VertexArray<cglib::vec2<std::int16_t>>& texCoords, VertexArray<cglib::vec4<std::int8_t>>& attribs, VertexArray<std::uint16_t>& indices) const;
+        bool calculateVertexData(const ViewState& viewState, int styleIndex, int haloStyleIndex, VertexArray<cglib::vec3<float>>& vertices, VertexArray<cglib::vec3<float>>& offsets, VertexArray<cglib::vec3<float>>& normals, VertexArray<cglib::vec2<std::int16_t>>& texCoords, VertexArray<cglib::vec4<std::int8_t>>& attribs, VertexArray<std::uint16_t>& indices, DrawPass pass = DrawPass::ALL) const { return calculateVertexData((_style->sizeFunc)(viewState), viewState, styleIndex, haloStyleIndex, vertices, offsets, normals, texCoords, attribs, indices, pass); }
+        bool calculateVertexData(float size, const ViewState& viewState, int styleIndex, int haloStyleIndex, VertexArray<cglib::vec3<float>>& vertices, VertexArray<cglib::vec3<float>>& offsets, VertexArray<cglib::vec3<float>>& normals, VertexArray<cglib::vec2<std::int16_t>>& texCoords, VertexArray<cglib::vec4<std::int8_t>>& attribs, VertexArray<std::uint16_t>& indices, DrawPass pass = DrawPass::ALL) const;
 
     private:
         // How labelVsh must read a glyph offset (attribs[3]); see calculateVertexData.
@@ -217,6 +228,12 @@ namespace carto::vt {
         float calculateTerrainScaleFactor(const cglib::vec3<double>& position, const ViewState& viewState) const;
         void setupCoordinateSystem(const ViewState& viewState, const std::shared_ptr<const Placement>& placement, cglib::vec3<float>& origin, cglib::vec3<float>& xAxis, cglib::vec3<float>& yAxis) const;
         void buildPointVertexData(VertexArray<cglib::vec3<float>>& vertices, VertexArray<cglib::vec2<std::int16_t>>& texCoords, VertexArray<cglib::vec4<std::int8_t>>& attribs, VertexArray<std::uint16_t>& indices) const;
+        // Appends the leader line to a draw batch (nothing for a label that has none).
+        void appendCalloutLine(float size, float scale, const ViewState& viewState, const std::shared_ptr<const Placement>& placement, int styleIndex, VertexArray<cglib::vec3<float>>& vertices, VertexArray<cglib::vec3<float>>& offsets, VertexArray<cglib::vec3<float>>& normals, VertexArray<cglib::vec2<std::int16_t>>& texCoords, VertexArray<cglib::vec4<std::int8_t>>& attribs, VertexArray<std::uint16_t>& indices) const;
+        // The leader line quad, in the same glyph units as the cached text quads. Built per frame
+        // rather than cached with the text: its length is the culler's offset, which changes with
+        // everything else on screen.
+        void buildCalloutLineVertexData(float scale, VertexArray<cglib::vec3<float>>& vertices, VertexArray<cglib::vec2<std::int16_t>>& texCoords, VertexArray<cglib::vec4<std::int8_t>>& attribs, VertexArray<std::uint16_t>& indices) const;
         void updateLineVertexData(const std::shared_ptr<const Placement>& placement, float scale, const ViewState& viewState, bool rebuildForView) const;
         bool buildLineVertexData(const std::shared_ptr<const Placement>& placement, float scale, const ViewState& viewState, const cglib::mat4x4<double>& mvpMatrix, VertexArray<cglib::vec3<float>>& vertices, VertexArray<cglib::vec2<std::int16_t>>& texCoords, VertexArray<cglib::vec4<std::int8_t>>& attribs, VertexArray<std::uint16_t>& indices) const;
 
@@ -256,6 +273,7 @@ namespace carto::vt {
         // updatePlacement, carried over by snapPlacement so a re-created label places the same way.
         double _placementTextLength = 0;
 
+        float _calloutOffset = 0.0f; // screen pixels, CALLOUT only (see setCalloutOffset)
         float _opacity = 0.0f;
         bool _visible = false;
         bool _active = false;
