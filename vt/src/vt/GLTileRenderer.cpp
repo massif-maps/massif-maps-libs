@@ -3409,6 +3409,7 @@ namespace carto::vt {
         int haloStyleIndex = -1;
         int backgroundStyleIndex = -1;
         int secondaryStyleIndex = -1;
+        int iconStyleIndex = -1;
         for (const std::shared_ptr<Label>& label : labels) {
             if (!label->isValid()) {
                 continue;
@@ -3434,7 +3435,10 @@ namespace carto::vt {
                 // batch - exactly like the halo and the plate.
                 bool hasSecondaryColor = static_cast<bool>(labelStyle->secondaryColorFunc);
                 cglib::vec4<float> secondaryColor = hasSecondaryColor ? cglib::vec4<float>(evaluateColorFunc(*labelStyle->secondaryColorFunc).rgba()) : color;
-                if (labelStyle->transform || (lastLabelStyle && lastLabelStyle->transform) || labelBatchParams.scale != labelStyle->scale || labelBatchParams.glyphRenderSize != labelStyle->glyphRenderSize || labelBatchParams.parameterCount + (hasBackground ? 3 : 2) + (hasSecondaryColor ? 1 : 0) > LabelBatchParameters::MAX_PARAMETERS) {
+                // And so may the icon run - a font icon in its own colour next to the name.
+                bool hasIconColor = static_cast<bool>(labelStyle->iconColorFunc);
+                cglib::vec4<float> iconColor = hasIconColor ? cglib::vec4<float>(evaluateColorFunc(*labelStyle->iconColorFunc).rgba()) : color;
+                if (labelStyle->transform || (lastLabelStyle && lastLabelStyle->transform) || labelBatchParams.scale != labelStyle->scale || labelBatchParams.glyphRenderSize != labelStyle->glyphRenderSize || labelBatchParams.parameterCount + (hasBackground ? 3 : 2) + (hasSecondaryColor ? 1 : 0) + (hasIconColor ? 1 : 0) > LabelBatchParameters::MAX_PARAMETERS) {
                     renderLabelBatch(labelBatchParams, bitmap);
                     labelBatchParams.labelCount = 0;
                     labelBatchParams.parameterCount = 0;
@@ -3454,6 +3458,7 @@ namespace carto::vt {
                     haloStyleIndex = -1;
                     backgroundStyleIndex = -1;
                     secondaryStyleIndex = -1;
+                    iconStyleIndex = -1;
                 } else {
                     for (styleIndex = labelBatchParams.parameterCount; --styleIndex >= 0; ) {
                         if (labelBatchParams.colorTable[styleIndex] == color && labelBatchParams.widthTable[styleIndex] == size && labelBatchParams.strokeWidthTable[styleIndex] == 0) {
@@ -3511,11 +3516,26 @@ namespace carto::vt {
                     }
                 }
 
+                iconStyleIndex = -1;
+                if (hasIconColor) {
+                    for (iconStyleIndex = labelBatchParams.parameterCount; --iconStyleIndex >= 0; ) {
+                        if (labelBatchParams.colorTable[iconStyleIndex] == iconColor && labelBatchParams.widthTable[iconStyleIndex] == size && labelBatchParams.strokeWidthTable[iconStyleIndex] == 0) {
+                            break;
+                        }
+                    }
+                    if (iconStyleIndex < 0) {
+                        iconStyleIndex = labelBatchParams.parameterCount++;
+                        labelBatchParams.colorTable[iconStyleIndex] = iconColor;
+                        labelBatchParams.widthTable[iconStyleIndex] = size;
+                        labelBatchParams.strokeWidthTable[iconStyleIndex] = 0;
+                    }
+                }
+
                 lastLabelStyle = labelStyle;
             }
 
             VT_STAT_CLOCK(statClock);
-            label->calculateVertexData(labelBatchParams.widthTable[styleIndex], _viewState, styleIndex, haloStyleIndex, _labelVertices, _labelOffsets, _labelNormals, _labelTexCoords, _labelAttribs, _labelIndices, pass, pass == Label::DrawPass::CALLOUT_LINE ? -1 : backgroundStyleIndex, pass == Label::DrawPass::CALLOUT_LINE ? -1 : secondaryStyleIndex);
+            label->calculateVertexData(labelBatchParams.widthTable[styleIndex], _viewState, styleIndex, haloStyleIndex, _labelVertices, _labelOffsets, _labelNormals, _labelTexCoords, _labelAttribs, _labelIndices, pass, pass == Label::DrawPass::CALLOUT_LINE ? -1 : backgroundStyleIndex, pass == Label::DrawPass::CALLOUT_LINE ? -1 : secondaryStyleIndex, pass == Label::DrawPass::CALLOUT_LINE ? -1 : iconStyleIndex);
             VT_STAT_SPLIT(labelVertexBuildNs, statClock);
             VT_STAT_INC(labelsDrawnVertices);
 

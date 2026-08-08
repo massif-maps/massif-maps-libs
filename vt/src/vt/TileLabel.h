@@ -47,6 +47,9 @@ namespace carto::vt {
             float maxDistance;
             // Own colour for the second run of text (see TextLabelStyle); unset = the label's fill.
             std::optional<ColorFunction> secondaryColorFunc;
+            // Own colour for the icon run (the glyphs before the text, see TextLabelStyle);
+            // unset = the label's fill.
+            std::optional<ColorFunction> iconColorFunc;
             // Added to the placement priority by the culler, per label and per pass - the one
             // place a style function may read view::distance (see TextLabelStyle::rankFunc).
             FloatFunction rankFunc;
@@ -71,7 +74,18 @@ namespace carto::vt {
             cglib::vec2<float> backgroundPadding = cglib::vec2<float>(0, 0);
             std::optional<GlyphMap::Glyph> backgroundGlyph;
 
-            explicit Style(LabelOrientation orientation, ColorFunction colorFunc, FloatFunction sizeFunc, ColorFunction haloColorFunc, FloatFunction haloRadiusFunc, bool autoflip, float scale, float ascent, float descent, const std::optional<Transform>& transform, std::shared_ptr<const GlyphMap> glyphMap, int glyphRenderSize, float maxDistance = 0.0f, const std::optional<ColorFunction>& secondaryColorFunc = std::optional<ColorFunction>(), FloatFunction rankFunc = FloatFunction(0.0f), float calloutScreenAnchor = -1.0f, float calloutOffset = 0.0f, float calloutStep = 0.0f, int calloutMaxRows = 8, int calloutPersistPasses = 0, float calloutLineWidth = 1.0f, const std::optional<cglib::vec2<float>>& calloutLineAnchor = std::optional<cglib::vec2<float>>(), const std::optional<cglib::vec2<float>>& calloutBandAnchor = std::optional<cglib::vec2<float>>(), const std::optional<GlyphMap::Glyph>& calloutLineGlyph = std::optional<GlyphMap::Glyph>(), const Color& backgroundColor = Color(), float backgroundRadius = 0.0f, const cglib::vec2<float>& backgroundPadding = cglib::vec2<float>(0, 0), const std::optional<GlyphMap::Glyph>& backgroundGlyph = std::optional<GlyphMap::Glyph>()) : orientation(orientation), colorFunc(std::move(colorFunc)), sizeFunc(std::move(sizeFunc)), haloColorFunc(std::move(haloColorFunc)), haloRadiusFunc(std::move(haloRadiusFunc)), autoflip(autoflip), scale(scale), ascent(ascent), descent(descent), transform(transform), glyphMap(std::move(glyphMap)), glyphRenderSize(glyphRenderSize), maxDistance(maxDistance), secondaryColorFunc(secondaryColorFunc), rankFunc(std::move(rankFunc)), calloutScreenAnchor(calloutScreenAnchor), calloutOffset(calloutOffset), calloutStep(calloutStep), calloutMaxRows(calloutMaxRows), calloutPersistPasses(calloutPersistPasses), calloutLineWidth(calloutLineWidth), calloutLineAnchor(calloutLineAnchor), calloutBandAnchor(calloutBandAnchor), calloutLineGlyph(calloutLineGlyph), backgroundColor(backgroundColor), backgroundRadius(backgroundRadius), backgroundPadding(backgroundPadding), backgroundGlyph(backgroundGlyph) { }
+            explicit Style(LabelOrientation orientation, ColorFunction colorFunc, FloatFunction sizeFunc, ColorFunction haloColorFunc, FloatFunction haloRadiusFunc, bool autoflip, float scale, float ascent, float descent, const std::optional<Transform>& transform, std::shared_ptr<const GlyphMap> glyphMap, int glyphRenderSize, float maxDistance = 0.0f, const std::optional<ColorFunction>& secondaryColorFunc = std::optional<ColorFunction>(), FloatFunction rankFunc = FloatFunction(0.0f), float calloutScreenAnchor = -1.0f, float calloutOffset = 0.0f, float calloutStep = 0.0f, int calloutMaxRows = 8, int calloutPersistPasses = 0, float calloutLineWidth = 1.0f, const std::optional<cglib::vec2<float>>& calloutLineAnchor = std::optional<cglib::vec2<float>>(), const std::optional<cglib::vec2<float>>& calloutBandAnchor = std::optional<cglib::vec2<float>>(), const std::optional<GlyphMap::Glyph>& calloutLineGlyph = std::optional<GlyphMap::Glyph>(), const Color& backgroundColor = Color(), float backgroundRadius = 0.0f, const cglib::vec2<float>& backgroundPadding = cglib::vec2<float>(0, 0), const std::optional<GlyphMap::Glyph>& backgroundGlyph = std::optional<GlyphMap::Glyph>(), const std::optional<ColorFunction>& iconColorFunc = std::optional<ColorFunction>()) : orientation(orientation), colorFunc(std::move(colorFunc)), sizeFunc(std::move(sizeFunc)), haloColorFunc(std::move(haloColorFunc)), haloRadiusFunc(std::move(haloRadiusFunc)), autoflip(autoflip), scale(scale), ascent(ascent), descent(descent), transform(transform), glyphMap(std::move(glyphMap)), glyphRenderSize(glyphRenderSize), maxDistance(maxDistance), secondaryColorFunc(secondaryColorFunc), rankFunc(std::move(rankFunc)), calloutScreenAnchor(calloutScreenAnchor), calloutOffset(calloutOffset), calloutStep(calloutStep), calloutMaxRows(calloutMaxRows), calloutPersistPasses(calloutPersistPasses), calloutLineWidth(calloutLineWidth), calloutLineAnchor(calloutLineAnchor), calloutBandAnchor(calloutBandAnchor), calloutLineGlyph(calloutLineGlyph), backgroundColor(backgroundColor), backgroundRadius(backgroundRadius), backgroundPadding(backgroundPadding), backgroundGlyph(backgroundGlyph), iconColorFunc(iconColorFunc) { }
+        };
+
+        // One candidate layout of the label's TEXT (see TextLabelStyle::anchors). The icon glyphs
+        // that come before the first line break are never moved, so a shield keeps its icon on the
+        // feature whichever side the culler ends up putting the name on. An empty variant list is
+        // the fixed layout every style had before the property existed.
+        struct Variant {
+            cglib::vec2<float> shift; // glyph units, added to the text pen
+            bool drawText;            // false = the icon alone, the last resort of 'text-optional'
+
+            explicit Variant(const cglib::vec2<float>& shift, bool drawText) : shift(shift), drawText(drawText) { }
         };
 
         struct PlacementInfo {
@@ -82,7 +96,7 @@ namespace carto::vt {
             explicit PlacementInfo(int priority, float minimumGroupDistance,bool allowOverlapSameFeatureId, bool sameFeatureIdDependent) : priority(priority), minimumGroupDistance(minimumGroupDistance), allowOverlapSameFeatureId(allowOverlapSameFeatureId), sameFeatureIdDependent(sameFeatureIdDependent) { }
         };
         
-        explicit TileLabel(long long localId, long long globalId, long long groupId, std::vector<Font::Glyph> glyphs, std::optional<cglib::vec2<float>> position, std::vector<cglib::vec2<float>> vertices, std::shared_ptr<const Style> style, const PlacementInfo& placementInfo, int geoPointIndex) : _localId(localId), _globalId(globalId), _groupId(groupId), _glyphs(std::move(glyphs)), _position(std::move(position)), _vertices(std::move(vertices)), _style(std::move(style)), _placementInfo(placementInfo), _geoPointIndex(geoPointIndex) { }
+        explicit TileLabel(long long localId, long long globalId, long long groupId, std::vector<Font::Glyph> glyphs, std::optional<cglib::vec2<float>> position, std::vector<cglib::vec2<float>> vertices, std::shared_ptr<const Style> style, const PlacementInfo& placementInfo, int geoPointIndex, std::vector<Variant> variants = std::vector<Variant>()) : _localId(localId), _globalId(globalId), _groupId(groupId), _glyphs(std::move(glyphs)), _position(std::move(position)), _vertices(std::move(vertices)), _style(std::move(style)), _placementInfo(placementInfo), _geoPointIndex(geoPointIndex), _variants(std::move(variants)) { }
 
         long long getLocalId() const { return _localId; }
         long long getGlobalId() const { return _globalId; }
@@ -93,6 +107,7 @@ namespace carto::vt {
         const std::vector<cglib::vec2<float>>& getVertices() const { return _vertices; }
         const std::shared_ptr<const Style>& getStyle() const { return _style; }
         const PlacementInfo& getPlacementInfo() const { return _placementInfo; }
+        const std::vector<Variant>& getVariants() const { return _variants; }
 
         std::size_t getResidentSize() const {
             return 16 + sizeof(TileLabel);
@@ -108,6 +123,7 @@ namespace carto::vt {
         const std::vector<cglib::vec2<float>> _vertices;
         const std::shared_ptr<const Style> _style;
         const PlacementInfo _placementInfo;
+        const std::vector<Variant> _variants;
     };
 }
 

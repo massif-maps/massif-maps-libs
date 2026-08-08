@@ -58,6 +58,15 @@ namespace carto::vt {
         bool isActive() const { return _active; }
         void setActive(bool active) { _active = active; }
 
+        // Which of the style's sides the text is laid out on (see TileLabel::Variant). Owned by
+        // LabelCuller, the only place that knows what else is on screen; carried over by
+        // snapPlacement, or a label rebuilt on a tile-set change would take the first side again
+        // and the name would hop from one side of its icon to the other while the map pans.
+        std::size_t getVariantCount() const { return _variants.size(); }
+        int getVariantIndex() const { return _variantIndex; }
+        void setVariantIndex(int index);
+        bool drawsText() const { return _variants.empty() || _variants[_variantIndex].drawText; }
+
         // CALLOUT orientation: how far the label is lifted from its anchor, in SCREEN PIXELS along
         // the camera up axis. Owned by LabelCuller, which is the only place that knows what else is
         // on screen; the envelope and the vertex data both read it, so the leader line always ends
@@ -107,8 +116,13 @@ namespace carto::vt {
         bool calculateCenter(cglib::vec3<double>& pos) const;
         bool calculateEnvelope(const ViewState& viewState, std::array<cglib::vec3<float>, 4>& envelope) const { return calculateEnvelope((_style->sizeFunc)(viewState), 0, viewState, envelope); }
         bool calculateEnvelope(float size, float buffer, const ViewState& viewState, std::array<cglib::vec3<float>, 4>& envelope) const;
-        bool calculateVertexData(const ViewState& viewState, int styleIndex, int haloStyleIndex, VertexArray<cglib::vec3<float>>& vertices, VertexArray<cglib::vec3<float>>& offsets, VertexArray<cglib::vec3<float>>& normals, VertexArray<cglib::vec2<std::int16_t>>& texCoords, VertexArray<cglib::vec4<std::int8_t>>& attribs, VertexArray<std::uint16_t>& indices, DrawPass pass = DrawPass::ALL, int backgroundStyleIndex = -1, int secondaryStyleIndex = -1) const { return calculateVertexData((_style->sizeFunc)(viewState), viewState, styleIndex, haloStyleIndex, vertices, offsets, normals, texCoords, attribs, indices, pass, backgroundStyleIndex, secondaryStyleIndex); }
-        bool calculateVertexData(float size, const ViewState& viewState, int styleIndex, int haloStyleIndex, VertexArray<cglib::vec3<float>>& vertices, VertexArray<cglib::vec3<float>>& offsets, VertexArray<cglib::vec3<float>>& normals, VertexArray<cglib::vec2<std::int16_t>>& texCoords, VertexArray<cglib::vec4<std::int8_t>>& attribs, VertexArray<std::uint16_t>& indices, DrawPass pass = DrawPass::ALL, int backgroundStyleIndex = -1, int secondaryStyleIndex = -1) const;
+        // The envelope of EVERY side the text may be laid out on, in one call. The placement, the
+        // scale and the label's screen axes are the same for all of them - only the glyph box moves
+        // - so the culler, which tries the sides in order, pays for one placement instead of one
+        // per side. Falls back to the single current envelope for a label with no variants.
+        bool calculateVariantEnvelopes(float size, float buffer, const ViewState& viewState, std::vector<std::array<cglib::vec3<float>, 4>>& envelopes) const;
+        bool calculateVertexData(const ViewState& viewState, int styleIndex, int haloStyleIndex, VertexArray<cglib::vec3<float>>& vertices, VertexArray<cglib::vec3<float>>& offsets, VertexArray<cglib::vec3<float>>& normals, VertexArray<cglib::vec2<std::int16_t>>& texCoords, VertexArray<cglib::vec4<std::int8_t>>& attribs, VertexArray<std::uint16_t>& indices, DrawPass pass = DrawPass::ALL, int backgroundStyleIndex = -1, int secondaryStyleIndex = -1, int iconStyleIndex = -1) const { return calculateVertexData((_style->sizeFunc)(viewState), viewState, styleIndex, haloStyleIndex, vertices, offsets, normals, texCoords, attribs, indices, pass, backgroundStyleIndex, secondaryStyleIndex, iconStyleIndex); }
+        bool calculateVertexData(float size, const ViewState& viewState, int styleIndex, int haloStyleIndex, VertexArray<cglib::vec3<float>>& vertices, VertexArray<cglib::vec3<float>>& offsets, VertexArray<cglib::vec3<float>>& normals, VertexArray<cglib::vec2<std::int16_t>>& texCoords, VertexArray<cglib::vec4<std::int8_t>>& attribs, VertexArray<std::uint16_t>& indices, DrawPass pass = DrawPass::ALL, int backgroundStyleIndex = -1, int secondaryStyleIndex = -1, int iconStyleIndex = -1) const;
 
     private:
         // How labelVsh must read a glyph offset (attribs[3]); see calculateVertexData.
@@ -274,6 +288,13 @@ namespace carto::vt {
         void updateLineVertexData(const std::shared_ptr<const Placement>& placement, float scale, const ViewState& viewState, bool rebuildForView) const;
         bool buildLineVertexData(const std::shared_ptr<const Placement>& placement, float scale, const ViewState& viewState, const cglib::mat4x4<double>& mvpMatrix, VertexArray<cglib::vec3<float>>& vertices, VertexArray<cglib::vec2<std::int16_t>>& texCoords, VertexArray<cglib::vec4<std::int8_t>>& attribs, VertexArray<std::uint16_t>& indices) const;
 
+        // Where the text pen starts for the variant in use - zero for a label with one fixed
+        // layout, which is every label a style without anchors builds.
+        cglib::vec2<float> calculateVariantShift() const { return _variants.empty() ? cglib::vec2<float>(0, 0) : _variants[_variantIndex].shift; }
+        cglib::bbox2<float> calculateGlyphBBox(const cglib::vec2<float>& shift, bool drawText) const;
+        // The four corners a glyph box takes on the label's screen axes, style transform included.
+        void buildBoxEnvelope(const cglib::bbox2<float>& glyphBBox, float scale, const cglib::vec2<float>& padding, const cglib::vec3<float>& origin, const cglib::vec3<float>& xAxis, const cglib::vec3<float>& yAxis, std::array<cglib::vec3<float>, 4>& envelope) const;
+
         cglib::bbox3<double> calculateGeometryBBox(const ViewState& viewState) const;
         static void smoothPlacementLine(const std::vector<cglib::vec3<double>>& vertices, std::size_t index, double minEdgeLength, std::vector<cglib::vec3<double>>& smoothedVertices, std::size_t& smoothedIndex);
         static void clampPlacementAnchor(const std::vector<cglib::vec3<double>>& vertices, double textLength, std::size_t& index, cglib::vec3<double>& position);
@@ -291,14 +312,17 @@ namespace carto::vt {
         const long long _globalId;
         const long long _groupId;
         const std::vector<Font::Glyph> _glyphs;
+        const std::vector<TileLabel::Variant> _variants;
         const std::shared_ptr<const TileLabel::Style> _style;
         const float _priority;
         const float _minimumGroupDistance;
         const bool _allowOverlapSameFeatureId;
         const bool _sameFeatureIdDependent;
 
-        cglib::bbox2<float> _glyphBBox;
-        float _maxGlyphExtent = 0; // largest distance a glyph reaches from the anchor, style transform included
+        cglib::bbox2<float> _glyphBBox;               // of the variant in use
+        std::vector<cglib::bbox2<float>> _variantBBoxes;
+        int _variantIndex = 0;
+        float _maxGlyphExtent = 0; // largest distance a glyph reaches from the anchor, style transform and every variant included
         std::list<TilePoint> _tilePoints;
         std::list<TileLine> _tileLines;
 

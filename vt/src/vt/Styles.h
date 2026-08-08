@@ -18,6 +18,7 @@
 #include "UnaryFunction.h"
 
 #include <optional>
+#include <vector>
 
 #include <cglib/vec.h>
 #include <cglib/mat.h>
@@ -40,6 +41,30 @@ namespace carto::vt {
     enum class LabelOrientation {
         BILLBOARD_2D, BILLBOARD_3D, LINE_BILLBOARD_3D, POINT, LINE, CALLOUT
     };
+
+    // Which side of its anchor a label's text is laid out on. A style may name SEVERAL of them, in
+    // preference order, and the culler then takes the first one that is free (see
+    // LabelCuller::placeAnchoredLabel) - the icon of a shield stays put and only its text moves.
+    // Same set and same order as tangram's LabelProperty::Anchor.
+    enum class LabelAnchor {
+        CENTER, TOP, BOTTOM, LEFT, RIGHT, TOP_LEFT, TOP_RIGHT, BOTTOM_LEFT, BOTTOM_RIGHT
+    };
+
+    // Which way the text is moved for an anchor, in x and y of the label's own (screen aligned)
+    // frame. y is UP, like the glyph offsets.
+    inline cglib::vec2<float> labelAnchorDirection(LabelAnchor anchor) {
+        switch (anchor) {
+        case LabelAnchor::TOP:          return cglib::vec2<float>( 0,  1);
+        case LabelAnchor::BOTTOM:       return cglib::vec2<float>( 0, -1);
+        case LabelAnchor::LEFT:         return cglib::vec2<float>(-1,  0);
+        case LabelAnchor::RIGHT:        return cglib::vec2<float>( 1,  0);
+        case LabelAnchor::TOP_LEFT:     return cglib::vec2<float>(-1,  1);
+        case LabelAnchor::TOP_RIGHT:    return cglib::vec2<float>( 1,  1);
+        case LabelAnchor::BOTTOM_LEFT:  return cglib::vec2<float>(-1, -1);
+        case LabelAnchor::BOTTOM_RIGHT: return cglib::vec2<float>( 1, -1);
+        default:                        return cglib::vec2<float>( 0,  0);
+        }
+    }
 
     enum class RasterFilterMode {
         NONE, NEAREST, BILINEAR, BICUBIC
@@ -156,8 +181,22 @@ namespace carto::vt {
         Color backgroundColor;
         float backgroundRadius;    // corner radius, screen pixels
         cglib::vec2<float> backgroundPadding; // around the text, screen pixels
+        // Sides the text may be laid out on, in preference order (empty = one fixed layout, which
+        // is what every style without the property gets). The icon does not move; the text is
+        // placed against the icon's edge on the chosen side, and dx/dy are MIRRORED with it, so an
+        // offset that pushes the text away from the icon on one side does so on all of them.
+        std::vector<LabelAnchor> anchors;
+        // A last resort of drawing the icon alone when no side is free, rather than dropping the
+        // whole label (mapbox 'text-optional'). Needs an icon to be of any use.
+        bool textOptional;
+        // Glyphs drawn BEFORE the text and not moved by the anchor: the shield bitmap is one of
+        // them (added by the tile builder), and so is a font icon - a run shaped from an icon face,
+        // which shares the label font's atlas through the font fallback chain.
+        std::vector<Font::Glyph> iconGlyphs;
+        // Own colour for the icon run; unset leaves it the label's fill.
+        std::optional<ColorFunction> iconColorFunc;
 
-        explicit TextLabelStyle(LabelOrientation orientation, ColorFunction colorFunc, FloatFunction sizeFunc, ColorFunction haloColorFunc, FloatFunction haloRadiusFunc, bool autoflip, float angle, float backgroundScale, const cglib::vec2<float>& backgroundOffset, std::shared_ptr<const BitmapImage> backgroundImage, float maxDistance = 0.0f, const std::optional<ColorFunction>& secondaryColorFunc = std::optional<ColorFunction>(), FloatFunction rankFunc = FloatFunction(0.0f), float calloutScreenAnchor = -1.0f, float calloutOffset = 0.0f, float calloutStep = 0.0f, int calloutMaxRows = 8, int calloutPersistPasses = 0, float calloutLineWidth = 1.0f, const std::optional<cglib::vec2<float>>& calloutLineAnchor = std::optional<cglib::vec2<float>>(), const std::optional<cglib::vec2<float>>& calloutBandAnchor = std::optional<cglib::vec2<float>>(), const Color& backgroundColor = Color(), float backgroundRadius = 0.0f, const cglib::vec2<float>& backgroundPadding = cglib::vec2<float>(0, 0)) : orientation(orientation), colorFunc(std::move(colorFunc)), sizeFunc(std::move(sizeFunc)), haloColorFunc(std::move(haloColorFunc)), haloRadiusFunc(std::move(haloRadiusFunc)), autoflip(autoflip), angle(angle), backgroundScale(backgroundScale), backgroundOffset(backgroundOffset), backgroundImage(std::move(backgroundImage)), maxDistance(maxDistance), secondaryColorFunc(secondaryColorFunc), rankFunc(std::move(rankFunc)), calloutScreenAnchor(calloutScreenAnchor), calloutOffset(calloutOffset), calloutStep(calloutStep), calloutMaxRows(calloutMaxRows), calloutPersistPasses(calloutPersistPasses), calloutLineWidth(calloutLineWidth), calloutLineAnchor(calloutLineAnchor), calloutBandAnchor(calloutBandAnchor), backgroundColor(backgroundColor), backgroundRadius(backgroundRadius), backgroundPadding(backgroundPadding) { }
+        explicit TextLabelStyle(LabelOrientation orientation, ColorFunction colorFunc, FloatFunction sizeFunc, ColorFunction haloColorFunc, FloatFunction haloRadiusFunc, bool autoflip, float angle, float backgroundScale, const cglib::vec2<float>& backgroundOffset, std::shared_ptr<const BitmapImage> backgroundImage, float maxDistance = 0.0f, const std::optional<ColorFunction>& secondaryColorFunc = std::optional<ColorFunction>(), FloatFunction rankFunc = FloatFunction(0.0f), float calloutScreenAnchor = -1.0f, float calloutOffset = 0.0f, float calloutStep = 0.0f, int calloutMaxRows = 8, int calloutPersistPasses = 0, float calloutLineWidth = 1.0f, const std::optional<cglib::vec2<float>>& calloutLineAnchor = std::optional<cglib::vec2<float>>(), const std::optional<cglib::vec2<float>>& calloutBandAnchor = std::optional<cglib::vec2<float>>(), const Color& backgroundColor = Color(), float backgroundRadius = 0.0f, const cglib::vec2<float>& backgroundPadding = cglib::vec2<float>(0, 0), std::vector<LabelAnchor> anchors = std::vector<LabelAnchor>(), bool textOptional = false, std::vector<Font::Glyph> iconGlyphs = std::vector<Font::Glyph>(), const std::optional<ColorFunction>& iconColorFunc = std::optional<ColorFunction>()) : orientation(orientation), colorFunc(std::move(colorFunc)), sizeFunc(std::move(sizeFunc)), haloColorFunc(std::move(haloColorFunc)), haloRadiusFunc(std::move(haloRadiusFunc)), autoflip(autoflip), angle(angle), backgroundScale(backgroundScale), backgroundOffset(backgroundOffset), backgroundImage(std::move(backgroundImage)), maxDistance(maxDistance), secondaryColorFunc(secondaryColorFunc), rankFunc(std::move(rankFunc)), calloutScreenAnchor(calloutScreenAnchor), calloutOffset(calloutOffset), calloutStep(calloutStep), calloutMaxRows(calloutMaxRows), calloutPersistPasses(calloutPersistPasses), calloutLineWidth(calloutLineWidth), calloutLineAnchor(calloutLineAnchor), calloutBandAnchor(calloutBandAnchor), backgroundColor(backgroundColor), backgroundRadius(backgroundRadius), backgroundPadding(backgroundPadding), anchors(std::move(anchors)), textOptional(textOptional), iconGlyphs(std::move(iconGlyphs)), iconColorFunc(iconColorFunc) { }
     };
 }
 

@@ -108,6 +108,7 @@ namespace carto::vt {
         std::lock_guard<std::mutex> lock(_mutex);
 
         VT_STAT_INC(cullerPasses);
+        VT_STAT_CLOCK(cullerClock);
 
         // NOTE: the grid is intentionally NOT cleared here. One culler instance is shared
         // by all layers within a single placement pass (see VTLabelPlacementWorker), so
@@ -171,8 +172,16 @@ namespace carto::vt {
                     priority += (style->rankFunc)(rankViewState);
                 }
                 CullRecord cullRecord;
-                bool valid = calculateScreenEnvelope(label, size, cullRecord.envelope);
-                cullRecord.bounds = cglib::bbox2<float>::make_union(cullRecord.envelope.begin(), cullRecord.envelope.end());
+                // A label with several sides has its envelope built by placeAnchoredLabel, which
+                // builds all of them in one go - doing one here as well is that work twice. Only
+                // safe for a label that goes through it: an allow-overlap label (group < 0) is
+                // never placed, and its validity is decided by this call alone.
+                bool anchored = label->getVariantCount() > 1 && label->getGroupId() >= 0;
+                bool valid = true;
+                if (!anchored) {
+                    valid = calculateScreenEnvelope(label, size, cullRecord.envelope);
+                    cullRecord.bounds = cglib::bbox2<float>::make_union(cullRecord.envelope.begin(), cullRecord.envelope.end());
+                }
                 // Snapshot the identity fields; the placement (and thus the local id) can be
                 // changed concurrently by tile updates once labelMutex is released.
                 cullRecord.localId = label->getLocalId();
@@ -241,6 +250,8 @@ namespace carto::vt {
             bool visible;
             if (label->getStyle()->orientation == LabelOrientation::CALLOUT && groupId >= 0) {
                 visible = labelInfo.valid && placeCalloutLabel(labelInfo, testGroupDistance);
+            } else if (label->getVariantCount() > 1 && groupId >= 0) {
+                visible = labelInfo.valid && placeAnchoredLabel(labelInfo, testGroupDistance);
             } else {
                 visible = groupId >= 0 ? labelInfo.valid && testGridOverlap(labelInfo) : labelInfo.valid;
                 visible = visible && testGroupDistance(labelInfo);
@@ -260,6 +271,7 @@ namespace carto::vt {
                 changed = true;
             }
         }
+        VT_STAT_SPLIT(cullerNs, cullerClock);
         return changed;
     }
 
@@ -420,16 +432,59 @@ namespace carto::vt {
         return false;
     }
 
+    bool LabelCuller::placeAnchoredLabel(LabelInfo& labelInfo, const std::function<bool(const LabelInfo&)>& testGroupDistance) {
+        const std::shared_ptr<Label>& label = labelInfo.label;
+        int previous = label->getVariantIndex();
+
+        // Every side at once: they share the placement, the scale and the screen axes, so trying
+        // them one by one would re-run that work per side (and it is the expensive half).
+        std::vector<std::array<cglib::vec3<float>, 4>> worldEnvelopes;
+        bool valid = label->calculateVariantEnvelopes(labelInfo.size, EXTRA_LABEL_BUFFER, _viewState, worldEnvelopes);
+        int count = static_cast<int>(worldEnvelopes.size());
+
+        auto trySide = [this, &labelInfo, &label, &testGroupDistance, &worldEnvelopes, valid](int index) {
+            label->setVariantIndex(index);
+            labelInfo.valid = valid;
+            projectEnvelope(worldEnvelopes[index], labelInfo.cullRecord.envelope);
+            labelInfo.cullRecord.bounds = cglib::bbox2<float>::make_union(labelInfo.cullRecord.envelope.begin(), labelInfo.cullRecord.envelope.end());
+            return labelInfo.valid && testGridOverlap(labelInfo) && testGroupDistance(labelInfo);
+        };
+
+        // The side it already holds is tried first: a name that changes side whenever a tile
+        // streams in reads as flicker even though it never disappears. This is the committed
+        // placement rule the sort above uses, applied within one label.
+        if (labelInfo.wasVisible && trySide(previous)) {
+            return true;
+        }
+        for (int index = 0; index < count; index++) {
+            if (index == previous && labelInfo.wasVisible) {
+                continue; // already tried
+            }
+            if (trySide(index)) {
+                return true;
+            }
+        }
+
+        // Nothing free. Leave it on the side it preferred, so that the label fades out where it
+        // last was rather than jumping to the last side on its way off screen.
+        trySide(labelInfo.wasVisible ? previous : 0);
+        return false;
+    }
+
+    void LabelCuller::projectEnvelope(const std::array<cglib::vec3<float>, 4>& worldEnvelope, std::array<cglib::vec2<float>, 4>& envelope) const {
+        for (std::size_t i = 0; i < 4; i++) {
+            cglib::vec2<float> p = cglib::proj_o(cglib::transform_point(worldEnvelope[i], _localCameraProjMatrix));
+            envelope[i] = cglib::vec2<float>((p(0) * 0.5f + 0.5f) * _viewState.resolution * _viewState.aspect, (p(1) * 0.5f + 0.5f) * _viewState.resolution);
+        }
+    }
+
     bool LabelCuller::calculateScreenEnvelope(const std::shared_ptr<Label>& label, float size, std::array<cglib::vec2<float>, 4>& envelope) const {
         std::array<cglib::vec3<float>, 4> worldEnvelope;
         if (!label->calculateEnvelope(size, EXTRA_LABEL_BUFFER, _viewState, worldEnvelope)) {
             return false;
         }
-        
-        for (std::size_t i = 0; i < 4; i++) {
-            cglib::vec2<float> p = cglib::proj_o(cglib::transform_point(worldEnvelope[i], _localCameraProjMatrix));
-            envelope[i] = cglib::vec2<float>((p(0) * 0.5f + 0.5f) * _viewState.resolution * _viewState.aspect, (p(1) * 0.5f + 0.5f) * _viewState.resolution);
-        }
+
+        projectEnvelope(worldEnvelope, envelope);
         return true;
     }
 }

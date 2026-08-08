@@ -68,11 +68,17 @@ namespace carto::vt {
         void clearGrid();
         void addGridRecord(const CullRecord& cullRecord);
         bool testGridOverlap(const LabelInfo& labelInfo) const;
+        void projectEnvelope(const std::array<cglib::vec3<float>, 4>& worldEnvelope, std::array<cglib::vec2<float>, 4>& envelope) const;
         bool calculateScreenEnvelope(const std::shared_ptr<Label>& label, float size, std::array<cglib::vec2<float>, 4>& envelope) const;
         // A CALLOUT label is lifted away from its anchor until it finds free screen space instead
         // of being hidden. Returns false when it ran out of rows. Updates the label's offset and
         // the cull record in place.
         bool placeCalloutLabel(LabelInfo& labelInfo, const std::function<bool(const LabelInfo&)>& testGroupDistance);
+        // A label whose style names several sides (TextLabelStyle::anchors) is tried on each of
+        // them in turn and takes the first free one, the side it already held first - tangram's
+        // 'do { ... } while (isOccluded() && nextAnchor())' (labelManager.cpp). Returns false when
+        // no side is free. Updates the label's variant and the cull record in place.
+        bool placeAnchoredLabel(LabelInfo& labelInfo, const std::function<bool(const LabelInfo&)>& testGroupDistance);
 
         cglib::mat4x4<float> _localCameraProjMatrix;
         ViewState _viewState;

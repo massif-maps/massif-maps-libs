@@ -22,6 +22,66 @@ namespace {
     // each carry their own ramp, and the ramps cut a hairline seam across the line.
     static const float ROUND_JOIN_DOT_LIMIT = 0.985f;
 
+    // The pen walk Label::buildPointVertexData does. 'textPart' selects which half of the run is
+    // measured: the icon glyphs come first, and the first CR pseudo-glyph resets the pen onto the
+    // text's own origin.
+    static cglib::bbox2<float> measureGlyphRun(const std::vector<carto::vt::Font::Glyph>& glyphs, bool textPart) {
+        cglib::bbox2<float> bbox = cglib::bbox2<float>::smallest();
+        cglib::vec2<float> pen(0, 0);
+        bool text = false;
+        for (const carto::vt::Font::Glyph& glyph : glyphs) {
+            if (glyph.codePoint == carto::vt::Font::CR_CODEPOINT) {
+                pen = cglib::vec2<float>(0, 0);
+                text = true;
+            }
+            else if (text == textPart) {
+                bbox.add(pen + glyph.offset);
+                bbox.add(pen + glyph.offset + glyph.size);
+            }
+            pen += glyph.advance;
+        }
+        return bbox;
+    }
+
+    // One text layout per side the style allows, in its preference order (see
+    // TextLabelStyle::anchors). The text is placed against the icon's edge - it is the same run of
+    // glyphs every time, only its pen origin moves, so the sides cost a vec2 each and no extra
+    // layout work. dx/dy are mirrored with the side: they are a GAP from the icon here, so a style
+    // that pushes its name 6px to the right of the icon pushes it 6px to the left on the left side.
+    static std::vector<carto::vt::TileLabel::Variant> buildLabelVariants(const std::vector<carto::vt::LabelAnchor>& anchors, bool textOptional, bool hasIcon, const std::vector<carto::vt::Font::Glyph>& glyphs, const cglib::vec2<float>& iconExtent, const cglib::vec2<float>& styleOffset) {
+        std::vector<carto::vt::TileLabel::Variant> variants;
+        if (anchors.empty()) {
+            return variants;
+        }
+
+        cglib::bbox2<float> textBBox = measureGlyphRun(glyphs, true);
+        if (textBBox.min(0) > textBBox.max(0)) {
+            return variants; // nothing to move
+        }
+        // The box as it would be with no dx/dy, so that the offset can be re-applied per side.
+        cglib::vec2<float> boxMin = textBBox.min - styleOffset;
+        cglib::vec2<float> boxMax = textBBox.max - styleOffset;
+
+        variants.reserve(anchors.size() + 1);
+        for (carto::vt::LabelAnchor anchor : anchors) {
+            cglib::vec2<float> dir = carto::vt::labelAnchorDirection(anchor);
+            cglib::vec2<float> desired = styleOffset;
+            for (int i = 0; i < 2; i++) {
+                if (dir(i) > 0) {
+                    desired(i) = iconExtent(i) - boxMin(i) + std::abs(styleOffset(i));
+                }
+                else if (dir(i) < 0) {
+                    desired(i) = -iconExtent(i) - boxMax(i) - std::abs(styleOffset(i));
+                }
+            }
+            variants.emplace_back(desired - styleOffset, true);
+        }
+        if (textOptional && hasIcon) {
+            variants.emplace_back(cglib::vec2<float>(0, 0), false);
+        }
+        return variants;
+    }
+
     static float calculateScale(const carto::vt::VertexArray<float>& values, const carto::vt::VertexArray<std::size_t>& indices) {
         float maxValue = 0.0f;
         if (!values.empty()) {
@@ -481,7 +541,7 @@ namespace carto::vt {
     }
 
     TileLayerBuilder::TextLabelProcessor TileLayerBuilder::createTextLabelProcessor(const TextLabelStyle& style, const TextFormatter& formatter) {
-        if (style.sizeFunc == FloatFunction(0) && !style.backgroundImage) {
+        if (style.sizeFunc == FloatFunction(0) && !style.backgroundImage && style.iconGlyphs.empty()) {
             return TextLabelProcessor();
         }
 
@@ -549,22 +609,46 @@ namespace carto::vt {
                     backgroundGlyph = *glyph;
                 }
             }
-            _labelStyle = std::make_shared<TileLabel::Style>(style.orientation, style.colorFunc, style.sizeFunc, style.haloColorFunc, style.haloRadiusFunc, style.autoflip, scale, metrics.ascent, metrics.descent, transform, font->getGlyphMap(), glyphRenderSize, style.maxDistance, style.secondaryColorFunc, style.rankFunc, style.calloutScreenAnchor, style.calloutOffset, style.calloutStep, style.calloutMaxRows, style.calloutPersistPasses, style.calloutLineWidth, style.calloutLineAnchor, style.calloutBandAnchor, calloutLineGlyph, style.backgroundColor, style.backgroundRadius, style.backgroundPadding, backgroundGlyph);
+            _labelStyle = std::make_shared<TileLabel::Style>(style.orientation, style.colorFunc, style.sizeFunc, style.haloColorFunc, style.haloRadiusFunc, style.autoflip, scale, metrics.ascent, metrics.descent, transform, font->getGlyphMap(), glyphRenderSize, style.maxDistance, style.secondaryColorFunc, style.rankFunc, style.calloutScreenAnchor, style.calloutOffset, style.calloutStep, style.calloutMaxRows, style.calloutPersistPasses, style.calloutLineWidth, style.calloutLineAnchor, style.calloutBandAnchor, calloutLineGlyph, style.backgroundColor, style.backgroundRadius, style.backgroundPadding, backgroundGlyph, style.iconColorFunc);
         }
 
-        return [style, font, formatter, this](long long id, long long labelId, long long groupId, const std::optional<Vertex>& position, const Vertices& vertices, const std::string& text, float priority, float minimumGroupDistance, bool allowOverlapSameFeatureId, bool sameFeatureIdDependent, int geoPointIndex) {
-            if (!text.empty() || style.backgroundImage) {
+        // The glyphs that come before the text and stay on the anchor when the text moves: the
+        // shield bitmap first, then the icon run the style shaped for us. Built once per style
+        // rather than per label - neither depends on the feature's text.
+        std::vector<Font::Glyph> iconGlyphs;
+        if (style.backgroundImage) {
+            const GlyphMap::Glyph* baseGlyph = font->getGlyphMap()->getGlyph(font->getGlyphMap()->loadBitmapGlyph(style.backgroundImage->bitmap, GlyphMap::GlyphMode::BACKGROUND));
+            if (baseGlyph) {
+                float imageScale = style.backgroundImage->scale / formatter.getFontSize();
+                iconGlyphs.emplace_back(0, Font::NULL_CODEPOINT, *baseGlyph, cglib::vec2<float>(baseGlyph->width, baseGlyph->height) * (style.backgroundScale * imageScale), style.backgroundOffset * imageScale, cglib::vec2<float>(baseGlyph->width, 0) * imageScale);
+            }
+        }
+        iconGlyphs.insert(iconGlyphs.end(), style.iconGlyphs.begin(), style.iconGlyphs.end());
+        // What the anchored text has to clear: half of it on each side, like tangram's
+        // (own + relative) * 0.5 (labelProperty.h). The shield bitmap is centred on the anchor by
+        // its own offset, so this is measured around the anchor and not around the run's origin.
+        cglib::vec2<float> iconExtent(0, 0);
+        if (!style.anchors.empty() && !iconGlyphs.empty()) {
+            cglib::bbox2<float> iconBBox = measureGlyphRun(iconGlyphs, false);
+            if (iconBBox.min(0) <= iconBBox.max(0)) {
+                iconExtent = cglib::vec2<float>(std::max(std::abs(iconBBox.min(0)), std::abs(iconBBox.max(0))),
+                                                std::max(std::abs(iconBBox.min(1)), std::abs(iconBBox.max(1))));
+            }
+        }
+        // dx/dy in the units the glyph run carries them (the formatter divides by the font size).
+        float invFontSize = (formatter.getFontSize() != 0 ? 1.0f / formatter.getFontSize() : 0.0f);
+        cglib::vec2<float> styleOffset = formatter.getOptions().offset * invFontSize;
+        bool hasIcon = !iconGlyphs.empty();
+
+        return [style, font, formatter, iconGlyphs, iconExtent, styleOffset, hasIcon, this](long long id, long long labelId, long long groupId, const std::optional<Vertex>& position, const Vertices& vertices, const std::string& text, float priority, float minimumGroupDistance, bool allowOverlapSameFeatureId, bool sameFeatureIdDependent, int geoPointIndex) {
+            if (!text.empty() || !iconGlyphs.empty()) {
                 std::vector<Font::Glyph> glyphs;
                 if (!text.empty()) {
                     glyphs = formatter.format(text, 1.0f);
                 }
-                if (style.backgroundImage) {
-                    const GlyphMap::Glyph* baseGlyph = font->getGlyphMap()->getGlyph(font->getGlyphMap()->loadBitmapGlyph(style.backgroundImage->bitmap, GlyphMap::GlyphMode::BACKGROUND));
-                    if (baseGlyph) {
-                        float scale = style.backgroundImage->scale / formatter.getFontSize();
-                        glyphs.insert(glyphs.begin(), Font::Glyph(0, Font::NULL_CODEPOINT, *baseGlyph, cglib::vec2<float>(baseGlyph->width, baseGlyph->height) * (style.backgroundScale * scale), style.backgroundOffset * scale, cglib::vec2<float>(baseGlyph->width, 0) * scale));
-                    }
-                }
+                glyphs.insert(glyphs.begin(), iconGlyphs.begin(), iconGlyphs.end());
+
+                std::vector<TileLabel::Variant> variants = buildLabelVariants(style.anchors, style.textOptional, hasIcon, glyphs, iconExtent, styleOffset);
 
                 std::optional<cglib::vec2<float>> labelPosition;
                 if (position) {
@@ -578,8 +662,8 @@ namespace carto::vt {
                 }
 
                 TileLabel::PlacementInfo placementInfo(priority, minimumGroupDistance, allowOverlapSameFeatureId, sameFeatureIdDependent);
-                long long globalId = (labelId ^ (static_cast<long long>(_layerIdx) << 32)) * 3 + (style.backgroundImage ? 2 : 1);
-                auto textLabel = std::make_shared<TileLabel>(id, globalId, groupId, std::move(glyphs), std::move(labelPosition), std::move(labelVertices), _labelStyle, placementInfo, geoPointIndex);
+                long long globalId = (labelId ^ (static_cast<long long>(_layerIdx) << 32)) * 3 + (hasIcon ? 2 : 1);
+                auto textLabel = std::make_shared<TileLabel>(id, globalId, groupId, std::move(glyphs), std::move(labelPosition), std::move(labelVertices), _labelStyle, placementInfo, geoPointIndex, std::move(variants));
                 _labelList.push_back(std::move(textLabel));
             }
         };
