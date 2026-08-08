@@ -510,10 +510,14 @@ namespace carto::vt {
             || _labelStyle->glyphMap != font->getGlyphMap() 
             || _labelStyle->glyphRenderSize != glyphRenderSize
             || _labelStyle->maxDistance != style.maxDistance
+            || _labelStyle->rankFunc != style.rankFunc
+            || _labelStyle->calloutLineAnchor != style.calloutLineAnchor
+            || _labelStyle->calloutBandAnchor != style.calloutBandAnchor
             || _labelStyle->calloutScreenAnchor != style.calloutScreenAnchor
             || _labelStyle->calloutOffset != style.calloutOffset
             || _labelStyle->calloutStep != style.calloutStep
             || _labelStyle->calloutMaxRows != style.calloutMaxRows
+            || _labelStyle->calloutPersistPasses != style.calloutPersistPasses
             || _labelStyle->calloutLineWidth != style.calloutLineWidth
             || _labelStyle->backgroundColor != style.backgroundColor
             || _labelStyle->backgroundRadius != style.backgroundRadius
@@ -543,7 +547,7 @@ namespace carto::vt {
                     backgroundGlyph = *glyph;
                 }
             }
-            _labelStyle = std::make_shared<TileLabel::Style>(style.orientation, style.colorFunc, style.sizeFunc, style.haloColorFunc, style.haloRadiusFunc, style.autoflip, scale, metrics.ascent, metrics.descent, transform, font->getGlyphMap(), glyphRenderSize, style.maxDistance, style.calloutScreenAnchor, style.calloutOffset, style.calloutStep, style.calloutMaxRows, style.calloutLineWidth, calloutLineGlyph, style.backgroundColor, style.backgroundRadius, style.backgroundPadding, backgroundGlyph);
+            _labelStyle = std::make_shared<TileLabel::Style>(style.orientation, style.colorFunc, style.sizeFunc, style.haloColorFunc, style.haloRadiusFunc, style.autoflip, scale, metrics.ascent, metrics.descent, transform, font->getGlyphMap(), glyphRenderSize, style.maxDistance, style.rankFunc, style.calloutScreenAnchor, style.calloutOffset, style.calloutStep, style.calloutMaxRows, style.calloutPersistPasses, style.calloutLineWidth, style.calloutLineAnchor, style.calloutBandAnchor, calloutLineGlyph, style.backgroundColor, style.backgroundRadius, style.backgroundPadding, backgroundGlyph);
         }
 
         return [style, font, formatter, this](long long id, long long labelId, long long groupId, const std::optional<Vertex>& position, const Vertices& vertices, const std::string& text, float priority, float minimumGroupDistance, bool allowOverlapSameFeatureId, bool sameFeatureIdDependent, int geoPointIndex) {

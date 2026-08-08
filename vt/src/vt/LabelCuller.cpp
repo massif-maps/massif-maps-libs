@@ -12,6 +12,7 @@
 #include <cglib/bbox.h>
 #include <cglib/frustum3.h>
 
+
 namespace {
     template <std::size_t N>
     static void gatherPolygonProjectionExtents(const std::array<cglib::vec2<float>, N>& vertList, const cglib::vec2<float>& v, float& outMin, float& outMax) {
@@ -117,6 +118,10 @@ namespace carto::vt {
         // Start by collecting valid labels and updating label placements
         std::vector<LabelInfo> validLabelList;
         validLabelList.reserve(labelList.size());
+        // The view a ranking expression is evaluated against: the frame's, plus the distance to
+        // the label being ranked (style variable view::distance). Kept out of the loop - a
+        // ViewState carries the matrices and the frustum, and only its distance changes here.
+        ViewState rankViewState = _viewState;
         for (const std::shared_ptr<Label>& label : labelList) {
             std::lock_guard<std::mutex> labelLock(labelMutex);
 
@@ -134,11 +139,15 @@ namespace carto::vt {
             // rather than skipping keeps the existing opacity animation, so the label FADES out
             // when it passes the limit and fades back in when it returns - no per-frame work, the
             // GL thread already animates opacity towards isVisible().
-            float maxDistance = label->getStyle()->maxDistance;
-            if (maxDistance > 0 && _metersToInternal > 0) {
+            const std::shared_ptr<const TileLabel::Style>& style = label->getStyle();
+            bool ranked = !(style->rankFunc == FloatFunction(0.0f));
+            float maxDistance = style->maxDistance;
+            float distance = 0; // meters, 0 when it could not be resolved
+            if ((maxDistance > 0 || ranked) && _metersToInternal > 0) {
                 cglib::vec3<double> position(0, 0, 0);
                 if (label->calculateCenter(position)) {
-                    if (cglib::length(position - _viewState.origin) > maxDistance * _metersToInternal) {
+                    distance = static_cast<float>(cglib::length(position - _viewState.origin) / _metersToInternal);
+                    if (maxDistance > 0 && distance > maxDistance) {
                         label->setVisible(false);
                         continue;
                     }
@@ -150,7 +159,17 @@ namespace carto::vt {
             }
 
             if (label->isValid()) {
-                float size = (label->getStyle()->sizeFunc)(_viewState);
+                float size = (style->sizeFunc)(_viewState);
+                // Ranking is the label's own priority plus what the style makes of the view - the
+                // one evaluation that is per label, so the one place view::distance means
+                // anything. It only reorders the greedy insertion below; the drawn size and
+                // colour still come from the batch, so a rank expression can never change how a
+                // label looks.
+                float priority = label->getPriority();
+                if (ranked) {
+                    rankViewState.labelDistance = distance;
+                    priority += (style->rankFunc)(rankViewState);
+                }
                 CullRecord cullRecord;
                 bool valid = calculateScreenEnvelope(label, size, cullRecord.envelope);
                 cullRecord.bounds = cglib::bbox2<float>::make_union(cullRecord.envelope.begin(), cullRecord.envelope.end());
@@ -158,7 +177,7 @@ namespace carto::vt {
                 // changed concurrently by tile updates once labelMutex is released.
                 cullRecord.localId = label->getLocalId();
                 cullRecord.allowOverlapSameFeatureId = label->allowOverlapSameFeatureId();
-                validLabelList.push_back({ valid, wasVisible, label->getPriority(), label->getLayerIndex(), size, label->getOpacity(), label, cullRecord });
+                validLabelList.push_back({ valid, wasVisible, priority, label->getLayerIndex(), size, label->getOpacity(), label, cullRecord });
             }
         }
 
@@ -199,23 +218,32 @@ namespace carto::vt {
 
             long long groupId = label->getGroupId();
 
-            // Label is always visible if its group is set to negative value. Otherwise test visibility against other labels
-            bool visible;
-            if (label->getStyle()->orientation == LabelOrientation::CALLOUT && groupId >= 0) {
-                visible = labelInfo.valid && placeCalloutLabel(labelInfo);
-            } else {
-                visible = groupId >= 0 ? labelInfo.valid && testGridOverlap(labelInfo) : labelInfo.valid;
-            }
-
-            if (visible && groupId > 0) {
+            // The group's minimum distance: labels of one group must not only miss each other, they
+            // must stay that many pixels apart. A callout is tested for it AT EVERY ROW it tries
+            // (see placeCalloutLabel) - testing it only after placement would place the label on a
+            // free row and then hide it for being too close to a neighbour, which is the one
+            // outcome the stacking exists to avoid.
+            auto testGroupDistance = [&](const LabelInfo& info) {
+                if (groupId <= 0) {
+                    return true;
+                }
                 for (const LabelInfo* otherLabelInfo : groupMap[groupId]) {
                     const std::shared_ptr<Label>& otherLabel = otherLabelInfo->label;
                     float minimumDistance = std::min(label->getMinimumGroupDistance(), otherLabel->getMinimumGroupDistance());
-                    if ((!labelInfo.cullRecord.allowOverlapSameFeatureId || !otherLabelInfo->cullRecord.allowOverlapSameFeatureId || labelInfo.cullRecord.localId != otherLabelInfo->cullRecord.localId) && testPolygonOverlap(labelInfo.cullRecord.envelope, otherLabelInfo->cullRecord.envelope, minimumDistance)) {
-                        visible = false;
-                        break;
+                    if ((!info.cullRecord.allowOverlapSameFeatureId || !otherLabelInfo->cullRecord.allowOverlapSameFeatureId || info.cullRecord.localId != otherLabelInfo->cullRecord.localId) && testPolygonOverlap(info.cullRecord.envelope, otherLabelInfo->cullRecord.envelope, minimumDistance)) {
+                        return false;
                     }
                 }
+                return true;
+            };
+
+            // Label is always visible if its group is set to negative value. Otherwise test visibility against other labels
+            bool visible;
+            if (label->getStyle()->orientation == LabelOrientation::CALLOUT && groupId >= 0) {
+                visible = labelInfo.valid && placeCalloutLabel(labelInfo, testGroupDistance);
+            } else {
+                visible = groupId >= 0 ? labelInfo.valid && testGridOverlap(labelInfo) : labelInfo.valid;
+                visible = visible && testGroupDistance(labelInfo);
             }
 
             if (visible) {
@@ -281,7 +309,7 @@ namespace carto::vt {
         return (!labelInfo.label->sameFeatureIdDependent() || hasFoundTheSame);
     }
 
-    bool LabelCuller::placeCalloutLabel(LabelInfo& labelInfo) {
+    bool LabelCuller::placeCalloutLabel(LabelInfo& labelInfo, const std::function<bool(const LabelInfo&)>& testGroupDistance) {
         const std::shared_ptr<Label>& label = labelInfo.label;
         const std::shared_ptr<const TileLabel::Style>& style = label->getStyle();
 
@@ -292,40 +320,109 @@ namespace carto::vt {
             return labelInfo.valid;
         };
 
+        // Which point of the label the band line runs through. The default is the bottom of the
+        // box, but a tilted panorama name reads as a row only when every label hangs from the SAME
+        // corner - its first letter, or its last one - which is what the style anchor picks.
+        auto bandAnchorY = [&labelInfo, &style]() {
+            if (!style->calloutBandAnchor) {
+                return labelInfo.cullRecord.bounds.min(1);
+            }
+            const std::array<cglib::vec2<float>, 4>& e = labelInfo.cullRecord.envelope;
+            float u = ((*style->calloutBandAnchor)(0) + 1.0f) * 0.5f, v = ((*style->calloutBandAnchor)(1) + 1.0f) * 0.5f;
+            float bottom = e[0](1) + (e[1](1) - e[0](1)) * u;
+            float top = e[3](1) + (e[2](1) - e[3](1)) * u;
+            return bottom + (top - bottom) * v;
+        };
+
+        // Where it ended up last time. A callout is re-placed from scratch on every pass, and a
+        // panning map runs one whenever its tile set changes, so keeping the row it already holds
+        // (when it is still a legal one) is what stops a screen of names re-flowing under the
+        // camera.
+        float previousOffset = label->getCalloutOffset();
+
         // Where the label wants to sit before anything else is taken into account: either a band
         // at a fixed height on screen - which is what makes a panorama read as one row of names
         // over the ridges - or straight above its own anchor.
         if (!envelopeAt(0)) {
             return false;
         }
-        float offset = style->calloutOffset;
-        float height = labelInfo.cullRecord.bounds.max(1) - labelInfo.cullRecord.bounds.min(1);
+        float anchorY = bandAnchorY();
+        float top = labelInfo.cullRecord.bounds.max(1);
+
+        // How many screen pixels one unit of the label's offset is worth, MEASURED rather than
+        // assumed. The offset is a length along the camera up axis converted to world units with
+        // the label's own scale, so one unit is one screen pixel only where that scale is exactly
+        // calibrated - and it is not: it comes from the zoom, and a lifted viewpoint or a view
+        // aimed at the horizon moves the label several times further than the band asked for
+        // (which is what made a row of names stop being a row). Displacing the label along the
+        // camera axes is linear in screen space at a fixed depth, so two samples give the gain.
+        if (!envelopeAt(GAIN_PROBE_OFFSET)) {
+            return false;
+        }
+        float gain = (bandAnchorY() - anchorY) / GAIN_PROBE_OFFSET;
+        if (!(gain > 0)) {
+            return false; // lifting the label does not move it up the screen: it is not in view
+        }
+
+        float lift = style->calloutOffset; // everything below is in SCREEN PIXELS
         if (style->calloutScreenAnchor >= 0) {
             float bandY = (1.0f - style->calloutScreenAnchor) * _viewState.resolution;
-            offset = std::max(offset, bandY - labelInfo.cullRecord.bounds.min(1));
+            lift = std::max(lift, bandY - anchorY);
         }
         // Whatever the band asks for, the label has to stay on screen: it is lifted away from its
         // anchor, so unlike every other label its own position is no evidence that it is in view.
-        // The margin is half a label: the culler works at its own scale (see the constructor), so
-        // the drawn glyphs are not pixel-identical to this envelope and a tight bound clips them.
-        float maxOffset = _viewState.resolution - height * 1.5f - labelInfo.cullRecord.bounds.min(1);
+        // The margin is a CONSTANT, not a share of the label: it also caps a label the band placed
+        // correctly, and a margin proportional to the label's own height would then push long names
+        // further down than short ones - the row stops being a row.
+        float maxLift = _viewState.resolution - top - SCREEN_EDGE_MARGIN;
+        float minLift = SCREEN_EDGE_MARGIN - labelInfo.cullRecord.bounds.min(1); // rows may go down (negative step)
+        // A summit that is already high on screen has no room left above it, and its name is
+        // exactly the one worth keeping: pull the label back DOWN to the edge rather than draw it
+        // half off the screen. Its leader line shortens with it, and may end up pointing down.
+        lift = std::min(lift, maxLift);
 
-        // Then up, one row at a time, until the screen is free. Stepping instead of hiding is the
-        // whole point of the orientation: a summit that loses its slot to a nearer one still gets
-        // its name, one line higher.
         float step = (style->calloutStep > 0 ? style->calloutStep : labelInfo.size * 1.2f);
-        for (int row = 0; row < std::max(1, style->calloutMaxRows); row++) {
-            float rowOffset = offset + row * step;
-            if (rowOffset > maxOffset) {
-                break; // the rows only go up, so nothing beyond this one fits either
+
+        // The row it already holds is tried first, as long as it is still one this pass would
+        // offer: a label that keeps changing row while the camera moves reads as flicker even
+        // though it never disappears.
+        if (labelInfo.wasVisible && previousOffset > 0) {
+            float previousLift = previousOffset * gain;
+            if (previousLift >= lift - 0.5f && previousLift <= maxLift + 0.5f) {
+                if (envelopeAt(previousOffset) && testGridOverlap(labelInfo) && testGroupDistance(labelInfo)) {
+                    label->setCalloutFailures(0);
+                    return true;
+                }
             }
-            if (!envelopeAt(rowOffset)) {
+        }
+
+        // Then row by row, in the direction the style's step points (DOWN for a negative one -
+        // a band pinned to the top of the screen has no room above it, and stacking upwards there
+        // is what turned the top row into a pile), until the screen is free. Stepping instead of
+        // hiding is the whole point of the orientation: a summit that loses its slot to a nearer
+        // one still gets its name, one line further along.
+        for (int row = 0; row < std::max(1, style->calloutMaxRows); row++) {
+            float rowLift = lift + row * step;
+            if (rowLift > maxLift || rowLift < minLift) {
+                break; // the rows all go the same way, so nothing beyond this one fits either
+            }
+            if (!envelopeAt(rowLift / gain)) {
                 return false;
             }
-            if (testGridOverlap(labelInfo)) {
+            if (testGridOverlap(labelInfo) && testGroupDistance(labelInfo)) {
+                label->setCalloutFailures(0);
                 return true;
             }
         }
+
+        // Nothing free. A name already on screen may hold its place for a few passes rather than
+        // blink out and back in as tiles stream in under a moving camera (text-callout-persist).
+        if (labelInfo.wasVisible && label->getCalloutFailures() < style->calloutPersistPasses) {
+            label->setCalloutFailures(label->getCalloutFailures() + 1);
+            envelopeAt(std::min(previousOffset, maxLift / gain));
+            return true;
+        }
+        label->setCalloutFailures(0);
         return false;
     }
 

@@ -45,6 +45,9 @@ namespace carto::vt {
             // labels a tile carries is already decided by the style at the TILE's zoom, so this is
             // the second half of that: how far the ones that exist may be seen.
             float maxDistance;
+            // Added to the placement priority by the culler, per label and per pass - the one
+            // place a style function may read view::distance (see TextLabelStyle::rankFunc).
+            FloatFunction rankFunc;
             // CALLOUT orientation only - see LabelOrientation. Pixels, except the anchor, which is
             // a fraction of the screen height from the top (< 0 = stack from the label's own
             // anchor). lineGlyph is the atlas cell the leader line quad is textured from.
@@ -52,7 +55,12 @@ namespace carto::vt {
             float calloutOffset;
             float calloutStep;
             int calloutMaxRows;
+            int calloutPersistPasses;
             float calloutLineWidth;
+            // Normalized label-box points: (-1,-1) bottom left, (0,0) centre, (1,1) top right,
+            // rotated with the text; unset = the label's own layout origin (see TextLabelStyle).
+            std::optional<cglib::vec2<float>> calloutLineAnchor;
+            std::optional<cglib::vec2<float>> calloutBandAnchor;
             std::optional<GlyphMap::Glyph> calloutLineGlyph;
             // The plate drawn behind the text (see TextLabelStyle). backgroundGlyph is the atlas
             // cell it is 3-sliced from, so the corners keep their radius however wide the text is.
@@ -61,7 +69,7 @@ namespace carto::vt {
             cglib::vec2<float> backgroundPadding = cglib::vec2<float>(0, 0);
             std::optional<GlyphMap::Glyph> backgroundGlyph;
 
-            explicit Style(LabelOrientation orientation, ColorFunction colorFunc, FloatFunction sizeFunc, ColorFunction haloColorFunc, FloatFunction haloRadiusFunc, bool autoflip, float scale, float ascent, float descent, const std::optional<Transform>& transform, std::shared_ptr<const GlyphMap> glyphMap, int glyphRenderSize, float maxDistance = 0.0f, float calloutScreenAnchor = -1.0f, float calloutOffset = 0.0f, float calloutStep = 0.0f, int calloutMaxRows = 8, float calloutLineWidth = 1.0f, const std::optional<GlyphMap::Glyph>& calloutLineGlyph = std::optional<GlyphMap::Glyph>(), const Color& backgroundColor = Color(), float backgroundRadius = 0.0f, const cglib::vec2<float>& backgroundPadding = cglib::vec2<float>(0, 0), const std::optional<GlyphMap::Glyph>& backgroundGlyph = std::optional<GlyphMap::Glyph>()) : orientation(orientation), colorFunc(std::move(colorFunc)), sizeFunc(std::move(sizeFunc)), haloColorFunc(std::move(haloColorFunc)), haloRadiusFunc(std::move(haloRadiusFunc)), autoflip(autoflip), scale(scale), ascent(ascent), descent(descent), transform(transform), glyphMap(std::move(glyphMap)), glyphRenderSize(glyphRenderSize), maxDistance(maxDistance), calloutScreenAnchor(calloutScreenAnchor), calloutOffset(calloutOffset), calloutStep(calloutStep), calloutMaxRows(calloutMaxRows), calloutLineWidth(calloutLineWidth), calloutLineGlyph(calloutLineGlyph), backgroundColor(backgroundColor), backgroundRadius(backgroundRadius), backgroundPadding(backgroundPadding), backgroundGlyph(backgroundGlyph) { }
+            explicit Style(LabelOrientation orientation, ColorFunction colorFunc, FloatFunction sizeFunc, ColorFunction haloColorFunc, FloatFunction haloRadiusFunc, bool autoflip, float scale, float ascent, float descent, const std::optional<Transform>& transform, std::shared_ptr<const GlyphMap> glyphMap, int glyphRenderSize, float maxDistance = 0.0f, FloatFunction rankFunc = FloatFunction(0.0f), float calloutScreenAnchor = -1.0f, float calloutOffset = 0.0f, float calloutStep = 0.0f, int calloutMaxRows = 8, int calloutPersistPasses = 0, float calloutLineWidth = 1.0f, const std::optional<cglib::vec2<float>>& calloutLineAnchor = std::optional<cglib::vec2<float>>(), const std::optional<cglib::vec2<float>>& calloutBandAnchor = std::optional<cglib::vec2<float>>(), const std::optional<GlyphMap::Glyph>& calloutLineGlyph = std::optional<GlyphMap::Glyph>(), const Color& backgroundColor = Color(), float backgroundRadius = 0.0f, const cglib::vec2<float>& backgroundPadding = cglib::vec2<float>(0, 0), const std::optional<GlyphMap::Glyph>& backgroundGlyph = std::optional<GlyphMap::Glyph>()) : orientation(orientation), colorFunc(std::move(colorFunc)), sizeFunc(std::move(sizeFunc)), haloColorFunc(std::move(haloColorFunc)), haloRadiusFunc(std::move(haloRadiusFunc)), autoflip(autoflip), scale(scale), ascent(ascent), descent(descent), transform(transform), glyphMap(std::move(glyphMap)), glyphRenderSize(glyphRenderSize), maxDistance(maxDistance), rankFunc(std::move(rankFunc)), calloutScreenAnchor(calloutScreenAnchor), calloutOffset(calloutOffset), calloutStep(calloutStep), calloutMaxRows(calloutMaxRows), calloutPersistPasses(calloutPersistPasses), calloutLineWidth(calloutLineWidth), calloutLineAnchor(calloutLineAnchor), calloutBandAnchor(calloutBandAnchor), calloutLineGlyph(calloutLineGlyph), backgroundColor(backgroundColor), backgroundRadius(backgroundRadius), backgroundPadding(backgroundPadding), backgroundGlyph(backgroundGlyph) { }
         };
 
         struct PlacementInfo {

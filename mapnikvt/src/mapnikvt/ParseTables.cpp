@@ -53,4 +53,19 @@ namespace carto::mvt {
         };
         return labelOrientationTable;
     }
+
+    const ParseTable<cglib::vec2<float>>& getLabelBoxAnchorTable() {
+        static const std::unordered_map<std::string, cglib::vec2<float>> labelBoxAnchorTable = {
+            { "center",       cglib::vec2<float>( 0,  0) },
+            { "left",         cglib::vec2<float>(-1,  0) },
+            { "right",        cglib::vec2<float>( 1,  0) },
+            { "top",          cglib::vec2<float>( 0,  1) },
+            { "bottom",       cglib::vec2<float>( 0, -1) },
+            { "top-left",     cglib::vec2<float>(-1,  1) },
+            { "top-right",    cglib::vec2<float>( 1,  1) },
+            { "bottom-left",  cglib::vec2<float>(-1, -1) },
+            { "bottom-right", cglib::vec2<float>( 1, -1) }
+        };
+        return labelBoxAnchorTable;
+    }
 }

@@ -132,19 +132,30 @@ namespace carto::vt {
         cglib::vec2<float> backgroundOffset;
         std::shared_ptr<const BitmapImage> backgroundImage;
         float maxDistance; // meters from the camera beyond which the label is not placed; 0 = no limit
+        // Added to the label's placement priority by the culler, once per pass and per label, so
+        // the expression behind it can read view::distance. Ranking, not appearance: it decides
+        // which of two colliding labels keeps the slot.
+        FloatFunction rankFunc;
         // CALLOUT orientation only, all in screen pixels except the anchor:
         float calloutScreenAnchor; // where the label band sits, as a fraction of the screen height from the top; < 0 stacks it from its own anchor instead
         float calloutOffset;       // minimum distance the label is lifted above its anchor
-        float calloutStep;         // how much further up the next stacking row is
+        float calloutStep;         // how much further the next stacking row is; NEGATIVE stacks downwards, which is what a band pinned to the top of the screen needs
         int calloutMaxRows;        // how many rows may be tried before the label is hidden
+        int calloutPersistPasses;  // placement passes a callout that is already on screen may fail before it is hidden
         float calloutLineWidth;    // leader line width, 0 draws no line
+        // Points OF THE LABEL BOX, in normalized box coordinates: (-1,-1) is the bottom left
+        // corner of the text (plate included), (0,0) its centre, (1,1) the top right. Rotation
+        // applies to them like it does to the glyphs, so on a tilted name the bottom left corner
+        // is the start of the first letter. Unset keeps the text laid out around its own anchor.
+        std::optional<cglib::vec2<float>> calloutLineAnchor; // the point held over the anchor, where the leader line ends
+        std::optional<cglib::vec2<float>> calloutBandAnchor; // the point put on the band line (unset = the bottom of the box)
         // A filled plate behind the text, sized to it. Any orientation, not just CALLOUT - a
         // classic map label reads over busy ground with one too. Alpha 0 draws nothing.
         Color backgroundColor;
         float backgroundRadius;    // corner radius, screen pixels
         cglib::vec2<float> backgroundPadding; // around the text, screen pixels
 
-        explicit TextLabelStyle(LabelOrientation orientation, ColorFunction colorFunc, FloatFunction sizeFunc, ColorFunction haloColorFunc, FloatFunction haloRadiusFunc, bool autoflip, float angle, float backgroundScale, const cglib::vec2<float>& backgroundOffset, std::shared_ptr<const BitmapImage> backgroundImage, float maxDistance = 0.0f, float calloutScreenAnchor = -1.0f, float calloutOffset = 0.0f, float calloutStep = 0.0f, int calloutMaxRows = 8, float calloutLineWidth = 1.0f, const Color& backgroundColor = Color(), float backgroundRadius = 0.0f, const cglib::vec2<float>& backgroundPadding = cglib::vec2<float>(0, 0)) : orientation(orientation), colorFunc(std::move(colorFunc)), sizeFunc(std::move(sizeFunc)), haloColorFunc(std::move(haloColorFunc)), haloRadiusFunc(std::move(haloRadiusFunc)), autoflip(autoflip), angle(angle), backgroundScale(backgroundScale), backgroundOffset(backgroundOffset), backgroundImage(std::move(backgroundImage)), maxDistance(maxDistance), calloutScreenAnchor(calloutScreenAnchor), calloutOffset(calloutOffset), calloutStep(calloutStep), calloutMaxRows(calloutMaxRows), calloutLineWidth(calloutLineWidth), backgroundColor(backgroundColor), backgroundRadius(backgroundRadius), backgroundPadding(backgroundPadding) { }
+        explicit TextLabelStyle(LabelOrientation orientation, ColorFunction colorFunc, FloatFunction sizeFunc, ColorFunction haloColorFunc, FloatFunction haloRadiusFunc, bool autoflip, float angle, float backgroundScale, const cglib::vec2<float>& backgroundOffset, std::shared_ptr<const BitmapImage> backgroundImage, float maxDistance = 0.0f, FloatFunction rankFunc = FloatFunction(0.0f), float calloutScreenAnchor = -1.0f, float calloutOffset = 0.0f, float calloutStep = 0.0f, int calloutMaxRows = 8, int calloutPersistPasses = 0, float calloutLineWidth = 1.0f, const std::optional<cglib::vec2<float>>& calloutLineAnchor = std::optional<cglib::vec2<float>>(), const std::optional<cglib::vec2<float>>& calloutBandAnchor = std::optional<cglib::vec2<float>>(), const Color& backgroundColor = Color(), float backgroundRadius = 0.0f, const cglib::vec2<float>& backgroundPadding = cglib::vec2<float>(0, 0)) : orientation(orientation), colorFunc(std::move(colorFunc)), sizeFunc(std::move(sizeFunc)), haloColorFunc(std::move(haloColorFunc)), haloRadiusFunc(std::move(haloRadiusFunc)), autoflip(autoflip), angle(angle), backgroundScale(backgroundScale), backgroundOffset(backgroundOffset), backgroundImage(std::move(backgroundImage)), maxDistance(maxDistance), rankFunc(std::move(rankFunc)), calloutScreenAnchor(calloutScreenAnchor), calloutOffset(calloutOffset), calloutStep(calloutStep), calloutMaxRows(calloutMaxRows), calloutPersistPasses(calloutPersistPasses), calloutLineWidth(calloutLineWidth), calloutLineAnchor(calloutLineAnchor), calloutBandAnchor(calloutBandAnchor), backgroundColor(backgroundColor), backgroundRadius(backgroundRadius), backgroundPadding(backgroundPadding) { }
     };
 }
 

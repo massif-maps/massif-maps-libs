@@ -65,6 +65,13 @@ namespace carto::vt {
         float getCalloutOffset() const { return _calloutOffset; }
         void setCalloutOffset(float offset) { _calloutOffset = offset; }
 
+        // Placement passes this callout has failed in a row while it was on screen. The style may
+        // allow a few (TileLabel::Style::calloutPersistPasses): a panning map rebuilds its label
+        // set constantly, and a name that loses its row for one pass and takes it again on the
+        // next reads as a flicker.
+        int getCalloutFailures() const { return _calloutFailures; }
+        void setCalloutFailures(int failures) { _calloutFailures = failures; }
+
         // Identifies the set of tile geometries this label was built from, so that a rebuild
         // can tell whether anything about its source actually changed (see
         // GLTileRenderer::buildLabelMaps). Order-independent: the merge order follows the
@@ -224,19 +231,27 @@ namespace carto::vt {
             }
         };
         
+        // A point OF THE LABEL BOX from a normalized anchor - (-1,-1) the bottom left corner of the
+        // text (the plate's padding included), (0,0) the centre, (1,1) the top right - in drawn
+        // offset units, rotated with the glyphs. Both the leader line's end and the row the culler
+        // aligns the label on are one of these, so a rotated name can hang from its first letter.
+        cglib::vec2<float> calculateBoxPoint(const cglib::vec2<float>& anchor, float scale, float pixelScale) const;
+        // How far the label is moved so that the style's line anchor lands on its feature's
+        // vertical; zero unless the style names one.
+        cglib::vec2<float> calculateCalloutShift(float scale, float pixelScale) const;
         float calculateTerrainScaleFactor(const Placement& placement, const ViewState& viewState) const;
         float calculateTerrainScaleFactor(const cglib::vec3<double>& position, const ViewState& viewState) const;
         void setupCoordinateSystem(const ViewState& viewState, const std::shared_ptr<const Placement>& placement, cglib::vec3<float>& origin, cglib::vec3<float>& xAxis, cglib::vec3<float>& yAxis) const;
         void buildPointVertexData(VertexArray<cglib::vec3<float>>& vertices, VertexArray<cglib::vec2<std::int16_t>>& texCoords, VertexArray<cglib::vec4<std::int8_t>>& attribs, VertexArray<std::uint16_t>& indices) const;
         // Appends the plate behind the text - three quads, so the corners keep their radius at any
         // text width. Drawn with its own style index (its own colour), before the glyphs.
-        void appendLabelBackground(float size, float scale, const ViewState& viewState, const std::shared_ptr<const Placement>& placement, int backgroundStyleIndex, float calloutShift, VertexArray<cglib::vec3<float>>& vertices, VertexArray<cglib::vec3<float>>& offsets, VertexArray<cglib::vec3<float>>& normals, VertexArray<cglib::vec2<std::int16_t>>& texCoords, VertexArray<cglib::vec4<std::int8_t>>& attribs, VertexArray<std::uint16_t>& indices) const;
+        void appendLabelBackground(float size, float scale, const ViewState& viewState, const std::shared_ptr<const Placement>& placement, int backgroundStyleIndex, const cglib::vec2<float>& calloutShift, VertexArray<cglib::vec3<float>>& vertices, VertexArray<cglib::vec3<float>>& offsets, VertexArray<cglib::vec3<float>>& normals, VertexArray<cglib::vec2<std::int16_t>>& texCoords, VertexArray<cglib::vec4<std::int8_t>>& attribs, VertexArray<std::uint16_t>& indices) const;
         // Appends the leader line to a draw batch (nothing for a label that has none).
         void appendCalloutLine(float size, float scale, const ViewState& viewState, const std::shared_ptr<const Placement>& placement, int styleIndex, VertexArray<cglib::vec3<float>>& vertices, VertexArray<cglib::vec3<float>>& offsets, VertexArray<cglib::vec3<float>>& normals, VertexArray<cglib::vec2<std::int16_t>>& texCoords, VertexArray<cglib::vec4<std::int8_t>>& attribs, VertexArray<std::uint16_t>& indices) const;
-        // The leader line quad, in the same glyph units as the cached text quads. Built per frame
+        // The leader line quad, in the same units as the drawn glyph offsets. Built per frame
         // rather than cached with the text: its length is the culler's offset, which changes with
         // everything else on screen.
-        void buildCalloutLineVertexData(float scale, VertexArray<cglib::vec3<float>>& vertices, VertexArray<cglib::vec2<std::int16_t>>& texCoords, VertexArray<cglib::vec4<std::int8_t>>& attribs, VertexArray<std::uint16_t>& indices) const;
+        void buildCalloutLineVertexData(float pixelScale, VertexArray<cglib::vec3<float>>& vertices, VertexArray<cglib::vec2<std::int16_t>>& texCoords, VertexArray<cglib::vec4<std::int8_t>>& attribs, VertexArray<std::uint16_t>& indices) const;
         void updateLineVertexData(const std::shared_ptr<const Placement>& placement, float scale, const ViewState& viewState, bool rebuildForView) const;
         bool buildLineVertexData(const std::shared_ptr<const Placement>& placement, float scale, const ViewState& viewState, const cglib::mat4x4<double>& mvpMatrix, VertexArray<cglib::vec3<float>>& vertices, VertexArray<cglib::vec2<std::int16_t>>& texCoords, VertexArray<cglib::vec4<std::int8_t>>& attribs, VertexArray<std::uint16_t>& indices) const;
 
@@ -276,7 +291,8 @@ namespace carto::vt {
         // updatePlacement, carried over by snapPlacement so a re-created label places the same way.
         double _placementTextLength = 0;
 
-        float _calloutOffset = 0.0f; // screen pixels, CALLOUT only (see setCalloutOffset)
+        float _calloutOffset = 0.0f; // offset units along the camera up axis, CALLOUT only (see setCalloutOffset)
+        int _calloutFailures = 0;
         float _opacity = 0.0f;
         bool _visible = false;
         bool _active = false;

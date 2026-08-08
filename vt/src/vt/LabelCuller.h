@@ -11,6 +11,7 @@
 #include "Label.h"
 
 #include <array>
+#include <functional>
 #include <vector>
 #include <list>
 #include <unordered_map>
@@ -40,6 +41,8 @@ namespace carto::vt {
         static constexpr int GRID_RESOLUTION_X = 16;
         static constexpr int GRID_RESOLUTION_Y = 32;
         static constexpr float EXTRA_LABEL_BUFFER = 1.0f; // extra buffer for the label
+        static constexpr float SCREEN_EDGE_MARGIN = 8.0f; // pixels a lifted callout keeps from the top edge
+        static constexpr float GAIN_PROBE_OFFSET = 100.0f; // offset units a callout is displaced by to measure its screen gain
 
 
         struct CullRecord {
@@ -70,7 +73,7 @@ namespace carto::vt {
         // A CALLOUT label is lifted away from its anchor until it finds free screen space instead
         // of being hidden. Returns false when it ran out of rows. Updates the label's offset and
         // the cull record in place.
-        bool placeCalloutLabel(LabelInfo& labelInfo);
+        bool placeCalloutLabel(LabelInfo& labelInfo, const std::function<bool(const LabelInfo&)>& testGroupDistance);
 
         cglib::mat4x4<float> _localCameraProjMatrix;
         ViewState _viewState;

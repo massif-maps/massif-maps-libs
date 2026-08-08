@@ -5,6 +5,8 @@
 #include <cmath>
 #include <map>
 
+
+
 namespace carto::vt {
     Label::Label(const TileLabel& tileLabel, const TileId& tileId, int layerIdx, const cglib::mat4x4<double>& tileMatrix, const std::shared_ptr<const TileTransformer::VertexTransformer>& transformer) :
         _tileId(tileId), _layerIndex(layerIdx), _localId(tileLabel.getLocalId()), _globalId(tileLabel.getGlobalId()), _groupId(tileLabel.getGroupId()), _glyphs(tileLabel.getGlyphs()), _style(tileLabel.getStyle()), _priority(tileLabel.getPlacementInfo().priority), _minimumGroupDistance(tileLabel.getPlacementInfo().minimumGroupDistance), _allowOverlapSameFeatureId(tileLabel.getPlacementInfo().allowOverlapSameFeatureId), _sameFeatureIdDependent(tileLabel.getPlacementInfo().sameFeatureIdDependent), _geoPointIndex(tileLabel.getGeoPointIndex())
@@ -232,6 +234,12 @@ namespace carto::vt {
         // allowance its run already earned, or it would be re-judged strictly (and blink) every
         // time tiles stream in.
         _lineLayoutValid = label._lineLayoutValid;
+        // The same goes for where a callout was lifted to: the offset belongs to the label, not to
+        // the tiles it was built from, and a rebuilt label that starts at 0 drops onto its own
+        // anchor until the next placement pass - which is a whole screen of names jumping every
+        // time tiles stream in while panning.
+        _calloutOffset = label._calloutOffset;
+        _calloutFailures = label._calloutFailures;
         if (!_placement) {
             return;
         }
@@ -459,8 +467,9 @@ namespace carto::vt {
         // label world size is derived from the zoom level only, so the perspective divide would
         // otherwise scale labels by their distance - oversizing labels lifted onto high mountains,
         // shrinking them towards the horizon, and on a tilted 2D map making the nearest ones far
-        // too big. Rescale by the ratio of the label view depth to the focus depth (where the view
-        // axis meets the ground plane), which exactly cancels the perspective scaling.
+        // too big. Rescale by the ratio of the label view depth to the distance the zoom is
+        // calibrated at - the camera-to-focus distance - which exactly cancels the perspective
+        // scaling.
         if (!viewState.planarProjection) {
             return 1.0f;
         }
@@ -469,7 +478,11 @@ namespace carto::vt {
         if (!(depth > 0)) {
             return 1.0f;
         }
-        double focusDepth = (viewDir(2) < 0 ? viewState.origin(2) / -viewDir(2) : depth);
+        // Where the view axis meets the ground is only the same thing while the focus point sits
+        // ON the ground: raise the viewpoint or aim at the horizon and it grows without bound,
+        // shrinking every label (which is exactly what a panorama does).
+        double focusDepth = (viewState.focusDistance > 0 ? viewState.focusDistance
+                                                         : (viewDir(2) < 0 ? viewState.origin(2) / -viewDir(2) : depth));
         if (!(focusDepth > 0)) {
             return 1.0f;
         }
@@ -502,11 +515,14 @@ namespace carto::vt {
         float padding = buffer * viewState.zoomScale * _style->scale * calculateTerrainScaleFactor(*placement, viewState) / std::sqrt(2.0f);
         cglib::vec3<float> origin, xAxis, yAxis;
         setupCoordinateSystem(viewState, placement, origin, xAxis, yAxis);
-        if (_style->orientation == LabelOrientation::CALLOUT) {
-            // The lift the culler decided on. One pixel is scale/size world units (the glyph
-            // quads are in units of the font size), and the envelope has to move with the glyphs
-            // or the collision test is done where the label is not.
-            origin = origin + yAxis * (size > 0 ? _calloutOffset * scale / size : 0.0f);
+        if (_style->orientation == LabelOrientation::CALLOUT && size > 0) {
+            // The lift the culler decided on, plus the slide that puts the style's line anchor
+            // over the feature. One pixel is scale/size world units (the glyph quads are in units
+            // of the font size), and the envelope has to move with the glyphs or the collision
+            // test is done where the label is not.
+            float pixelScale = scale / size;
+            cglib::vec2<float> calloutShift = calculateCalloutShift(scale, pixelScale) + cglib::vec2<float>(0, _calloutOffset * pixelScale);
+            origin = origin + xAxis * calloutShift(0) + yAxis * calloutShift(1);
         }
 
         bool valid = cglib::dot_product(viewState.orientation[2], placement->normal) > MIN_BILLBOARD_VIEW_NORMAL_DOTPRODUCT;
@@ -540,9 +556,15 @@ namespace carto::vt {
             valid = valid && _cachedValid;
         }
         else {
-            // Use bounding box for envelope
-            float minX = _glyphBBox.min(0) * scale - padding, maxX = _glyphBBox.max(0) * scale + padding;
-            float minY = _glyphBBox.min(1) * scale - padding, maxY = _glyphBBox.max(1) * scale + padding;
+            // Use bounding box for envelope. The plate is part of what the label covers, so its
+            // padding belongs here too - the band aligns labels on this box, and a box smaller
+            // than what is drawn puts the row a few pixels off.
+            cglib::vec2<float> platePadding(0, 0);
+            if (_style->backgroundColor.value() != 0 && _style->backgroundGlyph && size > 0) {
+                platePadding = _style->backgroundPadding * (scale / size);
+            }
+            float minX = _glyphBBox.min(0) * scale - padding - platePadding(0), maxX = _glyphBBox.max(0) * scale + padding + platePadding(0);
+            float minY = _glyphBBox.min(1) * scale - padding - platePadding(1), maxY = _glyphBBox.max(1) * scale + padding + platePadding(1);
             if (_style->transform) {
                 cglib::mat2x2<float> transform = _style->transform->matrix2();
                 cglib::vec2<float> p00 = cglib::transform(cglib::vec2<float>(minX, minY), transform);
@@ -621,19 +643,22 @@ namespace carto::vt {
             setupCoordinateSystem(viewState, placement, origin, xAxis, yAxis);
             // The plate first: within one label the draw order is the index order, so anything
             // appended after the glyphs would cover them.
+            cglib::vec2<float> calloutShift(0, 0);
+            if (_style->orientation == LabelOrientation::CALLOUT && size > 0) {
+                float pixelScale = scale / size;
+                calloutShift = calculateCalloutShift(scale, pixelScale) + cglib::vec2<float>(0, _calloutOffset * pixelScale);
+            }
             if (backgroundStyleIndex >= 0) {
-                float shift = (_style->orientation == LabelOrientation::CALLOUT && size > 0 ? _calloutOffset * scale / size : 0.0f);
-                appendLabelBackground(size, scale, viewState, placement, backgroundStyleIndex, shift, vertices, offsets, normals, texCoords, attribs, indices);
+                appendLabelBackground(size, scale, viewState, placement, backgroundStyleIndex, calloutShift, vertices, offsets, normals, texCoords, attribs, indices);
             }
             vertices.fill(origin, _cachedVertices.size());
             if (_style->orientation == LabelOrientation::BILLBOARD_3D || _style->orientation == LabelOrientation::LINE_BILLBOARD_3D || _style->orientation == LabelOrientation::CALLOUT) {
                 // Axes are the camera's: leave them to the shader (see labelVsh). A callout is
                 // lifted along the camera up axis by what the culler decided (see
-                // setCalloutOffset); the anchor itself stays put, which is where its leader line
-                // starts from.
-                float calloutShift = (_style->orientation == LabelOrientation::CALLOUT && size > 0 ? _calloutOffset * scale / size : 0.0f);
+                // setCalloutOffset) and slid sideways so that the style's line anchor sits over
+                // the feature; the anchor itself stays put, which is where its leader line starts.
                 for (const cglib::vec3<float>& vertex : _cachedVertices) {
-                    offsets.append(cglib::vec3<float>(vertex(0) * scale, vertex(1) * scale + calloutShift, 0));
+                    offsets.append(cglib::vec3<float>(vertex(0) * scale + calloutShift(0), vertex(1) * scale + calloutShift(1), 0));
                 }
             } else {
                 // Axes come from the placement (or from the placement normal and the camera
@@ -724,7 +749,7 @@ namespace carto::vt {
         }
     }
 
-    void Label::appendLabelBackground(float size, float scale, const ViewState& viewState, const std::shared_ptr<const Placement>& placement, int backgroundStyleIndex, float calloutShift, VertexArray<cglib::vec3<float>>& vertices, VertexArray<cglib::vec3<float>>& offsets, VertexArray<cglib::vec3<float>>& normals, VertexArray<cglib::vec2<std::int16_t>>& texCoords, VertexArray<cglib::vec4<std::int8_t>>& attribs, VertexArray<std::uint16_t>& indices) const {
+    void Label::appendLabelBackground(float size, float scale, const ViewState& viewState, const std::shared_ptr<const Placement>& placement, int backgroundStyleIndex, const cglib::vec2<float>& calloutShift, VertexArray<cglib::vec3<float>>& vertices, VertexArray<cglib::vec3<float>>& offsets, VertexArray<cglib::vec3<float>>& normals, VertexArray<cglib::vec2<std::int16_t>>& texCoords, VertexArray<cglib::vec4<std::int8_t>>& attribs, VertexArray<std::uint16_t>& indices) const {
         const std::optional<GlyphMap::Glyph>& glyph = _style->backgroundGlyph;
         if (!glyph || _style->backgroundColor.value() == 0 || !(size > 0) || _glyphBBox.min(0) > _glyphBBox.max(0)) {
             return;
@@ -785,7 +810,7 @@ namespace carto::vt {
             for (int c = 0; c < 4; c++) {
                 cglib::vec2<float> p = cglib::transform(corners[c], transform);
                 if (cameraAxes) {
-                    offsets.append(cglib::vec3<float>(p(0), p(1) + calloutShift, 0));
+                    offsets.append(cglib::vec3<float>(p(0) + calloutShift(0), p(1) + calloutShift(1), 0));
                 } else {
                     offsets.append(xAxis * p(0) + yAxis * p(1));
                 }
@@ -824,10 +849,11 @@ namespace carto::vt {
 
     void Label::buildCalloutLineVertexData(float pixelScale, VertexArray<cglib::vec3<float>>& vertices, VertexArray<cglib::vec2<std::int16_t>>& texCoords, VertexArray<cglib::vec4<std::int8_t>>& attribs, VertexArray<std::uint16_t>& indices) const {
         const std::optional<GlyphMap::Glyph>& lineGlyph = _style->calloutLineGlyph;
-        // The line runs from the anchor up to where the glyphs start, so a label sitting on its
-        // anchor has nothing to draw.
-        float length = _calloutOffset * pixelScale;
-        if (!lineGlyph || !(length > 0)) {
+        // The line runs from the anchor to the point of the label the style attaches it to (the
+        // centre by default, the bottom left corner for a tilted panorama name), so a label
+        // sitting on its own anchor has nothing to draw.
+        float lift = _calloutOffset * pixelScale;
+        if (!lineGlyph || !(lift > 0)) {
             return;
         }
         float halfWidth = _style->calloutLineWidth * pixelScale * 0.5f;
@@ -845,7 +871,36 @@ namespace carto::vt {
         cglib::vec4<std::int8_t> attrib(0, static_cast<std::int8_t>(GlyphMap::GlyphMode::BITMAP), 0, 0);
         attribs.append(attrib, attrib, attrib, attrib);
 
-        vertices.append(cglib::vec3<float>(-halfWidth, 0, 0), cglib::vec3<float>(halfWidth, 0, 0), cglib::vec3<float>(halfWidth, length, 0), cglib::vec3<float>(-halfWidth, length, 0));
+        vertices.append(cglib::vec3<float>(-halfWidth, 0, 0), cglib::vec3<float>(halfWidth, 0, 0), cglib::vec3<float>(halfWidth, lift, 0), cglib::vec3<float>(-halfWidth, lift, 0));
+    }
+
+    cglib::vec2<float> Label::calculateCalloutShift(float scale, float pixelScale) const {
+        // The style names a point OF THE LABEL and that point is what the callout holds over the
+        // feature: the label moves so that it lands on the anchor's vertical, which is what keeps
+        // every leader line vertical and lets a tilted name start exactly above its summit.
+        if (_style->orientation != LabelOrientation::CALLOUT || !_style->calloutLineAnchor) {
+            return cglib::vec2<float>(0, 0);
+        }
+        return -calculateBoxPoint(*_style->calloutLineAnchor, scale, pixelScale);
+    }
+
+    cglib::vec2<float> Label::calculateBoxPoint(const cglib::vec2<float>& anchor, float scale, float pixelScale) const {
+        if (_glyphBBox.min(0) > _glyphBBox.max(0)) {
+            return cglib::vec2<float>(0, 0);
+        }
+        // The plate is part of the box the style points at: a leader line that stopped at the
+        // glyph bounds would end inside it.
+        cglib::vec2<float> padding(0, 0);
+        if (_style->backgroundColor.value() != 0 && _style->backgroundGlyph) {
+            padding = _style->backgroundPadding * pixelScale;
+        }
+        float x0 = _glyphBBox.min(0) * scale - padding(0), x1 = _glyphBBox.max(0) * scale + padding(0);
+        float y0 = _glyphBBox.min(1) * scale - padding(1), y1 = _glyphBBox.max(1) * scale + padding(1);
+        cglib::vec2<float> p(x0 + (x1 - x0) * (anchor(0) + 1.0f) * 0.5f, y0 + (y1 - y0) * (anchor(1) + 1.0f) * 0.5f);
+        if (_style->transform) {
+            p = cglib::transform(p, _style->transform->matrix2());
+        }
+        return p;
     }
 
     bool Label::buildLineVertexData(const std::shared_ptr<const Placement>& placement, float scale, const ViewState& viewState, const cglib::mat4x4<double>& mvpMatrix, VertexArray<cglib::vec3<float>>& vertices, VertexArray<cglib::vec2<std::int16_t>>& texCoords, VertexArray<cglib::vec4<std::int8_t>>& attribs, VertexArray<std::uint16_t>& indices) const {
