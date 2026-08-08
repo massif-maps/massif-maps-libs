@@ -564,7 +564,7 @@ namespace carto::vt {
         return valid;
     }
 
-    bool Label::calculateVertexData(float size, const ViewState& viewState, int styleIndex, int haloStyleIndex, VertexArray<cglib::vec3<float>>& vertices, VertexArray<cglib::vec3<float>>& offsets, VertexArray<cglib::vec3<float>>& normals, VertexArray<cglib::vec2<std::int16_t>>& texCoords, VertexArray<cglib::vec4<std::int8_t>>& attribs, VertexArray<std::uint16_t>& indices, DrawPass pass) const {
+    bool Label::calculateVertexData(float size, const ViewState& viewState, int styleIndex, int haloStyleIndex, VertexArray<cglib::vec3<float>>& vertices, VertexArray<cglib::vec3<float>>& offsets, VertexArray<cglib::vec3<float>>& normals, VertexArray<cglib::vec2<std::int16_t>>& texCoords, VertexArray<cglib::vec4<std::int8_t>>& attribs, VertexArray<std::uint16_t>& indices, DrawPass pass, int backgroundStyleIndex) const {
         VT_STAT_CLOCK(labelClock);
         std::shared_ptr<const Placement> placement = getPlacement(viewState);
         VT_STAT_SPLIT(labelPlacementNs, labelClock);
@@ -619,6 +619,12 @@ namespace carto::vt {
 
             cglib::vec3<float> origin, xAxis, yAxis;
             setupCoordinateSystem(viewState, placement, origin, xAxis, yAxis);
+            // The plate first: within one label the draw order is the index order, so anything
+            // appended after the glyphs would cover them.
+            if (backgroundStyleIndex >= 0) {
+                float shift = (_style->orientation == LabelOrientation::CALLOUT && size > 0 ? _calloutOffset * scale / size : 0.0f);
+                appendLabelBackground(size, scale, viewState, placement, backgroundStyleIndex, shift, vertices, offsets, normals, texCoords, attribs, indices);
+            }
             vertices.fill(origin, _cachedVertices.size());
             if (_style->orientation == LabelOrientation::BILLBOARD_3D || _style->orientation == LabelOrientation::LINE_BILLBOARD_3D || _style->orientation == LabelOrientation::CALLOUT) {
                 // Axes are the camera's: leave them to the shader (see labelVsh). A callout is
@@ -715,6 +721,75 @@ namespace carto::vt {
 
             // Move pen
             pen += glyph.advance;
+        }
+    }
+
+    void Label::appendLabelBackground(float size, float scale, const ViewState& viewState, const std::shared_ptr<const Placement>& placement, int backgroundStyleIndex, float calloutShift, VertexArray<cglib::vec3<float>>& vertices, VertexArray<cglib::vec3<float>>& offsets, VertexArray<cglib::vec3<float>>& normals, VertexArray<cglib::vec2<std::int16_t>>& texCoords, VertexArray<cglib::vec4<std::int8_t>>& attribs, VertexArray<std::uint16_t>& indices) const {
+        const std::optional<GlyphMap::Glyph>& glyph = _style->backgroundGlyph;
+        if (!glyph || _style->backgroundColor.value() == 0 || !(size > 0) || _glyphBBox.min(0) > _glyphBBox.max(0)) {
+            return;
+        }
+
+        // The plate covers the text bounds plus the padding, both in glyph units (1 unit = the
+        // font size), and is cut into three columns: the two caps keep the cell's corner radius,
+        // the middle is stretched. That is what keeps a corner round on a long name.
+        float pixelScale = scale / size;
+        cglib::vec2<float> padding = _style->backgroundPadding * pixelScale;
+        float x0 = _glyphBBox.min(0) * scale - padding(0), x1 = _glyphBBox.max(0) * scale + padding(0);
+        float y0 = _glyphBBox.min(1) * scale - padding(1), y1 = _glyphBBox.max(1) * scale + padding(1);
+        float height = y1 - y0;
+        float cap = std::min(_style->backgroundRadius * pixelScale, (x1 - x0) * 0.5f);
+        cap = std::max(cap, 0.0f);
+
+        // Atlas coordinates of the cell's left cap, middle column and right cap.
+        float u0 = static_cast<float>(glyph->x);
+        float u1 = static_cast<float>(glyph->x + glyph->width);
+        float uMid = (u0 + u1) * 0.5f;
+        float v0 = static_cast<float>(glyph->y);
+        float v1 = static_cast<float>(glyph->y + glyph->height);
+
+        struct Slice { float x0, x1, u0, u1; };
+        const Slice slices[3] = {
+            { x0, x0 + cap, u0, uMid },
+            { x0 + cap, x1 - cap, uMid - 0.5f, uMid + 0.5f },
+            { x1 - cap, x1, uMid, u1 }
+        };
+
+        cglib::vec3<float> origin, xAxis, yAxis;
+        setupCoordinateSystem(viewState, placement, origin, xAxis, yAxis);
+        bool cameraAxes = (_style->orientation == LabelOrientation::BILLBOARD_3D || _style->orientation == LabelOrientation::LINE_BILLBOARD_3D || _style->orientation == LabelOrientation::CALLOUT);
+        cglib::mat2x2<float> transform = (_style->transform ? _style->transform->matrix2() : cglib::mat2x2<float>::identity());
+
+        for (int i = 0; i < 3; i++) {
+            const Slice& slice = slices[i];
+            if (!(slice.x1 > slice.x0)) {
+                continue;
+            }
+            std::uint16_t i0 = static_cast<std::uint16_t>(vertices.size());
+            indices.append(i0 + 0, i0 + 1, i0 + 2);
+            indices.append(i0 + 0, i0 + 2, i0 + 3);
+
+            std::int16_t su0 = static_cast<std::int16_t>(slice.u0), su1 = static_cast<std::int16_t>(slice.u1);
+            std::int16_t sv0 = static_cast<std::int16_t>(v0), sv1 = static_cast<std::int16_t>(v1);
+            texCoords.append(cglib::vec2<std::int16_t>(su0, sv1), cglib::vec2<std::int16_t>(su1, sv1), cglib::vec2<std::int16_t>(su1, sv0), cglib::vec2<std::int16_t>(su0, sv0));
+
+            cglib::vec4<std::int8_t> attrib(static_cast<std::int8_t>(backgroundStyleIndex), static_cast<std::int8_t>(GlyphMap::GlyphMode::BITMAP), static_cast<std::int8_t>(_opacity * 127.0f), cameraAxes ? CAMERA_AXIS_OFFSET : WORLD_OFFSET);
+            attribs.append(attrib, attrib, attrib, attrib);
+
+            const cglib::vec2<float> corners[4] = {
+                cglib::vec2<float>(slice.x0, y0), cglib::vec2<float>(slice.x1, y0),
+                cglib::vec2<float>(slice.x1, y0 + height), cglib::vec2<float>(slice.x0, y0 + height)
+            };
+            vertices.fill(origin, 4);
+            normals.fill(placement->normal, 4);
+            for (int c = 0; c < 4; c++) {
+                cglib::vec2<float> p = cglib::transform(corners[c], transform);
+                if (cameraAxes) {
+                    offsets.append(cglib::vec3<float>(p(0), p(1) + calloutShift, 0));
+                } else {
+                    offsets.append(xAxis * p(0) + yAxis * p(1));
+                }
+            }
         }
     }
 

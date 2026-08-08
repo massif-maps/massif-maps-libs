@@ -45,6 +45,11 @@ namespace carto::mvt {
             bindProperty("callout-step", &_calloutStep);
             bindProperty("callout-max-rows", &_calloutMaxRows);
             bindProperty("callout-line-width", &_calloutLineWidth);
+            bindProperty("background-fill", &_backgroundFill);
+            bindProperty("background-opacity", &_backgroundOpacity);
+            bindProperty("background-radius", &_backgroundRadius);
+            bindProperty("background-padding-x", &_backgroundPaddingX);
+            bindProperty("background-padding-y", &_backgroundPaddingY);
             bindProperty("allow-overlap", &_allowOverlap);
             bindProperty("allow-overlap-same-feature-id", &_allowOverlapSameFeatureId);
             bindProperty("same-feature-id-dependent", &_sameFeatureIdDependent);
@@ -105,6 +110,13 @@ namespace carto::mvt {
         FloatProperty _calloutStep = FloatProperty(0.0f);
         FloatProperty _calloutMaxRows = FloatProperty(8.0f);
         FloatProperty _calloutLineWidth = FloatProperty(1.0f);
+        // A filled plate behind the text, for any placement - the classic-map use is a label over
+        // busy ground. Transparent (opacity 0) draws nothing, which is the default.
+        ColorProperty _backgroundFill = ColorProperty("#ffffff");
+        FloatProperty _backgroundOpacity = FloatProperty(0.0f);
+        FloatProperty _backgroundRadius = FloatProperty(0.0f);
+        FloatProperty _backgroundPaddingX = FloatProperty(3.0f);
+        FloatProperty _backgroundPaddingY = FloatProperty(2.0f);
         BoolProperty _allowOverlap = BoolProperty(false);
         BoolProperty _clip = BoolProperty(false);
         BoolProperty _allowOverlapSameFeatureId = BoolProperty(false);

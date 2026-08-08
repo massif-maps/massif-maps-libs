@@ -138,8 +138,13 @@ namespace carto::vt {
         float calloutStep;         // how much further up the next stacking row is
         int calloutMaxRows;        // how many rows may be tried before the label is hidden
         float calloutLineWidth;    // leader line width, 0 draws no line
+        // A filled plate behind the text, sized to it. Any orientation, not just CALLOUT - a
+        // classic map label reads over busy ground with one too. Alpha 0 draws nothing.
+        Color backgroundColor;
+        float backgroundRadius;    // corner radius, screen pixels
+        cglib::vec2<float> backgroundPadding; // around the text, screen pixels
 
-        explicit TextLabelStyle(LabelOrientation orientation, ColorFunction colorFunc, FloatFunction sizeFunc, ColorFunction haloColorFunc, FloatFunction haloRadiusFunc, bool autoflip, float angle, float backgroundScale, const cglib::vec2<float>& backgroundOffset, std::shared_ptr<const BitmapImage> backgroundImage, float maxDistance = 0.0f, float calloutScreenAnchor = -1.0f, float calloutOffset = 0.0f, float calloutStep = 0.0f, int calloutMaxRows = 8, float calloutLineWidth = 1.0f) : orientation(orientation), colorFunc(std::move(colorFunc)), sizeFunc(std::move(sizeFunc)), haloColorFunc(std::move(haloColorFunc)), haloRadiusFunc(std::move(haloRadiusFunc)), autoflip(autoflip), angle(angle), backgroundScale(backgroundScale), backgroundOffset(backgroundOffset), backgroundImage(std::move(backgroundImage)), maxDistance(maxDistance), calloutScreenAnchor(calloutScreenAnchor), calloutOffset(calloutOffset), calloutStep(calloutStep), calloutMaxRows(calloutMaxRows), calloutLineWidth(calloutLineWidth) { }
+        explicit TextLabelStyle(LabelOrientation orientation, ColorFunction colorFunc, FloatFunction sizeFunc, ColorFunction haloColorFunc, FloatFunction haloRadiusFunc, bool autoflip, float angle, float backgroundScale, const cglib::vec2<float>& backgroundOffset, std::shared_ptr<const BitmapImage> backgroundImage, float maxDistance = 0.0f, float calloutScreenAnchor = -1.0f, float calloutOffset = 0.0f, float calloutStep = 0.0f, int calloutMaxRows = 8, float calloutLineWidth = 1.0f, const Color& backgroundColor = Color(), float backgroundRadius = 0.0f, const cglib::vec2<float>& backgroundPadding = cglib::vec2<float>(0, 0)) : orientation(orientation), colorFunc(std::move(colorFunc)), sizeFunc(std::move(sizeFunc)), haloColorFunc(std::move(haloColorFunc)), haloRadiusFunc(std::move(haloRadiusFunc)), autoflip(autoflip), angle(angle), backgroundScale(backgroundScale), backgroundOffset(backgroundOffset), backgroundImage(std::move(backgroundImage)), maxDistance(maxDistance), calloutScreenAnchor(calloutScreenAnchor), calloutOffset(calloutOffset), calloutStep(calloutStep), calloutMaxRows(calloutMaxRows), calloutLineWidth(calloutLineWidth), backgroundColor(backgroundColor), backgroundRadius(backgroundRadius), backgroundPadding(backgroundPadding) { }
     };
 }
 

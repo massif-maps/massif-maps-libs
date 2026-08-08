@@ -3407,6 +3407,7 @@ namespace carto::vt {
         std::shared_ptr<const TileLabel::Style> lastLabelStyle;
         int styleIndex = -1;
         int haloStyleIndex = -1;
+        int backgroundStyleIndex = -1;
         for (const std::shared_ptr<Label>& label : labels) {
             if (!label->isValid()) {
                 continue;
@@ -3426,7 +3427,9 @@ namespace carto::vt {
                 float haloRadius = evaluateFloatFunc(labelStyle->haloRadiusFunc) * HALO_RADIUS_SCALE;
                 haloRadius = std::min(haloRadius, static_cast<float>(GLYPH_RENDER_SPREAD));
 
-                if (labelStyle->transform || (lastLabelStyle && lastLabelStyle->transform) || labelBatchParams.scale != labelStyle->scale || labelBatchParams.glyphRenderSize != labelStyle->glyphRenderSize || labelBatchParams.parameterCount + 2 > LabelBatchParameters::MAX_PARAMETERS) {
+                cglib::vec4<float> backgroundColor = cglib::vec4<float>(labelStyle->backgroundColor.rgba());
+                bool hasBackground = labelStyle->backgroundColor.value() != 0 && labelStyle->backgroundGlyph;
+                if (labelStyle->transform || (lastLabelStyle && lastLabelStyle->transform) || labelBatchParams.scale != labelStyle->scale || labelBatchParams.glyphRenderSize != labelStyle->glyphRenderSize || labelBatchParams.parameterCount + (hasBackground ? 3 : 2) > LabelBatchParameters::MAX_PARAMETERS) {
                     renderLabelBatch(labelBatchParams, bitmap);
                     labelBatchParams.labelCount = 0;
                     labelBatchParams.parameterCount = 0;
@@ -3444,6 +3447,7 @@ namespace carto::vt {
 
                     styleIndex = -1;
                     haloStyleIndex = -1;
+                    backgroundStyleIndex = -1;
                 } else {
                     for (styleIndex = labelBatchParams.parameterCount; --styleIndex >= 0; ) {
                         if (labelBatchParams.colorTable[styleIndex] == color && labelBatchParams.widthTable[styleIndex] == size && labelBatchParams.strokeWidthTable[styleIndex] == 0) {
@@ -3469,12 +3473,28 @@ namespace carto::vt {
                     labelBatchParams.widthTable[haloStyleIndex] = size;
                     labelBatchParams.strokeWidthTable[haloStyleIndex] = haloRadius;
                 }
+                // The plate behind the text has its own colour, so it needs its own slot in the
+                // batch - exactly like the halo.
+                backgroundStyleIndex = -1;
+                if (hasBackground) {
+                    for (backgroundStyleIndex = labelBatchParams.parameterCount; --backgroundStyleIndex >= 0; ) {
+                        if (labelBatchParams.colorTable[backgroundStyleIndex] == backgroundColor && labelBatchParams.widthTable[backgroundStyleIndex] == size && labelBatchParams.strokeWidthTable[backgroundStyleIndex] == 0) {
+                            break;
+                        }
+                    }
+                    if (backgroundStyleIndex < 0) {
+                        backgroundStyleIndex = labelBatchParams.parameterCount++;
+                        labelBatchParams.colorTable[backgroundStyleIndex] = backgroundColor;
+                        labelBatchParams.widthTable[backgroundStyleIndex] = size;
+                        labelBatchParams.strokeWidthTable[backgroundStyleIndex] = 0;
+                    }
+                }
 
                 lastLabelStyle = labelStyle;
             }
 
             VT_STAT_CLOCK(statClock);
-            label->calculateVertexData(labelBatchParams.widthTable[styleIndex], _viewState, styleIndex, haloStyleIndex, _labelVertices, _labelOffsets, _labelNormals, _labelTexCoords, _labelAttribs, _labelIndices, pass);
+            label->calculateVertexData(labelBatchParams.widthTable[styleIndex], _viewState, styleIndex, haloStyleIndex, _labelVertices, _labelOffsets, _labelNormals, _labelTexCoords, _labelAttribs, _labelIndices, pass, pass == Label::DrawPass::CALLOUT_LINE ? -1 : backgroundStyleIndex);
             VT_STAT_SPLIT(labelVertexBuildNs, statClock);
             VT_STAT_INC(labelsDrawnVertices);
 
