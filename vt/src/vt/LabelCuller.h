@@ -42,7 +42,6 @@ namespace carto::vt {
         static constexpr int GRID_RESOLUTION_Y = 32;
         static constexpr float EXTRA_LABEL_BUFFER = 1.0f; // extra buffer for the label
         static constexpr float SCREEN_EDGE_MARGIN = 8.0f; // pixels a lifted callout keeps from the top edge
-        static constexpr float GAIN_PROBE_OFFSET = 100.0f; // offset units a callout is displaced by to measure its screen gain
 
 
         struct CullRecord {

@@ -58,12 +58,20 @@ namespace carto::vt {
         bool isActive() const { return _active; }
         void setActive(bool active) { _active = active; }
 
-        // CALLOUT orientation: how far the label is lifted from its anchor, in screen pixels along
+        // CALLOUT orientation: how far the label is lifted from its anchor, in SCREEN PIXELS along
         // the camera up axis. Owned by LabelCuller, which is the only place that knows what else is
         // on screen; the envelope and the vertex data both read it, so the leader line always ends
         // where the glyphs actually are.
         float getCalloutOffset() const { return _calloutOffset; }
         void setCalloutOffset(float offset) { _calloutOffset = offset; }
+
+        // The screen line the culler put this callout on, and where its anchor was when it did.
+        // The anchor MOVES between placement passes - elevation tiles stream in and re-anchor the
+        // label on the GL thread, a tilt slides it up or down the screen - and a lift measured
+        // against the old anchor takes the label off the row. Keeping the anchor's screen position
+        // lets the draw path correct for exactly that, so the label stays on its line.
+        void setCalloutPlacement(float offset, float anchorScreenY) { _calloutOffset = offset; _calloutAnchorScreenY = anchorScreenY; _calloutAnchored = true; }
+        float calculateAnchorScreenY(const ViewState& viewState) const;
 
         // Placement passes this callout has failed in a row while it was on screen. The style may
         // allow a few (TileLabel::Style::calloutPersistPasses): a panning map rebuilds its label
@@ -239,6 +247,13 @@ namespace carto::vt {
         // How far the label is moved so that the style's line anchor lands on its feature's
         // vertical; zero unless the style names one.
         cglib::vec2<float> calculateCalloutShift(float scale, float pixelScale) const;
+        // World units one SCREEN PIXEL is worth at the label's own depth, read off the projection
+        // instead of the label's scale: the scale comes from the zoom, so converting with it makes
+        // a callout's lift drift up and down the screen whenever the camera moves.
+        float calculatePixelToWorld(const ViewState& viewState, const Placement& placement, float fallback) const;
+        // The lift to draw with: what the culler chose, corrected for how far the anchor has moved
+        // on screen since (see setCalloutPlacement).
+        float calculateCalloutLift(const ViewState& viewState) const;
         float calculateTerrainScaleFactor(const Placement& placement, const ViewState& viewState) const;
         float calculateTerrainScaleFactor(const cglib::vec3<double>& position, const ViewState& viewState) const;
         void setupCoordinateSystem(const ViewState& viewState, const std::shared_ptr<const Placement>& placement, cglib::vec3<float>& origin, cglib::vec3<float>& xAxis, cglib::vec3<float>& yAxis) const;
@@ -251,7 +266,7 @@ namespace carto::vt {
         // The leader line quad, in the same units as the drawn glyph offsets. Built per frame
         // rather than cached with the text: its length is the culler's offset, which changes with
         // everything else on screen.
-        void buildCalloutLineVertexData(float pixelScale, VertexArray<cglib::vec3<float>>& vertices, VertexArray<cglib::vec2<std::int16_t>>& texCoords, VertexArray<cglib::vec4<std::int8_t>>& attribs, VertexArray<std::uint16_t>& indices) const;
+        void buildCalloutLineVertexData(float calloutLift, float pixelScale, VertexArray<cglib::vec3<float>>& vertices, VertexArray<cglib::vec2<std::int16_t>>& texCoords, VertexArray<cglib::vec4<std::int8_t>>& attribs, VertexArray<std::uint16_t>& indices) const;
         void updateLineVertexData(const std::shared_ptr<const Placement>& placement, float scale, const ViewState& viewState, bool rebuildForView) const;
         bool buildLineVertexData(const std::shared_ptr<const Placement>& placement, float scale, const ViewState& viewState, const cglib::mat4x4<double>& mvpMatrix, VertexArray<cglib::vec3<float>>& vertices, VertexArray<cglib::vec2<std::int16_t>>& texCoords, VertexArray<cglib::vec4<std::int8_t>>& attribs, VertexArray<std::uint16_t>& indices) const;
 
@@ -291,7 +306,9 @@ namespace carto::vt {
         // updatePlacement, carried over by snapPlacement so a re-created label places the same way.
         double _placementTextLength = 0;
 
-        float _calloutOffset = 0.0f; // offset units along the camera up axis, CALLOUT only (see setCalloutOffset)
+        float _calloutOffset = 0.0f; // screen pixels along the camera up axis, CALLOUT only (see setCalloutOffset)
+        float _calloutAnchorScreenY = 0.0f;
+        bool _calloutAnchored = false;
         int _calloutFailures = 0;
         float _opacity = 0.0f;
         bool _visible = false;

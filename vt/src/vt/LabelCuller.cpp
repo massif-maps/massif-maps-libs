@@ -314,7 +314,7 @@ namespace carto::vt {
         const std::shared_ptr<const TileLabel::Style>& style = label->getStyle();
 
         auto envelopeAt = [this, &labelInfo, &label](float offset) {
-            label->setCalloutOffset(offset);
+            label->setCalloutPlacement(offset, label->calculateAnchorScreenY(_viewState));
             labelInfo.valid = calculateScreenEnvelope(label, labelInfo.size, labelInfo.cullRecord.envelope);
             labelInfo.cullRecord.bounds = cglib::bbox2<float>::make_union(labelInfo.cullRecord.envelope.begin(), labelInfo.cullRecord.envelope.end());
             return labelInfo.valid;
@@ -349,22 +349,11 @@ namespace carto::vt {
         float anchorY = bandAnchorY();
         float top = labelInfo.cullRecord.bounds.max(1);
 
-        // How many screen pixels one unit of the label's offset is worth, MEASURED rather than
-        // assumed. The offset is a length along the camera up axis converted to world units with
-        // the label's own scale, so one unit is one screen pixel only where that scale is exactly
-        // calibrated - and it is not: it comes from the zoom, and a lifted viewpoint or a view
-        // aimed at the horizon moves the label several times further than the band asked for
-        // (which is what made a row of names stop being a row). Displacing the label along the
-        // camera axes is linear in screen space at a fixed depth, so two samples give the gain.
-        if (!envelopeAt(GAIN_PROBE_OFFSET)) {
-            return false;
-        }
-        float gain = (bandAnchorY() - anchorY) / GAIN_PROBE_OFFSET;
-        if (!(gain > 0)) {
-            return false; // lifting the label does not move it up the screen: it is not in view
-        }
-
-        float lift = style->calloutOffset; // everything below is in SCREEN PIXELS
+        // Everything below is in SCREEN PIXELS, and so is the offset the label is given: it is
+        // converted to world units at draw time against the projection at the label's own depth
+        // (Label::calculatePixelToWorld), so a lift of N pixels stays N pixels while the camera
+        // tilts, rises or zooms - the placement is not re-scaled under the label between passes.
+        float lift = style->calloutOffset;
         if (style->calloutScreenAnchor >= 0) {
             float bandY = (1.0f - style->calloutScreenAnchor) * _viewState.resolution;
             lift = std::max(lift, bandY - anchorY);
@@ -387,8 +376,7 @@ namespace carto::vt {
         // offer: a label that keeps changing row while the camera moves reads as flicker even
         // though it never disappears.
         if (labelInfo.wasVisible && previousOffset > 0) {
-            float previousLift = previousOffset * gain;
-            if (previousLift >= lift - 0.5f && previousLift <= maxLift + 0.5f) {
+            if (previousOffset >= lift - 0.5f && previousOffset <= maxLift + 0.5f) {
                 if (envelopeAt(previousOffset) && testGridOverlap(labelInfo) && testGroupDistance(labelInfo)) {
                     label->setCalloutFailures(0);
                     return true;
@@ -406,7 +394,7 @@ namespace carto::vt {
             if (rowLift > maxLift || rowLift < minLift) {
                 break; // the rows all go the same way, so nothing beyond this one fits either
             }
-            if (!envelopeAt(rowLift / gain)) {
+            if (!envelopeAt(rowLift)) {
                 return false;
             }
             if (testGridOverlap(labelInfo) && testGroupDistance(labelInfo)) {
@@ -421,7 +409,9 @@ namespace carto::vt {
         // it may NOT sit on top of one: a placement pass only runs when the draw data changes, so
         // an overlap granted here stays on screen until something else moves.
         if (labelInfo.wasVisible && label->getCalloutFailures() < style->calloutPersistPasses) {
-            if (envelopeAt(std::min(previousOffset, maxLift / gain)) && testGridOverlap(labelInfo)) {
+            // Held over ON THE LINE the band asks for, and nowhere else: a name kept at its old
+            // lift is a name off the row, and the row is the whole point of the band.
+            if (envelopeAt(std::min(lift, maxLift)) && testGridOverlap(labelInfo)) {
                 label->setCalloutFailures(label->getCalloutFailures() + 1);
                 return true;
             }

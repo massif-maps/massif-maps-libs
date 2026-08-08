@@ -239,6 +239,8 @@ namespace carto::vt {
         // anchor until the next placement pass - which is a whole screen of names jumping every
         // time tiles stream in while panning.
         _calloutOffset = label._calloutOffset;
+        _calloutAnchorScreenY = label._calloutAnchorScreenY;
+        _calloutAnchored = label._calloutAnchored;
         _calloutFailures = label._calloutFailures;
         if (!_placement) {
             return;
@@ -521,7 +523,8 @@ namespace carto::vt {
             // of the font size), and the envelope has to move with the glyphs or the collision
             // test is done where the label is not.
             float pixelScale = scale / size;
-            cglib::vec2<float> calloutShift = calculateCalloutShift(scale, pixelScale) + cglib::vec2<float>(0, _calloutOffset * pixelScale);
+            cglib::vec2<float> calloutShift = calculateCalloutShift(scale, pixelScale)
+                + cglib::vec2<float>(0, calculateCalloutLift(viewState) * calculatePixelToWorld(viewState, *placement, pixelScale));
             origin = origin + xAxis * calloutShift(0) + yAxis * calloutShift(1);
         }
 
@@ -646,7 +649,8 @@ namespace carto::vt {
             cglib::vec2<float> calloutShift(0, 0);
             if (_style->orientation == LabelOrientation::CALLOUT && size > 0) {
                 float pixelScale = scale / size;
-                calloutShift = calculateCalloutShift(scale, pixelScale) + cglib::vec2<float>(0, _calloutOffset * pixelScale);
+                calloutShift = calculateCalloutShift(scale, pixelScale)
+                    + cglib::vec2<float>(0, calculateCalloutLift(viewState) * calculatePixelToWorld(viewState, *placement, pixelScale));
             }
             if (backgroundStyleIndex >= 0) {
                 appendLabelBackground(size, scale, viewState, placement, backgroundStyleIndex, calloutShift, vertices, offsets, normals, texCoords, attribs, indices);
@@ -827,7 +831,7 @@ namespace carto::vt {
         VertexArray<cglib::vec2<std::int16_t>> lineTexCoords;
         VertexArray<cglib::vec4<std::int8_t>> lineAttribs;
         VertexArray<std::uint16_t> lineIndices;
-        buildCalloutLineVertexData(scale / size, lineOffsets, lineTexCoords, lineAttribs, lineIndices);
+        buildCalloutLineVertexData(calculateCalloutLift(viewState), calculatePixelToWorld(viewState, *placement, scale / size), lineOffsets, lineTexCoords, lineAttribs, lineIndices);
         if (lineOffsets.empty()) {
             return;
         }
@@ -847,12 +851,12 @@ namespace carto::vt {
         }
     }
 
-    void Label::buildCalloutLineVertexData(float pixelScale, VertexArray<cglib::vec3<float>>& vertices, VertexArray<cglib::vec2<std::int16_t>>& texCoords, VertexArray<cglib::vec4<std::int8_t>>& attribs, VertexArray<std::uint16_t>& indices) const {
+    void Label::buildCalloutLineVertexData(float calloutLift, float pixelScale, VertexArray<cglib::vec3<float>>& vertices, VertexArray<cglib::vec2<std::int16_t>>& texCoords, VertexArray<cglib::vec4<std::int8_t>>& attribs, VertexArray<std::uint16_t>& indices) const {
         const std::optional<GlyphMap::Glyph>& lineGlyph = _style->calloutLineGlyph;
         // The line runs from the anchor to the point of the label the style attaches it to (the
         // centre by default, the bottom left corner for a tilted panorama name), so a label
         // sitting on its own anchor has nothing to draw.
-        float lift = _calloutOffset * pixelScale;
+        float lift = calloutLift * pixelScale;
         if (!lineGlyph || !(lift > 0)) {
             return;
         }
@@ -872,6 +876,50 @@ namespace carto::vt {
         attribs.append(attrib, attrib, attrib, attrib);
 
         vertices.append(cglib::vec3<float>(-halfWidth, 0, 0), cglib::vec3<float>(halfWidth, 0, 0), cglib::vec3<float>(halfWidth, lift, 0), cglib::vec3<float>(-halfWidth, lift, 0));
+    }
+
+    float Label::calculateAnchorScreenY(const ViewState& viewState) const {
+        std::shared_ptr<const Placement> placement = getPlacement(viewState);
+        if (!placement) {
+            return 0.0f;
+        }
+        cglib::vec3<double> pos = placement->position - viewState.origin;
+        cglib::mat4x4<double> cameraMatrix = viewState.cameraMatrix;
+        for (int i = 0; i < 3; i++) {
+            cameraMatrix(i, 3) = 0; // the position is already camera-relative
+        }
+        cglib::vec4<double> clipPos = cglib::transform(cglib::vec4<double>(pos(0), pos(1), pos(2), 1), viewState.projectionMatrix * cameraMatrix);
+        if (!(clipPos(3) > 0)) {
+            return 0.0f;
+        }
+        return static_cast<float>((clipPos(1) / clipPos(3) * 0.5 + 0.5) * viewState.resolution);
+    }
+
+    float Label::calculateCalloutLift(const ViewState& viewState) const {
+        if (!_calloutAnchored) {
+            return _calloutOffset;
+        }
+        float anchorScreenY = calculateAnchorScreenY(viewState);
+        if (anchorScreenY == 0.0f) {
+            return _calloutOffset;
+        }
+        // The label holds its LINE, not its distance from a summit that has meanwhile moved.
+        return _calloutOffset + (_calloutAnchorScreenY - anchorScreenY);
+    }
+
+    float Label::calculatePixelToWorld(const ViewState& viewState, const Placement& placement, float fallback) const {
+        // One screen pixel is depth / (projection scale * half the screen height) world units at
+        // that depth. Taking it from the projection rather than from the label's own scale is what
+        // makes a lift in pixels MEAN pixels: the scale is derived from the zoom, so a camera that
+        // tilts or rises changes what one unit of it is worth and the label slides up or down the
+        // screen between placement passes.
+        cglib::vec3<double> viewDir = -cglib::vec3<double>::convert(viewState.orientation[2]);
+        double depth = cglib::dot_product(placement.position - viewState.origin, viewDir);
+        double halfScreen = viewState.projectionMatrix(1, 1) * viewState.resolution * 0.5;
+        if (!(depth > 0) || !(halfScreen > 0)) {
+            return fallback;
+        }
+        return static_cast<float>(depth / halfScreen);
     }
 
     cglib::vec2<float> Label::calculateCalloutShift(float scale, float pixelScale) const {
