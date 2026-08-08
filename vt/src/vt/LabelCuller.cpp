@@ -417,10 +417,14 @@ namespace carto::vt {
 
         // Nothing free. A name already on screen may hold its place for a few passes rather than
         // blink out and back in as tiles stream in under a moving camera (text-callout-persist).
+        // It may sit closer to its neighbours than the group's minimum distance while it does, but
+        // it may NOT sit on top of one: a placement pass only runs when the draw data changes, so
+        // an overlap granted here stays on screen until something else moves.
         if (labelInfo.wasVisible && label->getCalloutFailures() < style->calloutPersistPasses) {
-            label->setCalloutFailures(label->getCalloutFailures() + 1);
-            envelopeAt(std::min(previousOffset, maxLift / gain));
-            return true;
+            if (envelopeAt(std::min(previousOffset, maxLift / gain)) && testGridOverlap(labelInfo)) {
+                label->setCalloutFailures(label->getCalloutFailures() + 1);
+                return true;
+            }
         }
         label->setCalloutFailures(0);
         return false;
