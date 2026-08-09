@@ -450,24 +450,22 @@ namespace carto::vt {
             return labelInfo.valid && testGridOverlap(labelInfo) && testGroupDistance(labelInfo);
         };
 
-        // The side it already holds is tried first: a name that changes side whenever a tile
-        // streams in reads as flicker even though it never disappears. This is the committed
-        // placement rule the sort above uses, applied within one label.
-        if (labelInfo.wasVisible && trySide(previous)) {
-            return true;
-        }
+        // Always from the style's FIRST side, every pass. Trying the side the label already held
+        // first looks like the committed-placement rule the sort above uses, but it is not the same
+        // thing: the last variant of a 'text-optional' label is the icon alone, it is smaller than
+        // every other one, so it always fits - and a label that fell back to it once would keep it
+        // for good, its name never coming back however far the camera zooms in. Stability comes
+        // from the sort (a label that was visible claims its slot before new ones), not from
+        // remembering a side: with the same neighbours the same side wins again anyway.
         for (int index = 0; index < count; index++) {
-            if (index == previous && labelInfo.wasVisible) {
-                continue; // already tried
-            }
             if (trySide(index)) {
                 return true;
             }
         }
 
-        // Nothing free. Leave it on the side it preferred, so that the label fades out where it
-        // last was rather than jumping to the last side on its way off screen.
-        trySide(labelInfo.wasVisible ? previous : 0);
+        // Nothing free. Leave it where it was, so that a label on its way out fades where it last
+        // was instead of jumping to the last side it tried.
+        trySide(previous);
         return false;
     }
 

@@ -48,7 +48,17 @@ namespace {
     // glyphs every time, only its pen origin moves, so the sides cost a vec2 each and no extra
     // layout work. dx/dy are mirrored with the side: they are a GAP from the icon here, so a style
     // that pushes its name 6px to the right of the icon pushes it 6px to the left on the left side.
-    static std::vector<carto::vt::TileLabel::Variant> buildLabelVariants(const std::vector<carto::vt::LabelAnchor>& anchors, bool textOptional, bool hasIcon, const std::vector<carto::vt::Font::Glyph>& glyphs, const cglib::vec2<float>& iconExtent, const cglib::vec2<float>& styleOffset) {
+    // The justification a side asks for. AUTO follows the side; an explicit one is MIRRORED on the
+    // left, so 'flush against the icon' means the same thing on both sides.
+    static float resolveLineAlign(carto::vt::LabelLineAlign align, const cglib::vec2<float>& dir) {
+        float base = (align == carto::vt::LabelLineAlign::LEFT ? -1.0f : align == carto::vt::LabelLineAlign::RIGHT ? 1.0f : 0.0f);
+        if (align == carto::vt::LabelLineAlign::AUTO) {
+            return (dir(0) > 0 ? -1.0f : dir(0) < 0 ? 1.0f : 0.0f);
+        }
+        return (dir(0) < 0 ? -base : base);
+    }
+
+    static std::vector<carto::vt::TileLabel::Variant> buildLabelVariants(const std::vector<carto::vt::LabelAnchor>& anchors, carto::vt::LabelLineAlign lineAlign, bool textOptional, bool hasIcon, const std::vector<carto::vt::Font::Glyph>& glyphs, const cglib::vec2<float>& iconExtent, const cglib::vec2<float>& styleOffset) {
         std::vector<carto::vt::TileLabel::Variant> variants;
         if (anchors.empty()) {
             return variants;
@@ -74,7 +84,7 @@ namespace {
                     desired(i) = -iconExtent(i) - boxMax(i) - std::abs(styleOffset(i));
                 }
             }
-            variants.emplace_back(desired - styleOffset, true);
+            variants.emplace_back(desired - styleOffset, true, resolveLineAlign(lineAlign, dir));
         }
         if (textOptional && hasIcon) {
             variants.emplace_back(cglib::vec2<float>(0, 0), false);
@@ -581,9 +591,9 @@ namespace carto::vt {
             || _labelStyle->calloutMaxRows != style.calloutMaxRows
             || _labelStyle->calloutPersistPasses != style.calloutPersistPasses
             || _labelStyle->calloutLineWidth != style.calloutLineWidth
-            || _labelStyle->backgroundColor != style.backgroundColor
-            || _labelStyle->backgroundRadius != style.backgroundRadius
-            || _labelStyle->backgroundPadding != style.backgroundPadding;
+            || _labelStyle->textPlate.style != style.textPlate
+            || _labelStyle->iconPlate.style != style.iconPlate
+            || _labelStyle->textLineAlign != resolveLineAlign(style.textLineAlign, cglib::vec2<float>(0, 0));
 
         if (needsNewLabelStyle) {
             std::optional<GlyphMap::Glyph> calloutLineGlyph;
@@ -598,18 +608,31 @@ namespace carto::vt {
                     calloutLineGlyph = *lineGlyph;
                 }
             }
-            // The plate behind the text is 3-sliced from one atlas cell: a rounded-corner square
-            // whose left and right halves are the caps and whose middle column is stretched. The
-            // bitmaps are cached by radius (the glyph map dedupes by POINTER), so a style that
-            // rebuilds does not grow the atlas.
-            std::optional<GlyphMap::Glyph> backgroundGlyph;
-            if (style.backgroundColor.value() != 0) {
-                int radius = std::min(32, std::max(0, static_cast<int>(style.backgroundRadius + 0.5f)));
-                if (const GlyphMap::Glyph* glyph = font->getGlyphMap()->getGlyph(font->getGlyphMap()->loadBitmapGlyph(buildRoundedRectBitmap(radius), GlyphMap::GlyphMode::BITMAP))) {
-                    backgroundGlyph = *glyph;
+            // A plate is 3-sliced from one atlas cell: a rounded-corner square whose left and right
+            // halves are the caps and whose middle column is stretched. The bitmaps are cached by
+            // radius (the glyph map dedupes by POINTER), so a style that rebuilds does not grow the
+            // atlas - and a border is the same cell at radius + borderWidth, drawn behind the fill.
+            auto resolvePlate = [&font](const LabelPlateStyle& plateStyle) {
+                TileLabel::Style::Plate plate;
+                plate.style = plateStyle;
+                auto loadCell = [&font](float radius) -> std::optional<GlyphMap::Glyph> {
+                    int cellRadius = std::min(32, std::max(0, static_cast<int>(radius + 0.5f)));
+                    if (const GlyphMap::Glyph* glyph = font->getGlyphMap()->getGlyph(font->getGlyphMap()->loadBitmapGlyph(buildRoundedRectBitmap(cellRadius), GlyphMap::GlyphMode::BITMAP))) {
+                        return *glyph;
+                    }
+                    return std::optional<GlyphMap::Glyph>();
+                };
+                if (plateStyle.hasFill()) {
+                    plate.glyph = loadCell(plateStyle.radius);
                 }
-            }
-            _labelStyle = std::make_shared<TileLabel::Style>(style.orientation, style.colorFunc, style.sizeFunc, style.haloColorFunc, style.haloRadiusFunc, style.autoflip, scale, metrics.ascent, metrics.descent, transform, font->getGlyphMap(), glyphRenderSize, style.maxDistance, style.secondaryColorFunc, style.rankFunc, style.calloutScreenAnchor, style.calloutOffset, style.calloutStep, style.calloutMaxRows, style.calloutPersistPasses, style.calloutLineWidth, style.calloutLineAnchor, style.calloutBandAnchor, calloutLineGlyph, style.backgroundColor, style.backgroundRadius, style.backgroundPadding, backgroundGlyph, style.iconColorFunc);
+                if (plateStyle.hasBorder()) {
+                    plate.borderGlyph = loadCell(plateStyle.radius + plateStyle.borderWidth);
+                }
+                return plate;
+            };
+            TileLabel::Style::Plate textPlate = resolvePlate(style.textPlate);
+            TileLabel::Style::Plate iconPlate = resolvePlate(style.iconPlate);
+            _labelStyle = std::make_shared<TileLabel::Style>(style.orientation, style.colorFunc, style.sizeFunc, style.haloColorFunc, style.haloRadiusFunc, style.autoflip, scale, metrics.ascent, metrics.descent, transform, font->getGlyphMap(), glyphRenderSize, style.maxDistance, style.secondaryColorFunc, style.rankFunc, style.calloutScreenAnchor, style.calloutOffset, style.calloutStep, style.calloutMaxRows, style.calloutPersistPasses, style.calloutLineWidth, style.calloutLineAnchor, style.calloutBandAnchor, calloutLineGlyph, textPlate, iconPlate, resolveLineAlign(style.textLineAlign, cglib::vec2<float>(0, 0)), style.iconColorFunc);
         }
 
         // The glyphs that come before the text and stay on the anchor when the text moves: the
@@ -648,7 +671,7 @@ namespace carto::vt {
                 }
                 glyphs.insert(glyphs.begin(), iconGlyphs.begin(), iconGlyphs.end());
 
-                std::vector<TileLabel::Variant> variants = buildLabelVariants(style.anchors, style.textOptional, hasIcon, glyphs, iconExtent, styleOffset);
+                std::vector<TileLabel::Variant> variants = buildLabelVariants(style.anchors, style.textLineAlign, style.textOptional, hasIcon, glyphs, iconExtent, styleOffset);
 
                 std::optional<cglib::vec2<float>> labelPosition;
                 if (position) {

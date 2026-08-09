@@ -49,6 +49,23 @@ namespace carto::mvt {
         return result;
     }
 
+    vt::LabelLineAlign ShieldSymbolizer::parseLineAlign(const std::string& align) {
+        std::string name;
+        for (char c : align) {
+            name.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+        }
+        if (name == "left") {
+            return vt::LabelLineAlign::LEFT;
+        }
+        if (name == "right") {
+            return vt::LabelLineAlign::RIGHT;
+        }
+        if (name == "auto") {
+            return vt::LabelLineAlign::AUTO;
+        }
+        return vt::LabelLineAlign::CENTER; // 'middle' and anything unset
+    }
+
     std::vector<vt::Font::Glyph> ShieldSymbolizer::buildIconGlyphs(const std::shared_ptr<const vt::Font>& font, const SymbolizerContext& symbolizerContext, const ExpressionContext& exprContext, float fontSize) const {
         std::vector<vt::Font::Glyph> glyphs;
         std::string iconText = _iconText.getValue(exprContext);
@@ -162,6 +179,14 @@ namespace carto::mvt {
         vt::LabelOrientation orientation = (placement != vt::LabelOrientation::LINE ? placement : vt::LabelOrientation::BILLBOARD_2D);
         
         std::vector<vt::LabelAnchor> anchors = parseAnchors(_anchors.getValue(exprContext));
+        vt::LabelLineAlign textLineAlign = parseLineAlign(_textHorizontalAlignment.getValue(exprContext));
+        vt::LabelPlateStyle textPlate = getPlateStyle(symbolizerContext, exprContext);
+        vt::LabelPlateStyle iconPlate;
+        iconPlate.color = vt::Color::fromColorOpacity(_iconBackgroundFill.getValue(exprContext), _iconBackgroundOpacity.getValue(exprContext));
+        iconPlate.radius = _iconBackgroundRadius.getValue(exprContext) * fontScale;
+        iconPlate.padding = cglib::vec2<float>(_iconBackgroundPaddingX.getValue(exprContext) * fontScale, _iconBackgroundPaddingY.getValue(exprContext) * fontScale);
+        iconPlate.borderColor = vt::Color::fromColorOpacity(_iconBackgroundBorderFill.getValue(exprContext), _iconBackgroundBorderOpacity.getValue(exprContext));
+        iconPlate.borderWidth = _iconBackgroundBorderWidth.getValue(exprContext) * fontScale;
         bool textOptional = _textOptional.getValue(exprContext);
         std::vector<vt::Font::Glyph> iconGlyphs = buildIconGlyphs(font, symbolizerContext, exprContext, sizeStatic);
         std::optional<vt::ColorFunction> iconColorFunc;
@@ -257,12 +282,15 @@ namespace carto::mvt {
             };
         }
 
-        return [compOp, fillFunc, haloFillFunc, sizeFunc, haloRadiusFunc, fontScale, placement, orientation, text, hash, orientationAngle, formatter, backgroundOffset, backgroundImage, spacing, textSize, tileId, tileSize, labelIdOverride, groupId, placementPriority, minimumDistance, maxDistance, anchors, textOptional, iconGlyphs, iconColorFunc, this](const FeatureCollection& featureCollection, vt::TileLayerBuilder& layerBuilder) {
+        return [compOp, fillFunc, haloFillFunc, sizeFunc, haloRadiusFunc, fontScale, placement, orientation, text, hash, orientationAngle, formatter, backgroundOffset, backgroundImage, spacing, textSize, tileId, tileSize, labelIdOverride, groupId, placementPriority, minimumDistance, maxDistance, anchors, textOptional, iconGlyphs, iconColorFunc, textLineAlign, textPlate, iconPlate, this](const FeatureCollection& featureCollection, vt::TileLayerBuilder& layerBuilder) {
             vt::TextLabelStyle style(orientation, fillFunc, sizeFunc, haloFillFunc, haloRadiusFunc, true, orientationAngle, fontScale, backgroundOffset, backgroundImage, maxDistance);
             style.anchors = anchors;
             style.textOptional = textOptional;
             style.iconGlyphs = iconGlyphs;
             style.iconColorFunc = iconColorFunc;
+            style.textLineAlign = textLineAlign;
+            style.textPlate = textPlate;
+            style.iconPlate = iconPlate;
             vt::TileLayerBuilder::TextLabelProcessor textProcessor;
             for (std::size_t featureIndex = 0; featureIndex < featureCollection.size(); featureIndex++) {
                 if (!textProcessor) {

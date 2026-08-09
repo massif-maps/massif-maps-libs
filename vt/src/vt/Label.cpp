@@ -16,13 +16,20 @@ namespace carto::vt {
         _cachedAttribs.reserve(_glyphs.size() * 4);
         _cachedIndices.reserve(_glyphs.size() * 6);
 
+        measureTextLines();
+
         // One box per side the text may be laid out on; the culler switches between them and the
         // envelope, the plate and the frustum test all read the one in use.
         _variantBBoxes.reserve(_variants.size());
+        _variantTextBBoxes.reserve(_variants.size());
         for (const TileLabel::Variant& variant : _variants) {
-            _variantBBoxes.push_back(calculateGlyphBBox(variant.shift, variant.drawText));
+            _variantBBoxes.push_back(calculateGlyphBBox(variant.shift, variant.drawText, Part::ALL, variant.lineAlign));
+            _variantTextBBoxes.push_back(calculateGlyphBBox(variant.shift, variant.drawText, Part::TEXT, variant.lineAlign));
         }
-        _glyphBBox = (_variants.empty() ? calculateGlyphBBox(cglib::vec2<float>(0, 0), true) : _variantBBoxes[0]);
+        _glyphBBox = (_variants.empty() ? calculateGlyphBBox(cglib::vec2<float>(0, 0), true, Part::ALL, _style->textLineAlign) : _variantBBoxes[0]);
+        _textBBox = (_variants.empty() ? calculateGlyphBBox(cglib::vec2<float>(0, 0), true, Part::TEXT, _style->textLineAlign) : _variantTextBBoxes[0]);
+        // The icon run is before the first line break, so no variant ever moves it.
+        _iconBBox = calculateGlyphBBox(cglib::vec2<float>(0, 0), true, Part::ICON);
 
         // How far the glyphs reach from the anchor, with the style transform applied the same
         // way findClippedPointPlacement applies it. updatePlacement grows the label's geometry
@@ -70,19 +77,76 @@ namespace carto::vt {
         }
     }
 
-    cglib::bbox2<float> Label::calculateGlyphBBox(const cglib::vec2<float>& shift, bool drawText) const {
+    void Label::measureTextLines() {
+        cglib::vec2<float> pen(0, 0);
+        bool text = false;
+        float lineMin = 0, lineMax = 0;
+        bool lineEmpty = true;
+        auto flushLine = [&]() {
+            if (!lineEmpty) {
+                _lineExtents.emplace_back(lineMin, lineMax);
+            }
+            else if (text) {
+                _lineExtents.emplace_back(0.0f, 0.0f);
+            }
+            lineEmpty = true;
+        };
+        for (const Font::Glyph& glyph : _glyphs) {
+            if (glyph.codePoint == Font::CR_CODEPOINT) {
+                flushLine();
+                pen = cglib::vec2<float>(0, 0);
+                text = true;
+            }
+            else if (text) {
+                float x0 = pen(0) + glyph.offset(0), x1 = x0 + glyph.size(0);
+                if (lineEmpty) {
+                    lineMin = x0; lineMax = x1; lineEmpty = false;
+                }
+                else {
+                    lineMin = std::min(lineMin, x0); lineMax = std::max(lineMax, x1);
+                }
+            }
+            pen += glyph.advance;
+        }
+        flushLine();
+
+        bool first = true;
+        for (const cglib::vec2<float>& extent : _lineExtents) {
+            if (extent(0) == extent(1)) {
+                continue; // an empty line has no ink to align
+            }
+            _blockExtent = (first ? extent : cglib::vec2<float>(std::min(_blockExtent(0), extent(0)), std::max(_blockExtent(1), extent(1))));
+            first = false;
+        }
+    }
+
+    float Label::calculateLineShift(std::size_t lineIndex, float lineAlign) const {
+        if (lineAlign == 0.0f || lineIndex >= _lineExtents.size() || _lineExtents.size() < 2) {
+            return 0.0f;
+        }
+        const cglib::vec2<float>& extent = _lineExtents[lineIndex];
+        if (extent(0) == extent(1)) {
+            return 0.0f;
+        }
+        return (lineAlign > 0 ? _blockExtent(1) - extent(1) : _blockExtent(0) - extent(0)) * std::abs(lineAlign);
+    }
+
+    cglib::bbox2<float> Label::calculateGlyphBBox(const cglib::vec2<float>& shift, bool drawText, Part part, float lineAlign) const {
         cglib::bbox2<float> bbox = cglib::bbox2<float>::smallest();
         cglib::vec2<float> pen(0, 0);
         bool text = false;
+        std::size_t lineIndex = 0;
+        float lineShift = 0;
         for (const Font::Glyph& glyph : _glyphs) {
             if (glyph.codePoint == Font::CR_CODEPOINT) {
-                pen = shift;
-                text = true;
                 if (!drawText) {
                     break; // the icon alone: everything from the first line break on is text
                 }
+                lineShift = calculateLineShift(text ? ++lineIndex : lineIndex, lineAlign);
+                pen = shift + cglib::vec2<float>(lineShift, 0);
+                text = true;
             }
-            else {
+            else if (part == Part::ALL || (text ? part == Part::TEXT : part == Part::ICON)) {
                 bbox.add(pen + glyph.offset);
                 bbox.add(pen + glyph.offset + glyph.size);
             }
@@ -92,12 +156,34 @@ namespace carto::vt {
         return bbox;
     }
 
+    cglib::bbox2<float> Label::calculatePlatedBBox(int variantIndex, float pixelScale) const {
+        bool indexed = variantIndex >= 0 && variantIndex < static_cast<int>(_variantBBoxes.size());
+        cglib::bbox2<float> bbox = (indexed ? _variantBBoxes[variantIndex] : _glyphBBox);
+        const cglib::bbox2<float>& textBBox = (indexed ? _variantTextBBoxes[variantIndex] : _textBBox);
+        auto expand = [&bbox, pixelScale](const cglib::bbox2<float>& part, const TileLabel::Style::Plate& plate) {
+            if (!plate.draws() || part.min(0) > part.max(0)) {
+                return;
+            }
+            cglib::vec2<float> grow = plate.style.padding;
+            if (plate.drawsBorder()) {
+                grow += cglib::vec2<float>(plate.style.borderWidth, plate.style.borderWidth);
+            }
+            grow *= pixelScale;
+            bbox.add(part.min - grow);
+            bbox.add(part.max + grow);
+        };
+        expand(textBBox, _style->textPlate);
+        expand(_iconBBox, _style->iconPlate);
+        return bbox;
+    }
+
     void Label::setVariantIndex(int index) {
         if (index == _variantIndex || _variants.empty()) {
             return;
         }
         _variantIndex = std::max(0, std::min(static_cast<int>(_variants.size()) - 1, index));
         _glyphBBox = _variantBBoxes[_variantIndex];
+        _textBBox = _variantTextBBoxes[_variantIndex];
         _cachedValid = false; // the quads are laid out around the pen, so they have to be rebuilt
     }
 
@@ -590,14 +676,11 @@ namespace carto::vt {
             valid = valid && _cachedValid;
         }
         else {
-            // Use bounding box for envelope. The plate is part of what the label covers, so its
-            // padding belongs here too - the band aligns labels on this box, and a box smaller
-            // than what is drawn puts the row a few pixels off.
-            cglib::vec2<float> platePadding(0, 0);
-            if (_style->backgroundColor.value() != 0 && _style->backgroundGlyph && size > 0) {
-                platePadding = _style->backgroundPadding * (scale / size);
-            }
-            buildBoxEnvelope(_glyphBBox, scale, cglib::vec2<float>(padding, padding) + platePadding, origin, xAxis, yAxis, envelope);
+            // Use bounding box for envelope. The plates are part of what the label covers, so what
+            // they add around the glyphs belongs here too - the band aligns labels on this box, and
+            // a box smaller than what is drawn puts the row a few pixels off.
+            cglib::bbox2<float> box = (size > 0 ? calculatePlatedBBox(_variantIndex, scale / size) : _glyphBBox);
+            buildBoxEnvelope(box, scale, cglib::vec2<float>(padding, padding), origin, xAxis, yAxis, envelope);
         }
         return valid;
     }
@@ -644,19 +727,17 @@ namespace carto::vt {
         }
 
         float padding = buffer * viewState.zoomScale * _style->scale * calculateTerrainScaleFactor(*placement, viewState) / std::sqrt(2.0f);
-        cglib::vec2<float> platePadding(0, 0);
-        if (_style->backgroundColor.value() != 0 && _style->backgroundGlyph && size > 0) {
-            platePadding = _style->backgroundPadding * (scale / size);
-        }
+        float pixelScale = (size > 0 ? scale / size : 0.0f);
         cglib::vec3<float> origin, xAxis, yAxis;
         setupCoordinateSystem(viewState, placement, origin, xAxis, yAxis);
         for (std::size_t i = 0; i < _variantBBoxes.size(); i++) {
-            buildBoxEnvelope(_variantBBoxes[i], scale, cglib::vec2<float>(padding, padding) + platePadding, origin, xAxis, yAxis, envelopes[i]);
+            cglib::bbox2<float> box = (pixelScale > 0 ? calculatePlatedBBox(static_cast<int>(i), pixelScale) : _variantBBoxes[i]);
+            buildBoxEnvelope(box, scale, cglib::vec2<float>(padding, padding), origin, xAxis, yAxis, envelopes[i]);
         }
         return cglib::dot_product(viewState.orientation[2], placement->normal) > MIN_BILLBOARD_VIEW_NORMAL_DOTPRODUCT;
     }
 
-    bool Label::calculateVertexData(float size, const ViewState& viewState, int styleIndex, int haloStyleIndex, VertexArray<cglib::vec3<float>>& vertices, VertexArray<cglib::vec3<float>>& offsets, VertexArray<cglib::vec3<float>>& normals, VertexArray<cglib::vec2<std::int16_t>>& texCoords, VertexArray<cglib::vec4<std::int8_t>>& attribs, VertexArray<std::uint16_t>& indices, DrawPass pass, int backgroundStyleIndex, int secondaryStyleIndex, int iconStyleIndex) const {
+    bool Label::calculateVertexData(float size, const ViewState& viewState, int styleIndex, int haloStyleIndex, VertexArray<cglib::vec3<float>>& vertices, VertexArray<cglib::vec3<float>>& offsets, VertexArray<cglib::vec3<float>>& normals, VertexArray<cglib::vec2<std::int16_t>>& texCoords, VertexArray<cglib::vec4<std::int8_t>>& attribs, VertexArray<std::uint16_t>& indices, DrawPass pass, const LabelPlateIndices& plates, int secondaryStyleIndex, int iconStyleIndex) const {
         VT_STAT_CLOCK(labelClock);
         std::shared_ptr<const Placement> placement = getPlacement(viewState);
         VT_STAT_SPLIT(labelPlacementNs, labelClock);
@@ -708,7 +789,7 @@ namespace carto::vt {
 
             cglib::vec3<float> origin, xAxis, yAxis;
             setupCoordinateSystem(viewState, placement, origin, xAxis, yAxis);
-            // The plate first: within one label the draw order is the index order, so anything
+            // The plates first: within one label the draw order is the index order, so anything
             // appended after the glyphs would cover them.
             cglib::vec2<float> calloutShift(0, 0);
             if (_style->orientation == LabelOrientation::CALLOUT && size > 0) {
@@ -716,9 +797,7 @@ namespace carto::vt {
                 calloutShift = calculateCalloutShift(scale, pixelScale)
                     + cglib::vec2<float>(0, calculateCalloutLift(viewState) * calculatePixelToWorld(viewState, *placement, pixelScale));
             }
-            if (backgroundStyleIndex >= 0) {
-                appendLabelBackground(size, scale, viewState, placement, backgroundStyleIndex, calloutShift, vertices, offsets, normals, texCoords, attribs, indices);
-            }
+            appendLabelPlates(size, scale, placement, plates, calloutShift, origin, xAxis, yAxis, vertices, offsets, normals, texCoords, attribs, indices);
             vertices.fill(origin, _cachedVertices.size());
             if (_style->orientation == LabelOrientation::BILLBOARD_3D || _style->orientation == LabelOrientation::LINE_BILLBOARD_3D || _style->orientation == LabelOrientation::CALLOUT) {
                 // Axes are the camera's: leave them to the shader (see labelVsh). A callout is
@@ -790,14 +869,18 @@ namespace carto::vt {
         // stay on the anchor, the text after it moves to whichever side the culler chose.
         const cglib::vec2<float> shift = calculateVariantShift();
         const bool drawText = drawsText();
+        const float lineAlign = calculateLineAlign();
         cglib::vec2<float> pen(0, 0);
+        bool text = false;
+        std::size_t lineIndex = 0;
         for (const Font::Glyph& glyph : _glyphs) {
             // If carriage return, reposition pen and state to the initial position
             if (glyph.codePoint == Font::CR_CODEPOINT) {
                 if (!drawText) {
                     break;
                 }
-                pen = shift;
+                pen = shift + cglib::vec2<float>(calculateLineShift(text ? ++lineIndex : lineIndex, lineAlign), 0);
+                text = true;
             }
             else if (glyph.codePoint != Font::SPACE_CODEPOINT) {
                 std::uint16_t i0 = static_cast<std::uint16_t>(vertices.size());
@@ -834,31 +917,59 @@ namespace carto::vt {
         }
     }
 
-    void Label::appendLabelBackground(float size, float scale, const ViewState& viewState, const std::shared_ptr<const Placement>& placement, int backgroundStyleIndex, const cglib::vec2<float>& calloutShift, VertexArray<cglib::vec3<float>>& vertices, VertexArray<cglib::vec3<float>>& offsets, VertexArray<cglib::vec3<float>>& normals, VertexArray<cglib::vec2<std::int16_t>>& texCoords, VertexArray<cglib::vec4<std::int8_t>>& attribs, VertexArray<std::uint16_t>& indices) const {
-        const std::optional<GlyphMap::Glyph>& glyph = _style->backgroundGlyph;
-        if (!glyph || _style->backgroundColor.value() == 0 || !(size > 0) || _glyphBBox.min(0) > _glyphBBox.max(0)) {
+    // The label's screen axes come from the caller: calculateVertexData has just built them for the
+    // glyphs, and setting them up again per label was measurable with a plate on every label.
+    void Label::appendLabelPlates(float size, float scale, const std::shared_ptr<const Placement>& placement, const LabelPlateIndices& plates, const cglib::vec2<float>& calloutShift, const cglib::vec3<float>& origin, const cglib::vec3<float>& xAxis, const cglib::vec3<float>& yAxis, VertexArray<cglib::vec3<float>>& vertices, VertexArray<cglib::vec3<float>>& offsets, VertexArray<cglib::vec3<float>>& normals, VertexArray<cglib::vec2<std::int16_t>>& texCoords, VertexArray<cglib::vec4<std::int8_t>>& attribs, VertexArray<std::uint16_t>& indices) const {
+        if (!(size > 0)) {
             return;
         }
+        float pixelScale = scale / size;
+        bool cameraAxes = (_style->orientation == LabelOrientation::BILLBOARD_3D || _style->orientation == LabelOrientation::LINE_BILLBOARD_3D || _style->orientation == LabelOrientation::CALLOUT);
 
-        // The plate covers the text bounds plus the padding, both in glyph units (1 unit = the
+        // Border first, then fill on top of it, and the icon's plate before the text's: within one
+        // label the draw order is the index order, so anything appended later covers what came
+        // before - and all of this has to end up under the glyphs.
+        struct Layer { const cglib::bbox2<float>* box; const TileLabel::Style::Plate* plate; int styleIndex; bool border; };
+        const Layer layers[4] = {
+            { &_iconBBox, &_style->iconPlate, plates.iconBorder, true },
+            { &_iconBBox, &_style->iconPlate, plates.iconFill,   false },
+            { &_textBBox, &_style->textPlate, plates.textBorder, true },
+            { &_textBBox, &_style->textPlate, plates.textFill,   false }
+        };
+        for (const Layer& layer : layers) {
+            if (layer.styleIndex < 0 || layer.box->min(0) > layer.box->max(0)) {
+                continue;
+            }
+            const TileLabel::Style::Plate& plate = *layer.plate;
+            const std::optional<GlyphMap::Glyph>& glyph = (layer.border ? plate.borderGlyph : plate.glyph);
+            if (!glyph || (layer.border ? !plate.drawsBorder() : !plate.drawsFill())) {
+                continue;
+            }
+            float grow = plate.style.borderWidth * (layer.border ? 1.0f : 0.0f);
+            cglib::vec2<float> padding = (plate.style.padding + cglib::vec2<float>(grow, grow)) * pixelScale;
+            appendPlate(*layer.box, *glyph, (plate.style.radius + grow) * pixelScale, padding, scale, layer.styleIndex, cameraAxes, calloutShift, origin, xAxis, yAxis, placement, vertices, offsets, normals, texCoords, attribs, indices);
+        }
+    }
+
+    // 'radius' and 'grow' are already in the label's own units (screen pixels times the label
+    // scale), like the glyph offsets around them.
+    void Label::appendPlate(const cglib::bbox2<float>& box, const GlyphMap::Glyph& glyph, float radius, const cglib::vec2<float>& grow, float scale, int styleIndex, bool cameraAxes, const cglib::vec2<float>& calloutShift, const cglib::vec3<float>& origin, const cglib::vec3<float>& xAxis, const cglib::vec3<float>& yAxis, const std::shared_ptr<const Placement>& placement, VertexArray<cglib::vec3<float>>& vertices, VertexArray<cglib::vec3<float>>& offsets, VertexArray<cglib::vec3<float>>& normals, VertexArray<cglib::vec2<std::int16_t>>& texCoords, VertexArray<cglib::vec4<std::int8_t>>& attribs, VertexArray<std::uint16_t>& indices) const {
+        // The plate covers the box plus what it is grown by, both in glyph units (1 unit = the
         // font size), and is cut into three columns: the two caps keep the cell's corner radius,
         // the middle is stretched. That is what keeps a corner round on a long name.
-        float pixelScale = scale / size;
-        cglib::vec2<float> padding = _style->backgroundPadding * pixelScale;
-        float x0 = _glyphBBox.min(0) * scale - padding(0), x1 = _glyphBBox.max(0) * scale + padding(0);
-        float y0 = _glyphBBox.min(1) * scale - padding(1), y1 = _glyphBBox.max(1) * scale + padding(1);
+        float x0 = box.min(0) * scale - grow(0), x1 = box.max(0) * scale + grow(0);
+        float y0 = box.min(1) * scale - grow(1), y1 = box.max(1) * scale + grow(1);
         float height = y1 - y0;
-        float cap = std::min(_style->backgroundRadius * pixelScale, (x1 - x0) * 0.5f);
-        cap = std::max(cap, 0.0f);
+        float cap = std::max(0.0f, std::min(radius, (x1 - x0) * 0.5f));
 
         // Atlas coordinates of the cell's left cap, middle column and right cap. Sampled one texel
         // INSIDE the cell: the outer texels blend into the transparent padding around it under
         // linear filtering, which is what made the plate's edges look soft.
-        float u0 = static_cast<float>(glyph->x + 1);
-        float u1 = static_cast<float>(glyph->x + glyph->width - 1);
+        float u0 = static_cast<float>(glyph.x + 1);
+        float u1 = static_cast<float>(glyph.x + glyph.width - 1);
         float uMid = (u0 + u1) * 0.5f;
-        float v0 = static_cast<float>(glyph->y + 1);
-        float v1 = static_cast<float>(glyph->y + glyph->height - 1);
+        float v0 = static_cast<float>(glyph.y + 1);
+        float v1 = static_cast<float>(glyph.y + glyph.height - 1);
 
         struct Slice { float x0, x1, u0, u1; };
         const Slice slices[3] = {
@@ -867,11 +978,7 @@ namespace carto::vt {
             { x1 - cap, x1, uMid, u1 }
         };
 
-        cglib::vec3<float> origin, xAxis, yAxis;
-        setupCoordinateSystem(viewState, placement, origin, xAxis, yAxis);
-        bool cameraAxes = (_style->orientation == LabelOrientation::BILLBOARD_3D || _style->orientation == LabelOrientation::LINE_BILLBOARD_3D || _style->orientation == LabelOrientation::CALLOUT);
         cglib::mat2x2<float> transform = (_style->transform ? _style->transform->matrix2() : cglib::mat2x2<float>::identity());
-
         for (int i = 0; i < 3; i++) {
             const Slice& slice = slices[i];
             if (!(slice.x1 > slice.x0)) {
@@ -885,7 +992,7 @@ namespace carto::vt {
             std::int16_t sv0 = static_cast<std::int16_t>(v0), sv1 = static_cast<std::int16_t>(v1);
             texCoords.append(cglib::vec2<std::int16_t>(su0, sv1), cglib::vec2<std::int16_t>(su1, sv1), cglib::vec2<std::int16_t>(su1, sv0), cglib::vec2<std::int16_t>(su0, sv0));
 
-            cglib::vec4<std::int8_t> attrib(static_cast<std::int8_t>(backgroundStyleIndex), static_cast<std::int8_t>(GlyphMap::GlyphMode::BITMAP), static_cast<std::int8_t>(_opacity * 127.0f), cameraAxes ? CAMERA_AXIS_OFFSET : WORLD_OFFSET);
+            cglib::vec4<std::int8_t> attrib(static_cast<std::int8_t>(styleIndex), static_cast<std::int8_t>(GlyphMap::GlyphMode::BITMAP), static_cast<std::int8_t>(_opacity * 127.0f), cameraAxes ? CAMERA_AXIS_OFFSET : WORLD_OFFSET);
             attribs.append(attrib, attrib, attrib, attrib);
 
             const cglib::vec2<float> corners[4] = {
@@ -1034,14 +1141,11 @@ namespace carto::vt {
         if (_glyphBBox.min(0) > _glyphBBox.max(0)) {
             return cglib::vec2<float>(0, 0);
         }
-        // The plate is part of the box the style points at: a leader line that stopped at the
-        // glyph bounds would end inside it.
-        cglib::vec2<float> padding(0, 0);
-        if (_style->backgroundColor.value() != 0 && _style->backgroundGlyph) {
-            padding = _style->backgroundPadding * pixelScale;
-        }
-        float x0 = _glyphBBox.min(0) * scale - padding(0), x1 = _glyphBBox.max(0) * scale + padding(0);
-        float y0 = _glyphBBox.min(1) * scale - padding(1), y1 = _glyphBBox.max(1) * scale + padding(1);
+        // The plates are part of the box the style points at: a leader line that stopped at the
+        // glyph bounds would end inside them.
+        cglib::bbox2<float> box = calculatePlatedBBox(_variantIndex, pixelScale);
+        float x0 = box.min(0) * scale, x1 = box.max(0) * scale;
+        float y0 = box.min(1) * scale, y1 = box.max(1) * scale;
         cglib::vec2<float> p(x0 + (x1 - x0) * (anchor(0) + 1.0f) * 0.5f, y0 + (y1 - y0) * (anchor(1) + 1.0f) * 0.5f);
         if (_style->transform) {
             p = cglib::transform(p, _style->transform->matrix2());
