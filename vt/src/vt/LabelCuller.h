@@ -42,6 +42,8 @@ namespace carto::vt {
         static constexpr int GRID_RESOLUTION_Y = 32;
         static constexpr float EXTRA_LABEL_BUFFER = 1.0f; // extra buffer for the label
         static constexpr float SCREEN_EDGE_MARGIN = 8.0f; // pixels a lifted callout keeps from the top edge
+        static constexpr float AXIS_ALIGNED_EPSILON = 0.05f; // pixels an edge may drift and still count as straight
+        static constexpr int LABEL_LOCK_BATCH = 32; // labels processed per acquisition of the label mutex
 
 
         struct CullRecord {
@@ -49,10 +51,10 @@ namespace carto::vt {
             std::array<cglib::vec2<float>, 4> envelope;
             long long localId = 0;
             bool allowOverlapSameFeatureId = false;
-            // Only set in the minimum grid: where the label sits in the placement order, and its
-            // priority, so that a label can tell which reservations it must respect.
-            int order = -1;
-            float priority = 0.0f;
+            // The envelope is a screen-aligned rectangle, so its bounds ARE its shape and two such
+            // records need no separating-axis test. True for every billboard label, whatever the
+            // camera does - they face it.
+            bool axisAligned = false;
 
             CullRecord() = default;
         };
@@ -77,11 +79,13 @@ namespace carto::vt {
         void clearGrid();
         void addGridRecord(RecordGrid& grid, const CullRecord& cullRecord) const;
         bool testGridOverlap(const LabelInfo& labelInfo) const;
-        // Whether a candidate would take space that a LATER label of the same priority has no way
-        // of giving up - its smallest layout. A label that can still shrink has to yield first.
-        bool testPeerReservations(const CullRecord& candidate, int order, float priority) const;
-        void projectEnvelope(const std::array<cglib::vec3<float>, 4>& worldEnvelope, std::array<cglib::vec2<float>, 4>& envelope) const;
-        bool calculateScreenEnvelope(const std::shared_ptr<Label>& label, float size, std::array<cglib::vec2<float>, 4>& envelope) const;
+        // Whether two records whose bounds already intersect really overlap.
+        static bool testRecordOverlap(const CullRecord& record1, const CullRecord& record2, float buffer);
+        // Points the label at one of its layouts, and its cull record with it.
+        static void takeVariant(LabelInfo& labelInfo, int index);
+        // Fills the record's envelope, bounds and axisAligned flag from a world-space quad.
+        void projectEnvelope(const std::array<cglib::vec3<float>, 4>& worldEnvelope, CullRecord& record) const;
+        bool calculateScreenEnvelope(const std::shared_ptr<Label>& label, float size, CullRecord& record) const;
         // A CALLOUT label is lifted away from its anchor until it finds free screen space instead
         // of being hidden. Returns false when it ran out of rows. Updates the label's offset and
         // the cull record in place.
@@ -89,14 +93,12 @@ namespace carto::vt {
         // A label whose style names several sides (TextLabelStyle::anchors) takes the first free
         // one - tangram's 'do { ... } while (isOccluded() && nextAnchor())' (labelManager.cpp).
         // Returns false when no side is free. Updates the label's variant and the cull record.
-        bool placeAnchoredLabel(LabelInfo& labelInfo, int order, const std::function<bool(const LabelInfo&)>& testGroupDistance);
+        bool placeAnchoredLabel(LabelInfo& labelInfo, const std::function<bool(const LabelInfo&)>& testGroupDistance);
 
         cglib::mat4x4<float> _localCameraProjMatrix;
         ViewState _viewState;
         double _metersToInternal = 0;
         RecordGrid _recordGrid;
-        // Smallest layout of every label of this pass, used only by the rule above.
-        RecordGrid _minimumGrid;
 
         const float _scale;
 

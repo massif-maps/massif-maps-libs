@@ -74,6 +74,32 @@ namespace {
     }
 }
 
+namespace {
+    // Holds a mutex across a loop, handing it back every 'batch' iterations. The GL thread holds
+    // the label mutex while it builds label vertices, so a placement pass may not keep it for its
+    // whole run - but taking it once per label spent more time contending for it than working.
+    class BatchLock final {
+    public:
+        BatchLock(std::mutex& mutex, int batch) : _lock(mutex), _batch(batch) { }
+
+        void step() {
+            if (++_count >= _batch) {
+                _count = 0;
+                _lock.unlock();
+                _lock.lock();
+            }
+        }
+
+        void release() { _lock.unlock(); }
+        void acquire() { _count = 0; _lock.lock(); }
+
+    private:
+        std::unique_lock<std::mutex> _lock;
+        const int _batch;
+        int _count = 0;
+    };
+}
+
 namespace carto::vt {
     LabelCuller::LabelCuller(float scale) :
         _localCameraProjMatrix(cglib::mat4x4<float>::identity()), _scale(scale), _mutex()
@@ -123,8 +149,13 @@ namespace carto::vt {
         // the label being ranked (style variable view::distance). Kept out of the loop - a
         // ViewState carries the matrices and the frustum, and only its distance changes here.
         ViewState rankViewState = _viewState;
+        // Reused across labels: a pass walks a couple of thousand of them, and both buffers would
+        // otherwise be a heap allocation each, per label, per pass.
+        std::vector<std::array<cglib::vec3<float>, 4>> worldEnvelopes;
+        std::vector<CullRecord> variants;
+        BatchLock labelLock(labelMutex, LABEL_LOCK_BATCH);
         for (const std::shared_ptr<Label>& label : labelList) {
-            std::lock_guard<std::mutex> labelLock(labelMutex);
+            labelLock.step();
 
             // Analyze only active and valid labels
             if (!label->isActive()) {
@@ -173,21 +204,27 @@ namespace carto::vt {
                 }
                 // Every side in one call - they share the placement and the label's screen axes,
                 // so this is one placement per label however many sides it has.
-                std::vector<std::array<cglib::vec3<float>, 4>> worldEnvelopes;
                 bool valid = label->calculateVariantEnvelopes(size, EXTRA_LABEL_BUFFER, _viewState, worldEnvelopes);
-                std::vector<CullRecord> variants(worldEnvelopes.size());
-                for (std::size_t i = 0; i < worldEnvelopes.size(); i++) {
-                    projectEnvelope(worldEnvelopes[i], variants[i].envelope);
-                    variants[i].bounds = cglib::bbox2<float>::make_union(variants[i].envelope.begin(), variants[i].envelope.end());
+                variants.clear();
+                for (const std::array<cglib::vec3<float>, 4>& worldEnvelope : worldEnvelopes) {
+                    CullRecord& record = variants.emplace_back();
+                    projectEnvelope(worldEnvelope, record);
                     // Snapshot the identity fields; the placement (and thus the local id) can be
                     // changed concurrently by tile updates once labelMutex is released.
-                    variants[i].localId = label->getLocalId();
-                    variants[i].allowOverlapSameFeatureId = label->allowOverlapSameFeatureId();
+                    record.localId = label->getLocalId();
+                    record.allowOverlapSameFeatureId = label->allowOverlapSameFeatureId();
                 }
-                CullRecord cullRecord = variants[std::min(variants.size() - 1, static_cast<std::size_t>(std::max(0, label->getVariantIndex())))];
-                validLabelList.push_back({ valid, wasVisible, priority, label->getLayerIndex(), size, label->getOpacity(), label, cullRecord, std::move(variants) });
+                int variantIndex = std::min(static_cast<int>(variants.size()) - 1, std::max(0, label->getVariantIndex()));
+                // Only a label with several sides needs them kept - one layout is fully described
+                // by its cull record.
+                validLabelList.push_back({ valid, wasVisible, priority, label->getLayerIndex(), size, label->getOpacity(), label, variants[variantIndex],
+                                           variants.size() > 1 ? variants : std::vector<CullRecord>() });
             }
         }
+
+        // Handed back around the sort: it is the one stretch of a pass long enough for the GL
+        // thread to notice, and it reads no label state that thread writes.
+        labelLock.release();
 
         // Sort active labels by priority/wasVisible/layerIndex/size/opacity.
         // Labels that were visible in the previous frame (wasVisible=true) are placed before
@@ -215,57 +252,43 @@ namespace carto::vt {
             return labelInfo1.label->getGlobalId() > labelInfo2.label->getGlobalId();
         });
 
-        // What every label needs whatever happens - its smallest layout. A label that can still
-        // shrink (a shield with a 'text-optional' icon) gives that up before it costs a label of
-        // the SAME priority its place; see testPeerReservations.
-        for (int order = 0; order < static_cast<int>(validLabelList.size()); order++) {
-            const LabelInfo& labelInfo = validLabelList[order];
-            if (!labelInfo.valid || labelInfo.variants.size() < 2 || labelInfo.label->getGroupId() < 0) {
-                continue; // nothing to reserve against, or a label nothing has to yield to
-            }
-            CullRecord minimum = labelInfo.variants.back();
-            minimum.order = order;
-            minimum.priority = labelInfo.priority;
-            addGridRecord(_minimumGrid, minimum);
-        }
-
         // Update label visibility flag based on overlap analysis
         std::unordered_map<long long, std::vector<const LabelInfo*>> groupMap;
         groupMap.reserve(validLabelList.size());
         bool changed = false;
-        for (int order = 0; order < static_cast<int>(validLabelList.size()); order++) {
-            LabelInfo& labelInfo = validLabelList[order];
-            std::lock_guard<std::mutex> labelLock(labelMutex);
+        // The group's minimum distance: labels of one group must not only miss each other, they must
+        // stay that many pixels apart. A callout is tested for it AT EVERY ROW it tries (see
+        // placeCalloutLabel) - testing it only after placement would place the label on a free row
+        // and then hide it for being too close to a neighbour, which is the one outcome the
+        // stacking exists to avoid.
+        auto testGroupDistance = [&groupMap](const LabelInfo& info) {
+            long long groupId = info.label->getGroupId();
+            if (groupId <= 0) {
+                return true;
+            }
+            for (const LabelInfo* otherLabelInfo : groupMap[groupId]) {
+                float minimumDistance = std::min(info.label->getMinimumGroupDistance(), otherLabelInfo->label->getMinimumGroupDistance());
+                if ((!info.cullRecord.allowOverlapSameFeatureId || !otherLabelInfo->cullRecord.allowOverlapSameFeatureId || info.cullRecord.localId != otherLabelInfo->cullRecord.localId) && testRecordOverlap(info.cullRecord, otherLabelInfo->cullRecord, minimumDistance)) {
+                    return false;
+                }
+            }
+            return true;
+        };
+
+        labelLock.acquire();
+        for (LabelInfo& labelInfo : validLabelList) {
+            labelLock.step();
 
             const std::shared_ptr<Label>& label = labelInfo.label;
 
             long long groupId = label->getGroupId();
-
-            // The group's minimum distance: labels of one group must not only miss each other, they
-            // must stay that many pixels apart. A callout is tested for it AT EVERY ROW it tries
-            // (see placeCalloutLabel) - testing it only after placement would place the label on a
-            // free row and then hide it for being too close to a neighbour, which is the one
-            // outcome the stacking exists to avoid.
-            auto testGroupDistance = [&](const LabelInfo& info) {
-                if (groupId <= 0) {
-                    return true;
-                }
-                for (const LabelInfo* otherLabelInfo : groupMap[groupId]) {
-                    const std::shared_ptr<Label>& otherLabel = otherLabelInfo->label;
-                    float minimumDistance = std::min(label->getMinimumGroupDistance(), otherLabel->getMinimumGroupDistance());
-                    if ((!info.cullRecord.allowOverlapSameFeatureId || !otherLabelInfo->cullRecord.allowOverlapSameFeatureId || info.cullRecord.localId != otherLabelInfo->cullRecord.localId) && testPolygonOverlap(info.cullRecord.envelope, otherLabelInfo->cullRecord.envelope, minimumDistance)) {
-                        return false;
-                    }
-                }
-                return true;
-            };
 
             // Label is always visible if its group is set to negative value. Otherwise test visibility against other labels
             bool visible;
             if (label->getStyle()->orientation == LabelOrientation::CALLOUT && groupId >= 0) {
                 visible = labelInfo.valid && placeCalloutLabel(labelInfo, testGroupDistance);
             } else if (labelInfo.variants.size() > 1 && groupId >= 0) {
-                visible = labelInfo.valid && placeAnchoredLabel(labelInfo, order, testGroupDistance);
+                visible = labelInfo.valid && placeAnchoredLabel(labelInfo, testGroupDistance);
             } else {
                 visible = groupId >= 0 ? labelInfo.valid && testGridOverlap(labelInfo) : labelInfo.valid;
                 visible = visible && testGroupDistance(labelInfo);
@@ -299,9 +322,13 @@ namespace carto::vt {
         for (int y = 0; y < GRID_RESOLUTION_Y; y++) {
             for (int x = 0; x < GRID_RESOLUTION_X; x++) {
                 _recordGrid[y][x].clear();
-                _minimumGrid[y][x].clear();
             }
         }
+    }
+
+    void LabelCuller::takeVariant(LabelInfo& labelInfo, int index) {
+        labelInfo.label->setVariantIndex(index);
+        labelInfo.cullRecord = labelInfo.variants[index];
     }
 
     void LabelCuller::addGridRecord(RecordGrid& grid, const CullRecord& cullRecord) const {
@@ -314,24 +341,13 @@ namespace carto::vt {
         }
     }
 
-    bool LabelCuller::testPeerReservations(const CullRecord& candidate, int order, float priority) const {
-        cglib::vec2<int> minPos = getGridIndex(candidate.bounds.min);
-        cglib::vec2<int> maxPos = getGridIndex(candidate.bounds.max);
-        for (int y = minPos(1); y <= maxPos(1); y++) {
-            for (int x = minPos(0); x <= maxPos(0); x++) {
-                for (const CullRecord& other : _minimumGrid[y][x]) {
-                    // Labels before this one are already placed and live in the main grid; those of
-                    // a lower priority are the ones expected to give way, not this one.
-                    if (other.order <= order || other.priority != priority) {
-                        continue;
-                    }
-                    if (other.bounds.inside(candidate.bounds) && testPolygonOverlap(other.envelope, candidate.envelope, 0)) {
-                        return false;
-                    }
-                }
-            }
+    bool LabelCuller::testRecordOverlap(const CullRecord& record1, const CullRecord& record2, float buffer) {
+        // Two screen-aligned rectangles whose bounds already intersect overlap, full stop - the
+        // separating-axis test can only confirm it. This is the common case: labels are billboards.
+        if (buffer <= 0 && record1.axisAligned && record2.axisAligned) {
+            return true;
         }
-        return true;
+        return testPolygonOverlap(record1.envelope, record2.envelope, buffer);
     }
 
     bool LabelCuller::testGridOverlap(const LabelInfo& labelInfo) const {
@@ -343,7 +359,7 @@ namespace carto::vt {
             for (int x = minPos(0); x <= maxPos(0); x++) {
                 for (const CullRecord& otherRecord : _recordGrid[y][x]) {
                     if (otherRecord.bounds.inside(cullRecord.bounds)) {
-                        if ((!cullRecord.allowOverlapSameFeatureId || !otherRecord.allowOverlapSameFeatureId || cullRecord.localId != otherRecord.localId) && testPolygonOverlap(otherRecord.envelope, cullRecord.envelope, 0)) {
+                        if ((!cullRecord.allowOverlapSameFeatureId || !otherRecord.allowOverlapSameFeatureId || cullRecord.localId != otherRecord.localId) && testRecordOverlap(otherRecord, cullRecord, 0)) {
                             return false;
                         }
                     }
@@ -362,8 +378,7 @@ namespace carto::vt {
 
         auto envelopeAt = [this, &labelInfo, &label](float offset) {
             label->setCalloutPlacement(offset, label->calculateAnchorScreenY(_viewState));
-            labelInfo.valid = calculateScreenEnvelope(label, labelInfo.size, labelInfo.cullRecord.envelope);
-            labelInfo.cullRecord.bounds = cglib::bbox2<float>::make_union(labelInfo.cullRecord.envelope.begin(), labelInfo.cullRecord.envelope.end());
+            labelInfo.valid = calculateScreenEnvelope(label, labelInfo.size, labelInfo.cullRecord);
             return labelInfo.valid;
         };
 
@@ -467,19 +482,9 @@ namespace carto::vt {
         return false;
     }
 
-    bool LabelCuller::placeAnchoredLabel(LabelInfo& labelInfo, int order, const std::function<bool(const LabelInfo&)>& testGroupDistance) {
+    bool LabelCuller::placeAnchoredLabel(LabelInfo& labelInfo, const std::function<bool(const LabelInfo&)>& testGroupDistance) {
         const std::shared_ptr<Label>& label = labelInfo.label;
-        int previous = label->getVariantIndex();
         int count = static_cast<int>(labelInfo.variants.size());
-
-        auto take = [&labelInfo, &label](int index) {
-            label->setVariantIndex(index);
-            labelInfo.cullRecord = labelInfo.variants[index];
-        };
-        auto fits = [this, &labelInfo, &testGroupDistance, &take](int index) {
-            take(index);
-            return testGridOverlap(labelInfo) && testGroupDistance(labelInfo);
-        };
 
         // The side the label already holds is tried first, so a pass that changes nothing else
         // leaves it there - a name that changes side under a moving camera reads as flicker. Never
@@ -487,8 +492,8 @@ namespace carto::vt {
         // that fell back to it once would keep it for good.
         std::vector<int> candidates;
         candidates.reserve(count + 1);
-        int preferred = (label->drawsText() ? previous : -1);
-        if (preferred >= 0) {
+        int preferred = (label->drawsText() ? label->getVariantIndex() : -1);
+        if (preferred >= 0 && preferred < count) {
             candidates.push_back(preferred);
         }
         for (int index = 0; index < count; index++) {
@@ -497,48 +502,39 @@ namespace carto::vt {
             }
         }
 
-        // The first side that is free, preferring one that also leaves room for the labels that
-        // come after at the same priority - a name that would cost an equal peer its icon gives up
-        // its own text instead. When no side manages both, the free one wins: yielding is a
-        // courtesy, disappearing is not.
-        int free = -1;
         for (int index : candidates) {
-            if (!fits(index)) {
-                continue;
-            }
-            if (free < 0) {
-                free = index;
-            }
-            // The smallest layout has nothing left to yield, so it is taken as it is.
-            if (index == count - 1 || testPeerReservations(labelInfo.cullRecord, order, labelInfo.priority)) {
+            takeVariant(labelInfo, index);
+            if (testGridOverlap(labelInfo) && testGroupDistance(labelInfo)) {
                 return true;
             }
-        }
-        if (free >= 0) {
-            take(free);
-            return true;
         }
 
         // Nothing free. Leave it where it was, so that a label on its way out fades where it last
         // was instead of jumping to the last side it tried.
-        take(previous);
+        takeVariant(labelInfo, std::max(0, std::min(count - 1, label->getVariantIndex())));
         return false;
     }
 
-    void LabelCuller::projectEnvelope(const std::array<cglib::vec3<float>, 4>& worldEnvelope, std::array<cglib::vec2<float>, 4>& envelope) const {
+    void LabelCuller::projectEnvelope(const std::array<cglib::vec3<float>, 4>& worldEnvelope, CullRecord& record) const {
+        std::array<cglib::vec2<float>, 4>& envelope = record.envelope;
         for (std::size_t i = 0; i < 4; i++) {
             cglib::vec2<float> p = cglib::proj_o(cglib::transform_point(worldEnvelope[i], _localCameraProjMatrix));
             envelope[i] = cglib::vec2<float>((p(0) * 0.5f + 0.5f) * _viewState.resolution * _viewState.aspect, (p(1) * 0.5f + 0.5f) * _viewState.resolution);
         }
+        record.bounds = cglib::bbox2<float>::make_union(envelope.begin(), envelope.end());
+        record.axisAligned = std::abs(envelope[0](1) - envelope[1](1)) < AXIS_ALIGNED_EPSILON &&
+                             std::abs(envelope[1](0) - envelope[2](0)) < AXIS_ALIGNED_EPSILON &&
+                             std::abs(envelope[2](1) - envelope[3](1)) < AXIS_ALIGNED_EPSILON &&
+                             std::abs(envelope[3](0) - envelope[0](0)) < AXIS_ALIGNED_EPSILON;
     }
 
-    bool LabelCuller::calculateScreenEnvelope(const std::shared_ptr<Label>& label, float size, std::array<cglib::vec2<float>, 4>& envelope) const {
+    bool LabelCuller::calculateScreenEnvelope(const std::shared_ptr<Label>& label, float size, CullRecord& record) const {
         std::array<cglib::vec3<float>, 4> worldEnvelope;
         if (!label->calculateEnvelope(size, EXTRA_LABEL_BUFFER, _viewState, worldEnvelope)) {
             return false;
         }
 
-        projectEnvelope(worldEnvelope, envelope);
+        projectEnvelope(worldEnvelope, record);
         return true;
     }
 }
