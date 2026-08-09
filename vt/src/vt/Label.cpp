@@ -133,26 +133,12 @@ namespace carto::vt {
 
     cglib::bbox2<float> Label::calculateGlyphBBox(const cglib::vec2<float>& shift, bool drawText, Part part, float lineAlign) const {
         cglib::bbox2<float> bbox = cglib::bbox2<float>::smallest();
-        cglib::vec2<float> pen(0, 0);
-        bool text = false;
-        std::size_t lineIndex = 0;
-        float lineShift = 0;
-        for (const Font::Glyph& glyph : _glyphs) {
-            if (glyph.codePoint == Font::CR_CODEPOINT) {
-                if (!drawText) {
-                    break; // the icon alone: everything from the first line break on is text
-                }
-                lineShift = calculateLineShift(text ? ++lineIndex : lineIndex, lineAlign);
-                pen = shift + cglib::vec2<float>(lineShift, 0);
-                text = true;
-            }
-            else if (part == Part::ALL || (text ? part == Part::TEXT : part == Part::ICON)) {
+        walkGlyphs(shift, drawText, lineAlign, [&bbox, part](const Font::Glyph& glyph, const cglib::vec2<float>& pen, bool text) {
+            if (part == Part::ALL || (text ? part == Part::TEXT : part == Part::ICON)) {
                 bbox.add(pen + glyph.offset);
                 bbox.add(pen + glyph.offset + glyph.size);
             }
-
-            pen += glyph.advance;
-        }
+        });
         return bbox;
     }
 
@@ -865,60 +851,40 @@ namespace carto::vt {
     }
 
     void Label::buildPointVertexData(VertexArray<cglib::vec3<float>>& vertices, VertexArray<cglib::vec2<std::int16_t>>& texCoords, VertexArray<cglib::vec4<std::int8_t>>& attribs, VertexArray<std::uint16_t>& indices) const {
-        // The text starts at the variant's pen: the icon glyphs run before the first line break and
-        // stay on the anchor, the text after it moves to whichever side the culler chose.
-        const cglib::vec2<float> shift = calculateVariantShift();
-        const bool drawText = drawsText();
-        const float lineAlign = calculateLineAlign();
-        cglib::vec2<float> pen(0, 0);
-        bool text = false;
-        std::size_t lineIndex = 0;
-        for (const Font::Glyph& glyph : _glyphs) {
-            // If carriage return, reposition pen and state to the initial position
-            if (glyph.codePoint == Font::CR_CODEPOINT) {
-                if (!drawText) {
-                    break;
-                }
-                pen = shift + cglib::vec2<float>(calculateLineShift(text ? ++lineIndex : lineIndex, lineAlign), 0);
-                text = true;
+        walkGlyphs(calculateVariantShift(), drawsText(), calculateLineAlign(), [&](const Font::Glyph& glyph, const cglib::vec2<float>& pen, bool) {
+            if (glyph.codePoint == Font::SPACE_CODEPOINT) {
+                return;
             }
-            else if (glyph.codePoint != Font::SPACE_CODEPOINT) {
-                std::uint16_t i0 = static_cast<std::uint16_t>(vertices.size());
-                indices.append(i0 + 0, i0 + 1, i0 + 2);
-                indices.append(i0 + 0, i0 + 2, i0 + 3);
+            std::uint16_t i0 = static_cast<std::uint16_t>(vertices.size());
+            indices.append(i0 + 0, i0 + 1, i0 + 2);
+            indices.append(i0 + 0, i0 + 2, i0 + 3);
 
-                std::int16_t u0 = static_cast<std::int16_t>(glyph.baseGlyph.x), u1 = static_cast<std::int16_t>(glyph.baseGlyph.x + glyph.baseGlyph.width);
-                std::int16_t v0 = static_cast<std::int16_t>(glyph.baseGlyph.y), v1 = static_cast<std::int16_t>(glyph.baseGlyph.y + glyph.baseGlyph.height);
-                texCoords.append(cglib::vec2<std::int16_t>(u0, v1), cglib::vec2<std::int16_t>(u1, v1), cglib::vec2<std::int16_t>(u1, v0), cglib::vec2<std::int16_t>(u0, v0));
+            std::int16_t u0 = static_cast<std::int16_t>(glyph.baseGlyph.x), u1 = static_cast<std::int16_t>(glyph.baseGlyph.x + glyph.baseGlyph.width);
+            std::int16_t v0 = static_cast<std::int16_t>(glyph.baseGlyph.y), v1 = static_cast<std::int16_t>(glyph.baseGlyph.y + glyph.baseGlyph.height);
+            texCoords.append(cglib::vec2<std::int16_t>(u0, v1), cglib::vec2<std::int16_t>(u1, v1), cglib::vec2<std::int16_t>(u1, v0), cglib::vec2<std::int16_t>(u0, v0));
 
-                // attribs[0] carries the run the glyph belongs to until calculateVertexData turns
-                // it into a style index: 1 = the second run, 2 = the icon run, both of which may
-                // have their own colour.
-                cglib::vec4<std::int8_t> attrib(glyph.icon ? 2 : (glyph.secondary ? 1 : 0), static_cast<std::int8_t>(glyph.baseGlyph.mode), 0, 0);
-                attribs.append(attrib, attrib, attrib, attrib);
+            // attribs[0] carries the run the glyph belongs to until calculateVertexData turns
+            // it into a style index: 1 = the second run, 2 = the icon run, both of which may
+            // have their own colour.
+            cglib::vec4<std::int8_t> attrib(glyph.icon ? 2 : (glyph.secondary ? 1 : 0), static_cast<std::int8_t>(glyph.baseGlyph.mode), 0, 0);
+            attribs.append(attrib, attrib, attrib, attrib);
 
-                if (_style->transform) {
-                    cglib::mat2x2<float> transform = _style->transform->matrix2();
-                    cglib::vec2<float> p0 = cglib::transform(pen + glyph.offset, transform);
-                    cglib::vec2<float> p1 = cglib::transform(pen + glyph.offset + cglib::vec2<float>(glyph.size(0), 0), transform);
-                    cglib::vec2<float> p2 = cglib::transform(pen + glyph.offset + glyph.size, transform);
-                    cglib::vec2<float> p3 = cglib::transform(pen + glyph.offset + cglib::vec2<float>(0, glyph.size(1)), transform);
-                    vertices.append(cglib::vec3<float>(p0(0), p0(1), 0), cglib::vec3<float>(p1(0), p1(1), 0), cglib::vec3<float>(p2(0), p2(1), 0), cglib::vec3<float>(p3(0), p3(1), 0));
-                }
-                else {
-                    cglib::vec2<float> p0 = pen + glyph.offset;
-                    cglib::vec2<float> p3 = pen + glyph.offset + glyph.size;
-                    vertices.append(cglib::vec3<float>(p0(0), p0(1), 0), cglib::vec3<float>(p3(0), p0(1), 0), cglib::vec3<float>(p3(0), p3(1), 0), cglib::vec3<float>(p0(0), p3(1), 0));
-                }
+            if (_style->transform) {
+                cglib::mat2x2<float> transform = _style->transform->matrix2();
+                cglib::vec2<float> p0 = cglib::transform(pen + glyph.offset, transform);
+                cglib::vec2<float> p1 = cglib::transform(pen + glyph.offset + cglib::vec2<float>(glyph.size(0), 0), transform);
+                cglib::vec2<float> p2 = cglib::transform(pen + glyph.offset + glyph.size, transform);
+                cglib::vec2<float> p3 = cglib::transform(pen + glyph.offset + cglib::vec2<float>(0, glyph.size(1)), transform);
+                vertices.append(cglib::vec3<float>(p0(0), p0(1), 0), cglib::vec3<float>(p1(0), p1(1), 0), cglib::vec3<float>(p2(0), p2(1), 0), cglib::vec3<float>(p3(0), p3(1), 0));
             }
-
-            // Move pen
-            pen += glyph.advance;
-        }
+            else {
+                cglib::vec2<float> p0 = pen + glyph.offset;
+                cglib::vec2<float> p3 = pen + glyph.offset + glyph.size;
+                vertices.append(cglib::vec3<float>(p0(0), p0(1), 0), cglib::vec3<float>(p3(0), p0(1), 0), cglib::vec3<float>(p3(0), p3(1), 0), cglib::vec3<float>(p0(0), p3(1), 0));
+            }
+        });
     }
 
-    // The label's screen axes come from the caller: calculateVertexData has just built them for the
-    // glyphs, and setting them up again per label was measurable with a plate on every label.
     void Label::appendLabelPlates(float size, float scale, const std::shared_ptr<const Placement>& placement, const LabelPlateIndices& plates, const cglib::vec2<float>& calloutShift, const cglib::vec3<float>& origin, const cglib::vec3<float>& xAxis, const cglib::vec3<float>& yAxis, VertexArray<cglib::vec3<float>>& vertices, VertexArray<cglib::vec3<float>>& offsets, VertexArray<cglib::vec3<float>>& normals, VertexArray<cglib::vec2<std::int16_t>>& texCoords, VertexArray<cglib::vec4<std::int8_t>>& attribs, VertexArray<std::uint16_t>& indices) const {
         if (!(size > 0)) {
             return;

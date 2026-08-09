@@ -307,6 +307,29 @@ namespace carto::vt {
         // Which glyphs of the run a box covers: the icon prefix, the text after the first line
         // break, or both.
         enum class Part { ALL, ICON, TEXT };
+        // The one pen walk over the glyph run, shared by the box and the quads so the two can not
+        // drift apart: 'fn(glyph, pen, isText)' is called for every glyph that is drawn. The icon
+        // glyphs come before the first line break, the text after it starts at 'shift' (plus its
+        // line's justification), and !drawText stops at the break.
+        template <typename Func>
+        void walkGlyphs(const cglib::vec2<float>& shift, bool drawText, float lineAlign, Func fn) const {
+            cglib::vec2<float> pen(0, 0);
+            bool text = false;
+            std::size_t lineIndex = 0;
+            for (const Font::Glyph& glyph : _glyphs) {
+                if (glyph.codePoint == Font::CR_CODEPOINT) {
+                    if (!drawText) {
+                        return;
+                    }
+                    pen = shift + cglib::vec2<float>(calculateLineShift(text ? ++lineIndex : lineIndex, lineAlign), 0);
+                    text = true;
+                }
+                else {
+                    fn(glyph, pen, text);
+                }
+                pen += glyph.advance;
+            }
+        }
         cglib::bbox2<float> calculateGlyphBBox(const cglib::vec2<float>& shift, bool drawText, Part part = Part::ALL, float lineAlign = 0.0f) const;
         // Justification of the text's lines for the variant in use: -1 flush left, 0 centred (which
         // is how the formatter laid them out), +1 flush right.

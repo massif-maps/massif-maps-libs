@@ -43,21 +43,23 @@ namespace {
         return bbox;
     }
 
-    // One text layout per side the style allows, in its preference order (see
-    // TextLabelStyle::anchors). The text is placed against the icon's edge - it is the same run of
-    // glyphs every time, only its pen origin moves, so the sides cost a vec2 each and no extra
-    // layout work. dx/dy are mirrored with the side: they are a GAP from the icon here, so a style
-    // that pushes its name 6px to the right of the icon pushes it 6px to the left on the left side.
-    // The justification a side asks for. AUTO follows the side; an explicit one is MIRRORED on the
-    // left, so 'flush against the icon' means the same thing on both sides.
+    // Justification of the lines of a wrapped name on a given side. AUTO follows the side; an
+    // explicit value is mirrored on the left, so "flush against the icon" means the same on both.
     static float resolveLineAlign(carto::vt::LabelLineAlign align, const cglib::vec2<float>& dir) {
-        float base = (align == carto::vt::LabelLineAlign::LEFT ? -1.0f : align == carto::vt::LabelLineAlign::RIGHT ? 1.0f : 0.0f);
         if (align == carto::vt::LabelLineAlign::AUTO) {
             return (dir(0) > 0 ? -1.0f : dir(0) < 0 ? 1.0f : 0.0f);
         }
+        float base = (align == carto::vt::LabelLineAlign::LEFT ? -1.0f : align == carto::vt::LabelLineAlign::RIGHT ? 1.0f : 0.0f);
         return (dir(0) < 0 ? -base : base);
     }
 
+    // One text layout per side the style allows (see TextLabelStyle::anchors). The glyph run is the
+    // same every time, only its pen origin moves, so a side costs one vec2.
+    //
+    // Along the side's own axis the text is placed against the icon's edge, and dx/dy are re-applied
+    // as a gap - pushed AWAY from the icon on either side. Across it the text is centred on the
+    // anchor: a name above the icon has to be centred over it, and the formatter's own alignment is
+    // derived from the sign of dx, which means nothing once dx is a gap.
     static std::vector<carto::vt::TileLabel::Variant> buildLabelVariants(const std::vector<carto::vt::LabelAnchor>& anchors, carto::vt::LabelLineAlign lineAlign, bool textOptional, bool hasIcon, const std::vector<carto::vt::Font::Glyph>& glyphs, const cglib::vec2<float>& iconExtent, const cglib::vec2<float>& styleOffset) {
         std::vector<carto::vt::TileLabel::Variant> variants;
         if (anchors.empty()) {
@@ -66,7 +68,7 @@ namespace {
 
         cglib::bbox2<float> textBBox = measureGlyphRun(glyphs, true);
         if (textBBox.min(0) > textBBox.max(0)) {
-            return variants; // nothing to move
+            return variants; // no text to move
         }
         // The box as it would be with no dx/dy, so that the offset can be re-applied per side.
         cglib::vec2<float> boxMin = textBBox.min - styleOffset;
@@ -75,13 +77,17 @@ namespace {
         variants.reserve(anchors.size() + 1);
         for (carto::vt::LabelAnchor anchor : anchors) {
             cglib::vec2<float> dir = carto::vt::labelAnchorDirection(anchor);
-            cglib::vec2<float> desired = styleOffset;
+            cglib::vec2<float> desired(0, 0);
             for (int i = 0; i < 2; i++) {
+                float gap = std::abs(styleOffset(i));
                 if (dir(i) > 0) {
-                    desired(i) = iconExtent(i) - boxMin(i) + std::abs(styleOffset(i));
+                    desired(i) = iconExtent(i) - boxMin(i) + gap;
                 }
                 else if (dir(i) < 0) {
-                    desired(i) = -iconExtent(i) - boxMax(i) - std::abs(styleOffset(i));
+                    desired(i) = -iconExtent(i) - boxMax(i) - gap;
+                }
+                else {
+                    desired(i) = -(boxMin(i) + boxMax(i)) * 0.5f + styleOffset(i);
                 }
             }
             variants.emplace_back(desired - styleOffset, true, resolveLineAlign(lineAlign, dir));

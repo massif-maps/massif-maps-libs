@@ -450,15 +450,16 @@ namespace carto::vt {
             return labelInfo.valid && testGridOverlap(labelInfo) && testGroupDistance(labelInfo);
         };
 
-        // Always from the style's FIRST side, every pass. Trying the side the label already held
-        // first looks like the committed-placement rule the sort above uses, but it is not the same
-        // thing: the last variant of a 'text-optional' label is the icon alone, it is smaller than
-        // every other one, so it always fits - and a label that fell back to it once would keep it
-        // for good, its name never coming back however far the camera zooms in. Stability comes
-        // from the sort (a label that was visible claims its slot before new ones), not from
-        // remembering a side: with the same neighbours the same side wins again anyway.
+        // The side the label already holds is tried first, so a pass that changes nothing else
+        // leaves it there - a name that changes side under a moving camera reads as flicker. Never
+        // the icon-only variant: it is smaller than every other one, so it always fits, and a label
+        // that fell back to it once would keep it for good.
+        int preferred = (label->drawsText() ? previous : -1);
+        if (preferred >= 0 && trySide(preferred)) {
+            return true;
+        }
         for (int index = 0; index < count; index++) {
-            if (trySide(index)) {
+            if (index != preferred && trySide(index)) {
                 return true;
             }
         }
