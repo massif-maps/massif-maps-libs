@@ -17,6 +17,7 @@
 #include <optional>
 #include <array>
 #include <vector>
+#include <algorithm>
 
 #include <cglib/mat.h>
 
@@ -41,6 +42,16 @@ namespace carto::vt {
             int glyphRenderSize;
 
             StyleParameters() : parameterCount(0), colorFuncs(), widthFuncs(), offsetFuncs(), strokeScales(), pattern(), translate(), compOp(CompOp::SRC_OVER), glyphRenderSize(64) { }
+        };
+
+        // Where one feature's vertices live, so its style slot can be repointed after the tile was
+        // built - this is what lets a style parameter that selects a feature repaint instead of
+        // re-decoding. Only recorded for geometries whose style asked for it.
+        struct FeatureStyleRange {
+            long long id;
+            std::uint32_t firstVertex;
+            std::uint32_t vertexCount;
+            std::uint8_t styleIndex;
         };
 
         struct VertexGeometryLayoutParameters {
@@ -74,9 +85,38 @@ namespace carto::vt {
         const std::vector<std::pair<std::size_t, long long>>& getIds() const { return _ids; }
         const std::vector<std::pair<std::size_t, std::uint16_t>>& getGeoPosIndexes() const { return _geoPosIndexes; }
 
+        const std::vector<FeatureStyleRange>& getFeatureStyleRanges() const { return _featureStyleRanges; }
+
+        void setFeatureStyleRanges(std::vector<FeatureStyleRange> featureStyleRanges) { _featureStyleRanges = std::move(featureStyleRanges); }
+
+        // Repoints one feature at another of the geometry's style slots, in the vertex data that is
+        // already uploaded. Returns true if anything changed, in which case the renderer re-uploads
+        // the dirty byte range before the next draw.
+        bool setFeatureStyleIndex(std::size_t featureIndex, int styleIndex) {
+            FeatureStyleRange& range = _featureStyleRanges.at(featureIndex);
+            if (range.styleIndex == styleIndex || _vertexGeometryLayoutParameters.attribsOffset < 0 || _vertexGeometry.empty()) {
+                return false;
+            }
+            std::size_t vertexSize = _vertexGeometryLayoutParameters.vertexSize;
+            std::size_t first = range.firstVertex * vertexSize + _vertexGeometryLayoutParameters.attribsOffset;
+            for (std::uint32_t i = 0; i < range.vertexCount; i++) {
+                _vertexGeometry[first + i * vertexSize] = static_cast<std::uint8_t>(styleIndex);
+            }
+            range.styleIndex = static_cast<std::uint8_t>(styleIndex);
+            std::size_t last = first + (range.vertexCount > 0 ? (range.vertexCount - 1) * vertexSize : 0) + 1;
+            _dirtyVertexBytes = (_dirtyVertexBytes ? std::make_pair(std::min(_dirtyVertexBytes->first, first), std::max(_dirtyVertexBytes->second, last)) : std::make_pair(first, last));
+            return true;
+        }
+
+        const std::optional<std::pair<std::size_t, std::size_t>>& getDirtyVertexBytes() const { return _dirtyVertexBytes; }
+
+        void clearDirtyVertexBytes() { _dirtyVertexBytes.reset(); }
+
         void releaseVertexArrays() {
-            _vertexGeometry.clear();
-            _vertexGeometry.shrink_to_fit();
+            if (_featureStyleRanges.empty()) { // the vertex data is what a style slot change patches
+                _vertexGeometry.clear();
+                _vertexGeometry.shrink_to_fit();
+            }
             _indices.clear();
             _indices.shrink_to_fit();
             _ids.clear();
@@ -110,6 +150,9 @@ namespace carto::vt {
         const VertexGeometryLayoutParameters _vertexGeometryLayoutParameters;
         const unsigned int _indicesCount; // real count, even if indices are released
         const unsigned int _geoPosIndexesCount;
+
+        std::vector<FeatureStyleRange> _featureStyleRanges;
+        std::optional<std::pair<std::size_t, std::size_t>> _dirtyVertexBytes; // byte range to re-upload
 
         VertexArray<std::uint8_t> _vertexGeometry;
         VertexArray<std::uint16_t> _indices;

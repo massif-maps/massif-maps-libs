@@ -34,6 +34,12 @@ namespace carto::vt {
         using Vertices = std::vector<Vertex>;
         using VerticesList = std::vector<Vertices>;
 
+        // A style whose appearance can be repointed per feature after decoding (a style parameter
+        // compared with a feature field) asks for the per-feature vertex ranges to be recorded, so
+        // the renderer can move a feature to another style slot instead of the tile being decoded
+        // again. Off by default: it keeps the vertex data of the geometry resident.
+        void setRecordFeatureStyleRanges(bool recordFeatureStyleRanges) { _recordFeatureStyleRanges = recordFeatureStyleRanges; }
+
         using PointProcessor = std::function<void(long long id, const Vertex& vertex)>;
         using TextProcessor = std::function<void(long long id, const Vertex& vertex, const std::string& text, int geoPointIndex)>;
         using LineProcessor = std::function<void(long long id, const Vertices& vertices)>;
@@ -120,6 +126,8 @@ namespace carto::vt {
         VertexArray<std::size_t> _indices;
         VertexArray<std::uint16_t> _geoPosIndexes;
         VertexArray<long long> _ids;
+        std::vector<TileGeometry::FeatureStyleRange> _featureStyleRanges; // only when recording is on
+        bool _recordFeatureStyleRanges = false;
 
         std::vector<std::shared_ptr<TileBackground>> _backgroundList;
         std::vector<std::shared_ptr<TileBitmap>> _bitmapList;

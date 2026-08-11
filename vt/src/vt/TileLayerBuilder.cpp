@@ -397,6 +397,9 @@ namespace carto::vt {
             std::size_t i0 = _coords.size();
             _binormals.fill(cglib::vec2<float>(0, 0), _coords.size() - _binormals.size()); // needed if previously only polygons were used
             tesselateLine(vertices, static_cast<std::int8_t>(styleIndex), stroke, style);
+            if (_recordFeatureStyleRanges) {
+                _featureStyleRanges.push_back(TileGeometry::FeatureStyleRange { id, static_cast<std::uint32_t>(i0), static_cast<std::uint32_t>(_coords.size() - i0), static_cast<std::uint8_t>(styleIndex) });
+            }
             _ids.fill(id, _indices.size() - _ids.size());
             _geoPosIndexes.fill(0, _indices.size() - _geoPosIndexes.size());
             if (transform) {
@@ -723,6 +726,7 @@ namespace carto::vt {
         _indices.clear();
         _ids.clear();
         _geoPosIndexes.clear();
+        _featureStyleRanges.clear();
     }
 
     void TileLayerBuilder::packGeometry(std::vector<std::shared_ptr<TileGeometry>>& geometryList) const {
@@ -1017,6 +1021,9 @@ namespace carto::vt {
 
         // Store geometry
         auto geometry = std::make_shared<TileGeometry>(type, _geomScale, styleParameters, vertexGeomLayoutParams, std::move(compressedVertexGeometry), std::move(compressedIndices), std::move(compressedIds), std::move(compressedGeoPosIndexes));
+        if (!_featureStyleRanges.empty()) {
+            geometry->setFeatureStyleRanges(_featureStyleRanges);
+        }
         geometryList.push_back(std::move(geometry));
     }
 

@@ -5903,6 +5903,13 @@ namespace carto::vt {
 
             it = _compiledTileGeometryMap.emplace(tileGeometry.get(), OwnedCompiledGeometry { tileGeometry, compiledGeometry }).first;
         }
+        else if (const std::optional<std::pair<std::size_t, std::size_t>>& dirtyBytes = tileGeometry->getDirtyVertexBytes()) {
+            // A feature was repointed at another style slot: re-upload just the bytes it touched
+            // instead of decoding the tile again
+            glBindBuffer(GL_ARRAY_BUFFER, it->second.geometry.vertexGeometryVBO);
+            glBufferSubData(GL_ARRAY_BUFFER, dirtyBytes->first, dirtyBytes->second - dirtyBytes->first, tileGeometry->getVertexGeometry().data() + dirtyBytes->first);
+            tileGeometry->clearDirtyVertexBytes();
+        }
         return it->second.geometry;
     }
 
