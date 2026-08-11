@@ -57,6 +57,8 @@ namespace carto::mvt {
             long long operator() (long long val) const { return val; }
             long long operator() (double val) const { return (val != 0 ? std::hash<double>()(val) : 0); }
             long long operator() (const std::string& str) const { return (str.empty() ? 0 : std::hash<std::string>()(str)); }
+            long long operator() (const std::shared_ptr<const ValueArray>& val) const { return (val ? std::hash<const void*>()(val.get()) : 0); }
+            long long operator() (const std::shared_ptr<const ValueObject>& val) const { return (val ? std::hash<const void*>()(val.get()) : 0); }
         };
 
         long long id = std::visit(IdHasher(), val);
