@@ -36,7 +36,10 @@ namespace carto::mvt {
         return it->second;
     }
 
-    void Symbolizer::bindProperty(const std::string& name, Property* prop) {
+    void Symbolizer::bindProperty(const std::string& name, Property* prop, bool bakedAtDecode) {
+        if (prop) { // a null property registers a name the symbolizer accepts and ignores
+            prop->setBakedAtDecode(bakedAtDecode);
+        }
         _propertyMap[name] = prop;
     }
 
