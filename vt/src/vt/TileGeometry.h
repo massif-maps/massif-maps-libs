@@ -13,6 +13,8 @@
 #include "VertexArray.h"
 #include "Styles.h"
 
+#include <atomic>
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <array>
@@ -22,6 +24,12 @@
 #include <cglib/mat.h>
 
 namespace carto::vt {
+    // The hash of the value a style parameter currently holds, shared between whoever sets the
+    // parameter and the renderer. A feature keeps the hash of the field value that parameter is
+    // compared with, so a selection change is a byte rewrite in the vertex data instead of a tile
+    // decode. Written by the application thread, read by the render thread.
+    using StyleStateRef = std::shared_ptr<const std::atomic<std::uint64_t>>;
+
     class TileGeometry final {
     public:
         enum class Type {
@@ -44,14 +52,17 @@ namespace carto::vt {
             StyleParameters() : parameterCount(0), colorFuncs(), widthFuncs(), offsetFuncs(), strokeScales(), pattern(), translate(), compOp(CompOp::SRC_OVER), glyphRenderSize(64) { }
         };
 
-        // Where one feature's vertices live, so its style slot can be repointed after the tile was
-        // built - this is what lets a style parameter that selects a feature repaint instead of
-        // re-decoding. Only recorded for geometries whose style asked for it.
+        // A run of vertices that a style parameter can repoint, so a feature it picks out repaints
+        // instead of the tile being decoded again. The decoder folded the comparison both ways, so
+        // both of the styles the run can take are already slots of this geometry: it takes
+        // styleIndices[1] while the parameter hashes to stateKey and styleIndices[0] otherwise.
+        // One feature owns several runs when the repacking splits its vertices.
         struct FeatureStyleRange {
-            long long id;
+            std::uint64_t stateKey;
             std::uint32_t firstVertex;
             std::uint32_t vertexCount;
-            std::uint8_t styleIndex;
+            std::uint8_t styleIndex; // the slot the vertices name right now
+            std::uint8_t styleIndices[2];
         };
 
         struct VertexGeometryLayoutParameters {
@@ -87,13 +98,37 @@ namespace carto::vt {
 
         const std::vector<FeatureStyleRange>& getFeatureStyleRanges() const { return _featureStyleRanges; }
 
-        void setFeatureStyleRanges(std::vector<FeatureStyleRange> featureStyleRanges) { _featureStyleRanges = std::move(featureStyleRanges); }
+        void setFeatureStyleRanges(std::vector<FeatureStyleRange> featureStyleRanges, StyleStateRef styleState, std::uint64_t stateKey) {
+            _featureStyleRanges = std::move(featureStyleRanges);
+            _styleState = std::move(styleState);
+            _appliedStateKey = stateKey;
+        }
 
-        // Repoints one feature at another of the geometry's style slots, in the vertex data that is
+        // Repoints the recorded runs at the style slot the parameter now picks. Called on the
+        // render thread before the vertex data is used, so the byte rewrite and the upload of the
+        // dirty range happen in the same place and no other thread touches the vertex data.
+        bool applyStyleState() {
+            if (!_styleState) {
+                return false;
+            }
+            std::uint64_t stateKey = _styleState->load(std::memory_order_relaxed);
+            if (stateKey == _appliedStateKey) {
+                return false;
+            }
+            _appliedStateKey = stateKey;
+            bool changed = false;
+            for (std::size_t i = 0; i < _featureStyleRanges.size(); i++) {
+                const FeatureStyleRange& range = _featureStyleRanges[i];
+                changed = setFeatureStyleIndex(i, range.styleIndices[range.stateKey == stateKey ? 1 : 0]) || changed;
+            }
+            return changed;
+        }
+
+        // Repoints one run at another of the geometry's style slots, in the vertex data that is
         // already uploaded. Returns true if anything changed, in which case the renderer re-uploads
         // the dirty byte range before the next draw.
-        bool setFeatureStyleIndex(std::size_t featureIndex, int styleIndex) {
-            FeatureStyleRange& range = _featureStyleRanges.at(featureIndex);
+        bool setFeatureStyleIndex(std::size_t rangeIndex, int styleIndex) {
+            FeatureStyleRange& range = _featureStyleRanges.at(rangeIndex);
             if (range.styleIndex == styleIndex || _vertexGeometryLayoutParameters.attribsOffset < 0 || _vertexGeometry.empty()) {
                 return false;
             }
@@ -152,6 +187,8 @@ namespace carto::vt {
         const unsigned int _geoPosIndexesCount;
 
         std::vector<FeatureStyleRange> _featureStyleRanges;
+        StyleStateRef _styleState;
+        std::uint64_t _appliedStateKey = 0;
         std::optional<std::pair<std::size_t, std::size_t>> _dirtyVertexBytes; // byte range to re-upload
 
         VertexArray<std::uint8_t> _vertexGeometry;
