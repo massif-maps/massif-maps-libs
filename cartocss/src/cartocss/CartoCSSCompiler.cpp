@@ -58,7 +58,7 @@ namespace carto::css {
         // Sort the properties by decreasing specificity
         for (FilteredPropertyList& propertyList : propertyLists) {
             std::stable_sort(propertyList.properties.begin(), propertyList.properties.end(), [&state](const FilteredProperty& property1, const FilteredProperty& property2) {
-                return state.getProperty(property1.property)->getSpecificity() > state.getProperty(property2.property)->getSpecificity();
+                return state.getPropertyRef(property1.property).getSpecificity() > state.getPropertyRef(property2.property).getSpecificity();
             });
         }
 
@@ -73,6 +73,14 @@ namespace carto::css {
             (*context.expressionContext.predefinedFieldMap)["zoom"] = Value(static_cast<long long>(zoom));
             PredicateEvaluator predEvaluator(context);
 
+            // A predicate evaluates the same for every property that references it at this zoom,
+            // and a layer's properties reference the same few dozen predicates thousands of times.
+            std::vector<boost::tribool> predicateResults;
+            predicateResults.reserve(state.getPredicateCount());
+            for (std::size_t predicate = 0; predicate < state.getPredicateCount(); predicate++) {
+                predicateResults.push_back(std::visit(predEvaluator, *state.getPredicate(predicate)));
+            }
+
             // Evaluate and optimize property lists
             std::list<FilteredPropertyList> optimizedPropertyLists;
             for (const FilteredPropertyList& propertyList : propertyLists) {
@@ -85,7 +93,7 @@ namespace carto::css {
                     optimizedFilters.reserve(property.filters.size());
                     bool unreachableProp = false;
                     for (std::size_t filter : property.filters) {
-                        boost::tribool result = std::visit(predEvaluator, *state.getPredicate(filter));
+                        boost::tribool result = predicateResults[filter];
                         if (!result) {
                             unreachableProp = true;
                             break;
@@ -230,12 +238,13 @@ namespace carto::css {
         // Build preliminary property sets, with optimized internal structures
         std::list<FilteredPropertySet> propertySets;
         for (const FilteredProperty& property : propertyList.properties) {
-            std::shared_ptr<const Property> prop = state.getProperty(property.property);
+            const Property& prop = state.getPropertyRef(property.property);
+            std::size_t fieldId = state.getPropertyFieldId(property.property);
 
             for (auto propertySetIt = propertySets.begin(); propertySetIt != propertySets.end(); propertySetIt++) {
                 // Check if this attribute is already set for given property set
-                if (std::shared_ptr<const Property> existingProp = state.findPropertySetProperty(*propertySetIt, prop->getField())) {
-                    if (existingProp->getSpecificity() >= prop->getSpecificity()) {
+                if (const Property* existingProp = state.findPropertySetProperty(*propertySetIt, fieldId)) {
+                    if (existingProp->getSpecificity() >= prop.getSpecificity()) {
                         continue;
                     }
                 }
