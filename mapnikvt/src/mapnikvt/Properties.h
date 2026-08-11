@@ -366,14 +366,20 @@ namespace carto::mvt {
                 // Reads parameters (and possibly the view state) and nothing else, so the function
                 // is the same for every feature of every tile decoded against this store - build it
                 // once per store, or every feature gets its own function object and the renderer
-                // can neither memoise it nor batch geometries that share it.
+                // can neither memoise it nor batch geometries that share it. Keyed by store because
+                // a compiled map may be shared by several decoders, each with its own values.
                 const NutiParameterStore* store = context.getNutiParameterStore().get();
                 std::lock_guard<std::mutex> lock(_liveFuncMutex);
-                if (store != _liveFuncStore) {
-                    _liveFunc = buildFunction(context);
-                    _liveFuncStore = store;
+                for (const std::pair<const NutiParameterStore*, T>& liveFunc : _liveFuncs) {
+                    if (liveFunc.first == store) {
+                        return liveFunc.second;
+                    }
                 }
-                return _liveFunc;
+                if (_liveFuncs.size() >= MAX_LIVE_FUNCS) {
+                    _liveFuncs.clear();
+                }
+                _liveFuncs.emplace_back(store, buildFunction(context));
+                return _liveFuncs.back().second;
             }
             return buildFunction(context);
         }
@@ -400,8 +406,7 @@ namespace carto::mvt {
                 _func = other._func;
                 _expr = other._expr;
                 std::lock_guard<std::mutex> lock(_liveFuncMutex);
-                _liveFuncStore = nullptr;
-                _liveFunc = T();
+                _liveFuncs.clear();
             }
             return *this;
         }
@@ -422,11 +427,11 @@ namespace carto::mvt {
         T _func;
         Expression _expr;
 
-        // The live function, cached per parameter store (see getFunction). Symbolizers are shared
+        // The live functions, cached per parameter store (see getFunction). Symbolizers are shared
         // between the tile decoding threads, hence the mutex.
+        static constexpr std::size_t MAX_LIVE_FUNCS = 4;
         mutable std::mutex _liveFuncMutex;
-        mutable const NutiParameterStore* _liveFuncStore = nullptr;
-        mutable T _liveFunc;
+        mutable std::vector<std::pair<const NutiParameterStore*, T>> _liveFuncs;
     };
 
     struct FloatFunctionProperty : GenericFunctionProperty<float, vt::FloatFunction> {
