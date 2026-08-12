@@ -8,18 +8,24 @@
 #include "Symbolizer.h"
 #include "LineSymbolizer.h"
 #include "TextSymbolizer.h"
+#include "LayerConfigSymbolizer.h"
 #include "ExpressionContext.h"
 #include "ExpressionUtils.h"
 #include "PredicateUtils.h"
 #include "ValueConverter.h"
 
 #include <algorithm>
+#include <set>
+#include <cmath>
 
 namespace carto::mvt {
     namespace {
-        // The field a contour feature carries for its class, and the only one a filter may read:
-        // the shader knows the elevation and nothing else about the feature.
+        // The fields a contour feature carries that a filter may read. 'div' is the elevation
+        // class, which the shader knows; 'stub' marks the short label carriers, and a line rule
+        // that excludes them ([stub=0]) is answered here with a real line, since the bands ARE
+        // the lines and no stub is ever painted. Anything else is a feature the shader cannot see.
         const std::string DIV_FIELD = "div";
+        const std::string STUB_FIELD = "stub";
 
         // Properties a line symbolizer may set for the rule to stay a plain elevation band. The
         // joins and caps are in the list because a contour band has neither - a fragment either
@@ -27,6 +33,43 @@ namespace carto::mvt {
         bool isShaderCapableLineProperty(const std::string& name) {
             return name == "stroke" || name == "stroke-width" || name == "stroke-opacity" ||
                    name == "stroke-linejoin" || name == "stroke-linecap";
+        }
+
+        // A variable that is a FEATURE field, as opposed to the zoom, a view-state value or a nuti
+        // parameter - those the resolver evaluates itself, so they are no obstacle. An empty name
+        // is a computed one ('[' + field + ']'), which could be any field: not expressible.
+        bool isFeatureField(const std::string& name) {
+            return !ExpressionContext::isViewStateVariable(name) && !ExpressionContext::isNutiVariable(name) &&
+                   !ExpressionContext::isMapnikVariable(name) && !ExpressionContext::isZoomVariable(name);
+        }
+
+        // The feature fields the symbolizer's own properties read. Rule::getReferencedSymbolizerFields
+        // answers for the WHOLE rule, and a contour rule usually carries the text symbolizer beside
+        // the line one - so it reports 'ele' from 'text-name: [ele]+" m"' and would reject a line
+        // that reads nothing at all.
+        std::set<std::string> referencedFields(const Symbolizer& symbolizer) {
+            struct FieldExtractor {
+                explicit FieldExtractor(std::set<std::string>& fields) : _fields(fields) { }
+
+                void operator() (const std::shared_ptr<VariableExpression>& varExpr) {
+                    if (auto val = std::get_if<Value>(&varExpr->getVariableExpression())) {
+                        _fields.insert(ValueConverter<std::string>::convert(*val));
+                    } else {
+                        _fields.insert(std::string()); // a computed name: any field may be read
+                    }
+                }
+
+            private:
+                std::set<std::string>& _fields;
+            };
+
+            std::set<std::string> fields;
+            for (const std::string& name : symbolizer.getPropertyNames()) {
+                if (const Property* property = symbolizer.getProperty(name)) {
+                    std::visit(ExpressionVariableVisitor(FieldExtractor(fields)), property->getExpression());
+                }
+            }
+            return fields;
         }
     }
 
@@ -63,6 +106,9 @@ namespace carto::mvt {
                     if (std::dynamic_pointer_cast<const TextSymbolizer>(symbolizer)) {
                         continue; // labels stay features whatever happens to the lines
                     }
+                    if (std::dynamic_pointer_cast<const LayerConfigSymbolizer>(symbolizer)) {
+                        continue; // configures the SOURCE (interval, resolution), draws nothing
+                    }
                     if (auto line = std::dynamic_pointer_cast<const LineSymbolizer>(symbolizer)) {
                         if (lineSymbolizer) {
                             result.rejectReason = "a rule draws two line symbolizers (casing)";
@@ -81,14 +127,16 @@ namespace carto::mvt {
                 // The filter may only select the elevation class, and the properties may only
                 // read the zoom and the parameters - a shader has no feature to read.
                 for (const std::string& field : rule->getReferencedFilterFields()) {
-                    if (field != DIV_FIELD) {
+                    if (isFeatureField(field) && field != DIV_FIELD && field != STUB_FIELD) {
                         result.rejectReason = "a line rule filters on '" + field + "'";
                         return result;
                     }
                 }
-                if (!rule->getReferencedSymbolizerFields().empty()) {
-                    result.rejectReason = "a line property reads a feature field";
-                    return result;
+                for (const std::string& field : referencedFields(*lineSymbolizer)) {
+                    if (isFeatureField(field) && field != DIV_FIELD && field != STUB_FIELD) {
+                        result.rejectReason = "a line property reads the feature field '" + field + "'";
+                        return result;
+                    }
                 }
                 for (const std::string& propertyName : lineSymbolizer->getPropertyNames()) {
                     const Property* property = lineSymbolizer->getProperty(propertyName);
@@ -119,13 +167,21 @@ namespace carto::mvt {
             }
             auto featureData = std::make_shared<FeatureData>(0, FeatureData::GeometryType::LINE_GEOMETRY,
                                                              std::vector<std::pair<std::string, Value>> {
-                                                                 { DIV_FIELD, Value(static_cast<long long>(divisor)) }
+                                                                 { DIV_FIELD, Value(static_cast<long long>(divisor)) },
+                                                                 { STUB_FIELD, Value(static_cast<long long>(0)) }
                                                              });
             ExpressionContext featureContext = exprContext;
             featureContext.setFeatureData(featureData);
             PredicateEvaluator featurePredEvaluator(featureContext, &viewState);
 
-            std::shared_ptr<const LineSymbolizer> match;
+            // Every matching rule paints, in order, and a rule whose width or opacity has ramped
+            // to zero paints nothing - so the class is the LAST match that would actually draw a
+            // line, not simply the last match. A style's base rule ('line-width: 0' with the real
+            // widths in nested [div>=N] blocks) is exactly this case: it matches every divisor and
+            // must not blank the class the nested rule sets.
+            ContourLineClass contourClass;
+            contourClass.divisor = divisor;
+            bool matched = false;
             for (const auto& lineRule : lineRules) {
                 if (const std::shared_ptr<const Filter>& filter = lineRule.first->getFilter()) {
                     if (filter->getType() == Filter::Type::FILTER && filter->getPredicate()) {
@@ -134,31 +190,30 @@ namespace carto::mvt {
                         }
                     }
                 }
-                match = lineRule.second; // later rule wins, as in the draw order
+                const LineSymbolizer& lineSymbolizer = *lineRule.second;
+                const auto* stroke = dynamic_cast<const ColorFunctionProperty*>(lineSymbolizer.getProperty("stroke"));
+                const auto* strokeWidth = dynamic_cast<const FloatFunctionProperty*>(lineSymbolizer.getProperty("stroke-width"));
+                const auto* strokeOpacity = dynamic_cast<const FloatFunctionProperty*>(lineSymbolizer.getProperty("stroke-opacity"));
+                if (!stroke || !strokeWidth || !strokeOpacity) {
+                    result.shaderCapable = false;
+                    result.rejectReason = "the line symbolizer is missing a stroke property";
+                    return result;
+                }
+                float width = strokeWidth->getFunction(featureContext)(viewState);
+                float opacity = strokeOpacity->getFunction(featureContext)(viewState);
+                vt::Color color = stroke->getFunction(featureContext)(viewState);
+                if (!(width > 0.0f) || !(opacity > 0.0f) || !(color[3] > 0.0f)) {
+                    continue; // ramped to nothing: it draws no line, so it takes no class
+                }
+                contourClass.width = width;
+                contourClass.color = vt::Color(color[0] * opacity, color[1] * opacity, color[2] * opacity, color[3] * opacity);
+                matched = true;
             }
-            if (!match) {
+            if (!matched) {
                 continue;
             }
-
-            const auto* stroke = dynamic_cast<const ColorFunctionProperty*>(match->getProperty("stroke"));
-            const auto* strokeWidth = dynamic_cast<const FloatFunctionProperty*>(match->getProperty("stroke-width"));
-            const auto* strokeOpacity = dynamic_cast<const FloatFunctionProperty*>(match->getProperty("stroke-opacity"));
-            if (!stroke || !strokeWidth || !strokeOpacity) {
-                result.shaderCapable = false;
-                result.rejectReason = "the line symbolizer is missing a stroke property";
-                return result;
-            }
-
-            ContourLineClass contourClass;
-            contourClass.divisor = divisor;
-            contourClass.width = strokeWidth->getFunction(featureContext)(viewState);
-            float opacity = strokeOpacity->getFunction(featureContext)(viewState);
-            vt::Color color = stroke->getFunction(featureContext)(viewState);
-            contourClass.color = vt::Color(color[0] * opacity, color[1] * opacity, color[2] * opacity, color[3] * opacity);
-            if (contourClass.width > 0.0f && contourClass.color[3] > 0.0f) {
-                result.classes.push_back(contourClass);
-                result.visible = true;
-            }
+            result.classes.push_back(contourClass);
+            result.visible = true;
         }
         return result;
     }
