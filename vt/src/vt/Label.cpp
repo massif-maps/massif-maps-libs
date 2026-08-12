@@ -632,7 +632,7 @@ namespace carto::vt {
             origin = origin + xAxis * calloutShift(0) + yAxis * calloutShift(1);
         }
 
-        bool valid = cglib::dot_product(viewState.orientation[2], placement->normal) > MIN_BILLBOARD_VIEW_NORMAL_DOTPRODUCT;
+        bool valid = isSurfaceFacingView(viewState, *placement);
         if (_style->orientation == LabelOrientation::LINE) {
             // The run is laid out in glyph units on the camera axes (see buildLineVertexData), so
             // its envelope is the bounds of that run put back on those axes - the same shape the
@@ -721,7 +721,19 @@ namespace carto::vt {
             cglib::bbox2<float> box = (glyphScale > 0 ? calculatePlatedBBox(static_cast<int>(i), glyphScale) : _variantBBoxes[i]);
             buildBoxEnvelope(box, scale, cglib::vec2<float>(padding, padding), origin, xAxis, yAxis, envelopes[i]);
         }
-        return cglib::dot_product(viewState.orientation[2], placement->normal) > MIN_BILLBOARD_VIEW_NORMAL_DOTPRODUCT;
+        return isSurfaceFacingView(viewState, *placement);
+    }
+
+    bool Label::isSurfaceFacingView(const ViewState& viewState, const Placement& placement) const {
+        // A CALLOUT is a screen object: it faces the camera, it is lifted along the camera up axis
+        // and it is joined to its feature by a leader line, so how steeply the view meets the
+        // ground it is anchored on says nothing about whether it can be read. Every other
+        // orientation is laid out against that surface and does degenerate as it is seen edge-on -
+        // and a panorama, which is what callouts are for, is that view by definition.
+        if (_style->orientation == LabelOrientation::CALLOUT) {
+            return true;
+        }
+        return cglib::dot_product(viewState.orientation[2], placement.normal) > MIN_BILLBOARD_VIEW_NORMAL_DOTPRODUCT;
     }
 
     bool Label::calculateVertexData(float size, const ViewState& viewState, int styleIndex, int haloStyleIndex, VertexArray<cglib::vec3<float>>& vertices, VertexArray<cglib::vec3<float>>& offsets, VertexArray<cglib::vec3<float>>& normals, VertexArray<cglib::vec2<std::int16_t>>& texCoords, VertexArray<cglib::vec4<std::int8_t>>& attribs, VertexArray<std::uint16_t>& indices, DrawPass pass, const LabelPlateIndices& plates, int secondaryStyleIndex, int iconStyleIndex) const {
@@ -734,7 +746,7 @@ namespace carto::vt {
         }
 
         // Build vertex data cache
-        bool valid = cglib::dot_product(viewState.orientation[2], placement->normal) > MIN_BILLBOARD_VIEW_NORMAL_DOTPRODUCT;
+        bool valid = isSurfaceFacingView(viewState, *placement);
         if (pass == DrawPass::CALLOUT_LINE) {
             appendCalloutLine(size, scale, viewState, placement, styleIndex, vertices, offsets, normals, texCoords, attribs, indices);
             return valid;

@@ -277,6 +277,9 @@ namespace carto::vt {
         // 'glyphScale' is glyph units per SCREEN PIXEL (1 / the label size): what the plates add
         // around the text is a pixel amount, and the box it grows is in glyph units.
         cglib::vec2<float> calculateBoxPoint(const cglib::vec2<float>& anchor, float scale, float glyphScale) const;
+        // Whether the surface the label is anchored on is seen steeply enough for the label to be
+        // worth drawing. Always true for a CALLOUT, which is a screen object (see the definition).
+        bool isSurfaceFacingView(const ViewState& viewState, const Placement& placement) const;
         // How far the label is moved so that the style's line anchor lands on its feature's
         // vertical; zero unless the style names one.
         cglib::vec2<float> calculateCalloutShift(float scale, float glyphScale) const;
