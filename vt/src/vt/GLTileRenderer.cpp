@@ -268,6 +268,56 @@ namespace carto::vt {
         _terrainPaint = paint;
     }
 
+    void GLTileRenderer::setContourBands(const std::vector<ContourBand>& bands) {
+        std::lock_guard<std::mutex> lock(_mutex);
+
+        _contourBands = bands;
+        if (_contourBands.size() > MAX_CONTOUR_BANDS) {
+            // Finest first, and the fine ones are what merges into a wash when there are too many:
+            // an over-long list loses those, not its index lines.
+            _contourBands.erase(_contourBands.begin(), _contourBands.begin() + (_contourBands.size() - MAX_CONTOUR_BANDS));
+        }
+    }
+
+    unsigned int GLTileRenderer::contourBandFlag() const {
+        // Needs a real elevation to band: the varying it reads is the vertex's displaced height.
+        return (!_contourBands.empty() && _terrainMode && _terrainTextureProvider ? CONTOUR_BANDS_FLAG | DERIVATIVES_FLAG : 0);
+    }
+
+    void GLTileRenderer::setupContourBandUniforms(const ShaderProgram& shaderProgram) const {
+        if (_contourBands.empty()) {
+            return;
+        }
+        std::array<float, MAX_CONTOUR_BANDS * 4> colors = { };
+        std::array<float, MAX_CONTOUR_BANDS> intervals = { };
+        std::array<float, MAX_CONTOUR_BANDS> halfWidths = { };
+        for (std::size_t i = 0; i < _contourBands.size(); i++) {
+            const ContourBand& band = _contourBands[i];
+            colors[i * 4 + 0] = band.color[0];
+            colors[i * 4 + 1] = band.color[1];
+            colors[i * 4 + 2] = band.color[2];
+            colors[i * 4 + 3] = band.color[3];
+            intervals[i] = band.interval;
+            halfWidths[i] = band.halfWidth;
+        }
+        GLint colorsLoc = glGetUniformLocation(shaderProgram.program, "u_contourColors");
+        GLint intervalsLoc = glGetUniformLocation(shaderProgram.program, "u_contourIntervals");
+        GLint halfWidthsLoc = glGetUniformLocation(shaderProgram.program, "u_contourHalfWidths");
+        GLint countLoc = glGetUniformLocation(shaderProgram.program, "u_contourClassCount");
+        if (colorsLoc >= 0) {
+            glUniform4fv(colorsLoc, static_cast<GLsizei>(MAX_CONTOUR_BANDS), colors.data());
+        }
+        if (intervalsLoc >= 0) {
+            glUniform1fv(intervalsLoc, static_cast<GLsizei>(MAX_CONTOUR_BANDS), intervals.data());
+        }
+        if (halfWidthsLoc >= 0) {
+            glUniform1fv(halfWidthsLoc, static_cast<GLsizei>(MAX_CONTOUR_BANDS), halfWidths.data());
+        }
+        if (countLoc >= 0) {
+            glUniform1f(countLoc, static_cast<float>(_contourBands.size()));
+        }
+    }
+
     void GLTileRenderer::setTerrainPaintOnGround(bool enabled) {
         std::lock_guard<std::mutex> lock(_mutex);
 
@@ -3975,9 +4025,15 @@ namespace carto::vt {
             bool litSurface = lit && terrainFlag != 0 && _terrainLighting.enabled;
             bool shadowedSurface = litSurface && _terrainShadowTexture != 0 && _terrainShadowStrength > 0.0f;
             unsigned int lightFlags = (litSurface ? TERRAIN_LIGHT_FLAG : 0) | (shadowedSurface ? TERRAIN_SHADOW_FLAG | DERIVATIVES_FLAG : 0);
-            const ShaderProgram& shaderProgram = buildShaderProgram("tilesurfacefill", backgroundVsh, backgroundFsh, LightingMode::NONE, RasterFilterMode::NONE, terrainFlag | lightFlags | fogFlag());
+            // The bands ride the fill only when it is the visible ground draw: a depth pre-pass or
+            // an overlay seed is colour-masked or invisible, and banding it is pure shader cost.
+            unsigned int bandFlags = (lit ? contourBandFlag() : 0);
+            const ShaderProgram& shaderProgram = buildShaderProgram("tilesurfacefill", backgroundVsh, backgroundFsh, LightingMode::NONE, RasterFilterMode::NONE, terrainFlag | lightFlags | bandFlags | fogFlag());
             useProgram(shaderProgram);
             setupFogUniforms(shaderProgram);
+            if (bandFlags != 0) {
+                setupContourBandUniforms(shaderProgram);
+            }
             bool hasElevation = true;
             if (terrainFlag != 0) {
                 glUniform1f(shaderProgram.uniforms[U_DEPTHBIAS], _terrainDrawDepthBias);
@@ -4984,10 +5040,11 @@ namespace carto::vt {
             bool lit = _terrainLighting.enabled && _terrainMode && static_cast<bool>(_terrainTextureProvider);
             bool shadowed = lit && _terrainShadowTexture != 0 && _terrainShadowStrength > 0.0f;
             bool hasElevation = true;
-            unsigned int flags = (_terrainMode && _terrainTextureProvider ? TERRAIN_FLAG | TERRAIN_VTF_FLAG : 0) | DRAPE_FLAG | (lit ? TERRAIN_LIGHT_FLAG : 0) | (shadowed ? TERRAIN_SHADOW_FLAG | DERIVATIVES_FLAG : 0);
+            unsigned int flags = (_terrainMode && _terrainTextureProvider ? TERRAIN_FLAG | TERRAIN_VTF_FLAG : 0) | DRAPE_FLAG | (lit ? TERRAIN_LIGHT_FLAG : 0) | (shadowed ? TERRAIN_SHADOW_FLAG | DERIVATIVES_FLAG : 0) | contourBandFlag();
             const ShaderProgram& shaderProgram = buildShaderProgram("tilesurfacedrape", backgroundVsh, backgroundFsh, LightingMode::NONE, RasterFilterMode::NONE, flags | fogFlag());
             useProgram(shaderProgram);
             setupFogUniforms(shaderProgram);
+            setupContourBandUniforms(shaderProgram);
             if (flags & TERRAIN_FLAG) {
                 glUniform1f(shaderProgram.uniforms[U_DEPTHBIAS], _terrainDrawDepthBias);
                 hasElevation = setupTerrainUniforms(shaderProgram, tileId, surfaceFrame, gridMode);

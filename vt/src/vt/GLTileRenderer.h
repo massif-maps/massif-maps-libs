@@ -47,6 +47,8 @@ namespace carto::vt {
         // shader define, so a change does not recompile every terrain program - but the shader
         // declares this many matrices and varyings, so raising it means touching the shader too.
         static constexpr int MAX_SHADOW_CASCADES = 4;
+        // CONTOUR_CLASSES in GLTileRendererShaders.h
+        static constexpr std::size_t MAX_CONTOUR_BANDS = 6;
 
         struct LightingShader {
             bool perVertex;
@@ -112,6 +114,14 @@ namespace carto::vt {
             cglib::vec3<float> sunColor = cglib::vec3<float>(1, 1, 1);
             float sunIntensity = 1.0f;
             float ambientIntensity = 0.35f;
+        };
+
+        // One elevation class of the contour lines composited into the ground draw (see
+        // backgroundFsh): the lines whose height is a multiple of 'interval'.
+        struct ContourBand {
+            float interval = 0.0f;
+            Color color;            // straight colour, opacity in the alpha channel
+            float halfWidth = 0.0f; // screen pixels
         };
 
         /**
@@ -188,6 +198,9 @@ namespace carto::vt {
         // paint for every draped tile and nothing else. Only effective under a cross-layer drape
         // target, which is where the layer order is resolved.
         void setTerrainPaint(const TerrainPaint& paint);
+        // Contour classes drawn by the ground/drape surface pass, finest interval first. Empty
+        // draws none. Set every frame by the layer that owns them - they are its style, evaluated.
+        void setContourBands(const std::vector<ContourBand>& bands);
         // Draw the paint AS the ground (tangram's arrangement: the shading is a block on the
         // terrain draw, one draw per tile, at the bottom of the order) instead of as its layer's
         // own surface over the ground. Cheaper by one full-surface draw per tile, but it puts the
@@ -498,6 +511,8 @@ namespace carto::vt {
         // bound one of its own since the last draw.
         void resetProgramState();
         void setupFogUniforms(const ShaderProgram& shaderProgram) const;
+        void setupContourBandUniforms(const ShaderProgram& shaderProgram) const;
+        unsigned int contourBandFlag() const;
         cglib::mat4x4<double> calculateTileMatrix(const TileId& tileId, float coordScale = 1.0f) const;
         cglib::mat3x3<double> calculateTileMatrix2D(const TileId& tileId, float coordScale = 1.0f) const;
         cglib::mat4x4<float> calculateTileMVPMatrix(const TileId& tileId, float coordScale = 1.0f) const;
@@ -674,6 +689,7 @@ namespace carto::vt {
         bool _debugSurfacePrefill = false;
         TerrainLighting _terrainLighting;
         TerrainPaint _terrainPaint;
+        std::vector<ContourBand> _contourBands;
         bool _terrainPaintOnGround = false;      // the paint replaces the ground fill (see setTerrainPaintOnGround)
         int _terrainDemTaps = 16;                // texture fetches per terrain vertex (see setTerrainDemTaps)
         bool _terrainTileBackgrounds = false;    // per-layer per-tile background meshes (see setTerrainTileBackgrounds)

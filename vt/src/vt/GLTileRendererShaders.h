@@ -90,7 +90,8 @@ namespace carto::vt {
         PAINT_SURFACE_FLAG = 1024,
         FOG_FLAG = 512,
         GROUND_BASE_FLAG = 2048,
-        DEM_HW_FILTER_FLAG = 4096
+        DEM_HW_FILTER_FLAG = 4096,
+        CONTOUR_BANDS_FLAG = 8192
     };
 
     static const std::map<std::string, int> attribMap = {
@@ -175,7 +176,8 @@ namespace carto::vt {
         { PAINT_SURFACE_FLAG, "PAINT_SURFACE" },
         { FOG_FLAG, "FOG" },
         { GROUND_BASE_FLAG, "GROUND_BASE" },
-        { DEM_HW_FILTER_FLAG, "DEM_HW_FILTER" }
+        { DEM_HW_FILTER_FLAG, "DEM_HW_FILTER" },
+        { CONTOUR_BANDS_FLAG, "CONTOUR_BANDS" }
     };
 
     static const std::string textureFiltersFsh = R"GLSL(
@@ -326,6 +328,11 @@ namespace carto::vt {
         uniform highp vec4 uElevationTexelSize; // xy: texture size in texels, zw: 1 / size
         uniform highp vec2 uElevationLatticeCell; // regular-grid surface cell size in elevation-uv units (0 = off = sample the full DEM detail)
         uniform highp vec4 uTerrainEdgeCoarsening; // lattice cell scale (2^k, 1 = off) on the west/east/south/north tile edge
+        #ifdef CONTOUR_BANDS
+        // The displaced height of the vertex, in metres, for the contour bands drawn in the
+        // fragment stage of the pass that already draws the ground (see backgroundFsh).
+        varying highp float vTerrainMeters;
+        #endif
 
         // GPU terrain draping: the vertex z is REPLACED with the height sampled from the
         // elevation texture. Every draped layer samples the same textures, so all layers
@@ -437,10 +444,19 @@ namespace carto::vt {
                 // that sample different elevation levels
                 z += pos.z + 1000000.0;
             }
+        #ifdef CONTOUR_BANDS
+            // The height this vertex is displaced to, in metres: the contour bands are a function
+            // of it and of its screen-space derivative, which is all tangram's terrain-3D branch
+            // uses as well (res/scenes/hillshade.yaml, px_per_elev = 1/fwidth(v_world_position.z)).
+            vTerrainMeters = meters;
+        #endif
             return vec3(pos.xy, z);
         }
         #else
         vec3 applyTerrain(vec3 pos) {
+        #ifdef CONTOUR_BANDS
+            vTerrainMeters = 0.0; // no elevation texture: no bands to draw
+        #endif
             return pos;
         }
         #endif
@@ -752,6 +768,18 @@ namespace carto::vt {
         uniform sampler2D uDrapeTexture;
         varying highp_opt vec2 vDrapeUV;
         #endif
+        #ifdef CONTOUR_BANDS
+        // Contour lines composited into the pass that draws the ground anyway - tangram's
+        // arrangement (res/scenes/hillshade.yaml computes them in the `color` block of the raster
+        // style that IS the terrain surface). One class per elevation divisor, coarsest match
+        // wins; the height comes from the vertex stage, so this costs no texture fetch.
+        #define CONTOUR_CLASSES 6
+        varying highp float vTerrainMeters;
+        uniform lowp vec4 u_contourColors[CONTOUR_CLASSES];
+        uniform highp_opt float u_contourIntervals[CONTOUR_CLASSES];
+        uniform mediump float u_contourHalfWidths[CONTOUR_CLASSES];
+        uniform mediump float u_contourClassCount;
+        #endif
         #if defined(TERRAIN_LIGHT) && defined(TERRAIN)
         // Precision qualifiers must match the vertex-stage declarations exactly, or the
         // program fails to LINK (same name, different precision is an error in GLSL ES 1.00).
@@ -833,6 +861,30 @@ namespace carto::vt {
             lit *= shadowFactorSlope(ndl);
         #endif
             color = vec4(min(color.rgb * lit, vec3(color.a)), color.a);
+        #endif
+        #ifdef CONTOUR_BANDS
+            if (u_contourClassCount > 0.0) {
+                highp_opt float e = vTerrainMeters;
+                mediump float pxPerMetre = 1.0 / max(fwidth(e), 1e-4);
+                lowp vec4 band = vec4(0.0);
+                for (int i = 0; i < CONTOUR_CLASSES; i++) {
+                    if (float(i) >= u_contourClassCount) {
+                        break;
+                    }
+                    highp_opt float interval = u_contourIntervals[i];
+                    if (interval <= 0.0) {
+                        continue;
+                    }
+                    highp_opt float f = fract(e / interval);
+                    highp_opt float distM = min(f, 1.0 - f) * interval;
+                    mediump float cov = clamp(u_contourHalfWidths[i] - distM * pxPerMetre + 0.5, 0.0, 1.0) * u_contourColors[i].a;
+                    if (cov > 0.0) {
+                        band = vec4(u_contourColors[i].rgb, cov);
+                    }
+                }
+                color.rgb = band.rgb * band.a + color.rgb * (1.0 - band.a);
+                color.a = band.a + color.a * (1.0 - band.a);
+            }
         #endif
         #if defined(LIGHTING_VSH)
             gl_FragColor = applyFog(vColor * color * uOpacity);
