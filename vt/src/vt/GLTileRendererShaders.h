@@ -990,9 +990,36 @@ namespace carto::vt {
         #ifdef LIGHTING_FSH
         varying mediump vec3 vNormal;
         varying mediump vec3 vBinormal;
-        uniform lowp vec4 u_contourColor;
-        uniform highp_opt float u_contourInterval; // meters between contour lines; <= 0 disables the built-in contours
-        uniform mediump float u_contourWidth;      // contour half-width in screen pixels
+        #define CONTOUR_CLASSES 6
+        uniform lowp vec4 u_contourColors[CONTOUR_CLASSES];          // straight colour, opacity in .a
+        uniform highp_opt float u_contourIntervals[CONTOUR_CLASSES]; // metres between the lines of the class
+        uniform mediump float u_contourHalfWidths[CONTOUR_CLASSES];  // half-width in screen pixels
+        uniform mediump float u_contourClassCount;                   // 0 disables the built-in contours
+
+        // Contour lines as elevation bands, one class per elevation divisor - what a
+        // '#contour [div=N] { line-color/-width/-opacity }' style says, evaluated per frame
+        // (mvt::resolveContourStyle). Classes arrive finest first, so the COARSEST band a
+        // fragment falls in wins, which is what the traced path does when it draws the 500 m
+        // line over the 100 m one.
+        lowp vec4 contourBand(highp_opt float e, mediump float pxPerMetre) {
+            lowp vec4 band = vec4(0.0);
+            for (int i = 0; i < CONTOUR_CLASSES; i++) {
+                if (float(i) >= u_contourClassCount) {
+                    break;
+                }
+                highp_opt float interval = u_contourIntervals[i];
+                if (interval <= 0.0) {
+                    continue;
+                }
+                highp_opt float f = fract(e / interval);
+                highp_opt float distM = min(f, 1.0 - f) * interval;
+                mediump float cov = clamp(u_contourHalfWidths[i] - distM * pxPerMetre + 0.5, 0.0, 1.0) * u_contourColors[i].a;
+                if (cov > 0.0) {
+                    band = vec4(u_contourColors[i].rgb, cov);
+                }
+            }
+            return band;
+        }
         #endif
 
         void main(void) {
@@ -1020,17 +1047,14 @@ namespace carto::vt {
             mediump float dotp = dot(normal, wspaceNormal);
             mediump float intensity = sqrt(max(0.0, 1.0 - dotp * dotp));
             lowp vec4 shade = applyLighting(color, wspaceNormal, normal, intensity);
-            if (u_elevationEncoded > 0.5 && u_contourInterval > 0.0) {
+            if (u_elevationEncoded > 0.5 && u_contourClassCount > 0.0) {
                 // Screen-width anti-aliased contour lines (tangram/ascendmaps style): distance to the
                 // nearest contour in meters, divided by the per-pixel elevation change (fwidth).
                 highp_opt float e = sampleElevation(vUV);
-                highp_opt float frac = fract(e / u_contourInterval);
-                highp_opt float distM = min(frac, 1.0 - frac) * u_contourInterval;
-                mediump float px = distM / max(fwidth(e), 1e-4);
-                mediump float cov = clamp(u_contourWidth - px + 0.5, 0.0, 1.0) * u_contourColor.a;
+                lowp vec4 band = contourBand(e, 1.0 / max(fwidth(e), 1e-4));
                 // premultiplied over-composite (applyLighting returns premultiplied rgb)
-                shade.rgb = u_contourColor.rgb * cov + shade.rgb * (1.0 - cov);
-                shade.a = cov + shade.a * (1.0 - cov);
+                shade.rgb = band.rgb * band.a + shade.rgb * (1.0 - band.a);
+                shade.a = band.a + shade.a * (1.0 - band.a);
             }
             gl_FragColor = applyFog(shade * uOpacity);
         #else
@@ -1163,9 +1187,34 @@ namespace carto::vt {
         // contours whether it shades a per-tile normal map or the shared DEM - the paint used to
         // switch itself off when contours were asked for, precisely because it lacked this.
         // Declared here and NOT in the prelude: normalmapFsh is not part of this program.
-        uniform lowp vec4 u_contourColor;
-        uniform highp_opt float u_contourInterval; // metres between contour lines; <= 0 disables them
-        uniform mediump float u_contourWidth;      // contour half-width in screen pixels
+        #define CONTOUR_CLASSES 6
+        uniform lowp vec4 u_contourColors[CONTOUR_CLASSES];          // straight colour, opacity in .a
+        uniform highp_opt float u_contourIntervals[CONTOUR_CLASSES]; // metres between the lines of the class
+        uniform mediump float u_contourHalfWidths[CONTOUR_CLASSES];  // half-width in screen pixels
+        uniform mediump float u_contourClassCount;                   // 0 disables the contours
+
+        // One class per elevation divisor, coarsest match wins - see the identical block in
+        // normalmapFsh. The two must stay in step: a layer gets the same contours whether it
+        // shades a per-tile normal map or the shared DEM.
+        lowp vec4 contourBand(highp_opt float e, mediump float pxPerMetre) {
+            lowp vec4 band = vec4(0.0);
+            for (int i = 0; i < CONTOUR_CLASSES; i++) {
+                if (float(i) >= u_contourClassCount) {
+                    break;
+                }
+                highp_opt float interval = u_contourIntervals[i];
+                if (interval <= 0.0) {
+                    continue;
+                }
+                highp_opt float f = fract(e / interval);
+                highp_opt float distM = min(f, 1.0 - f) * interval;
+                mediump float cov = clamp(u_contourHalfWidths[i] - distM * pxPerMetre + 0.5, 0.0, 1.0) * u_contourColors[i].a;
+                if (cov > 0.0) {
+                    band = vec4(u_contourColors[i].rgb, cov);
+                }
+            }
+            return band;
+        }
         #endif
         #if defined(PAINT_SURFACE) && defined(TERRAIN_LIGHT)
         // Drawn as the terrain surface, so it takes the sun and the shadow map the surface takes -
@@ -1212,19 +1261,16 @@ namespace carto::vt {
         #endif
             color = vec4(min(color.rgb * lit, vec3(color.a)), color.a);
         #endif
-            if (u_contourInterval > 0.0) {
+            if (u_contourClassCount > 0.0) {
                 // Distance to the nearest contour in metres, divided by the per-pixel elevation
                 // change, gives a screen-space width that stays constant as the ground tilts away.
                 // Composited OVER the shaded ground, premultiplied - the same order and the same
                 // result as normalmapFsh, so switching a layer to the paint does not move the lines.
                 highp_opt float e = getElevation(); // the quadratic reconstruction: contours that
                                                     // do not kink at every texel boundary
-                highp_opt float frac = fract(e / u_contourInterval);
-                highp_opt float distM = min(frac, 1.0 - frac) * u_contourInterval;
-                mediump float px = distM / max(fwidth(e), 1e-4);
-                mediump float cov = clamp(u_contourWidth - px + 0.5, 0.0, 1.0) * u_contourColor.a;
-                color.rgb = u_contourColor.rgb * cov + color.rgb * (1.0 - cov);
-                color.a = cov + color.a * (1.0 - cov);
+                lowp vec4 band = contourBand(e, 1.0 / max(fwidth(e), 1e-4));
+                color.rgb = band.rgb * band.a + color.rgb * (1.0 - band.a);
+                color.a = band.a + color.a * (1.0 - band.a);
             }
         #ifdef GROUND_BASE
             // Over the ground colour, premultiplied - the shade already is. One opaque draw per

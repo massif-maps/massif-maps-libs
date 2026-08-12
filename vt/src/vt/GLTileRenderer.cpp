@@ -1536,10 +1536,12 @@ namespace carto::vt {
                 glDepthFunc(GL_LEQUAL);
             }
 
-            if (_terrainPaint.enabled && !_externalDrapeTarget && !(_terrainPaintOnGround && _terrainSharedGround)) {
+            if (_terrainPaint.enabled && (_terrainPaint.alwaysSurface || (!_externalDrapeTarget && !(_terrainPaintOnGround && _terrainSharedGround)))) {
                 // A paint with no drape draws itself here, in this layer's place in the order -
                 // unless it IS the ground, in which case the ground pass already drew it, once per
-                // tile, at the bottom of the order.
+                // tile, at the bottom of the order. A paint marked alwaysSurface draws here even
+                // when the fills ARE draped: its lines are hairlines and a bake would resample
+                // them (see TerrainPaint::alwaysSurface).
                 renderTerrainPaintSurfaces();
             }
             // A shared ground has already been drawn once for the whole stack, so this layer must
@@ -4226,6 +4228,9 @@ namespace carto::vt {
         resetProgramState(); // another renderer may have bound its own program since the last draw
 
         if (_terrainPaint.enabled) {
+            if (_terrainPaint.alwaysSurface) {
+                return 0; // never baked: it draws itself as a surface, at screen resolution
+            }
             return renderTerrainPaint(targetTileId);
         }
         if (!_visibleRenderTiles) {

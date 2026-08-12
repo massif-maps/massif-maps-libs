@@ -128,6 +128,13 @@ namespace carto::vt {
             bool legacyHeightScale = false;    // pre-MapLibre-parity formula
             float contrast = 0.5f;          // MapLibre 'hillshade-exaggeration', fed to the lighting shader
             float opacity = 1.0f;
+            // Draw as a terrain SURFACE pass whatever the drape does with the fills, and never
+            // bake. A contour is a hairline: baked into a fixed-resolution drape texture and
+            // resampled onto the surface it turns into a soft band close up and into aliasing at a
+            // grazing angle, and its screen-width anti-aliasing (fwidth of the elevation) only
+            // means anything when the fragment IS a screen fragment. Fills have neither problem,
+            // which is why they stay in the bake.
+            bool alwaysSurface = false;
             // Hash of everything the paint's appearance depends on, INCLUDING what only the
             // injected lighting shader sees (light direction, colours, method). The renderer
             // cannot derive it - it never sees those uniforms - and without it a parameter
