@@ -281,7 +281,21 @@ namespace carto::vt {
 
     unsigned int GLTileRenderer::contourBandFlag() const {
         // Needs a real elevation to band: the varying it reads is the vertex's displaced height.
-        return (!_contourBands.empty() && _terrainMode && _terrainTextureProvider ? CONTOUR_BANDS_FLAG | DERIVATIVES_FLAG : 0);
+        std::size_t count = (_contourBandsMuted ? 0 : _contourBands.size());
+        if (count == 0 || !_terrainMode || !_terrainTextureProvider) {
+            return 0;
+        }
+        return CONTOUR_BANDS_FLAG | DERIVATIVES_FLAG | (static_cast<unsigned int>(count) << CONTOUR_COUNT_SHIFT);
+    }
+
+    int GLTileRenderer::contourBandCount(unsigned int flags) {
+        return static_cast<int>((flags >> CONTOUR_COUNT_SHIFT) & 7);
+    }
+
+    void GLTileRenderer::setContourBandsMuted(bool muted) {
+        std::lock_guard<std::mutex> lock(_mutex);
+
+        _contourBandsMuted = muted;
     }
 
     void GLTileRenderer::setupContourBandUniforms(const ShaderProgram& shaderProgram) const {
@@ -290,6 +304,7 @@ namespace carto::vt {
         }
         std::array<float, MAX_CONTOUR_BANDS * 4> colors = { };
         std::array<float, MAX_CONTOUR_BANDS> intervals = { };
+        std::array<float, MAX_CONTOUR_BANDS> invIntervals = { };
         std::array<float, MAX_CONTOUR_BANDS> halfWidths = { };
         for (std::size_t i = 0; i < _contourBands.size(); i++) {
             const ContourBand& band = _contourBands[i];
@@ -298,12 +313,15 @@ namespace carto::vt {
             colors[i * 4 + 2] = band.color[2];
             colors[i * 4 + 3] = band.color[3];
             intervals[i] = band.interval;
+            // The reciprocal is a uniform because a per-fragment divide is several times a
+            // multiply on a mobile GPU, and there is one per class per fragment otherwise.
+            invIntervals[i] = (band.interval > 0.0f ? 1.0f / band.interval : 0.0f);
             halfWidths[i] = band.halfWidth;
         }
         GLint colorsLoc = glGetUniformLocation(shaderProgram.program, "u_contourColors");
         GLint intervalsLoc = glGetUniformLocation(shaderProgram.program, "u_contourIntervals");
         GLint halfWidthsLoc = glGetUniformLocation(shaderProgram.program, "u_contourHalfWidths");
-        GLint countLoc = glGetUniformLocation(shaderProgram.program, "u_contourClassCount");
+        GLint invIntervalsLoc = glGetUniformLocation(shaderProgram.program, "u_contourInvIntervals");
         if (colorsLoc >= 0) {
             glUniform4fv(colorsLoc, static_cast<GLsizei>(MAX_CONTOUR_BANDS), colors.data());
         }
@@ -313,8 +331,8 @@ namespace carto::vt {
         if (halfWidthsLoc >= 0) {
             glUniform1fv(halfWidthsLoc, static_cast<GLsizei>(MAX_CONTOUR_BANDS), halfWidths.data());
         }
-        if (countLoc >= 0) {
-            glUniform1f(countLoc, static_cast<float>(_contourBands.size()));
+        if (invIntervalsLoc >= 0) {
+            glUniform1fv(invIntervalsLoc, static_cast<GLsizei>(MAX_CONTOUR_BANDS), invIntervals.data());
         }
     }
 
@@ -6012,6 +6030,13 @@ namespace carto::vt {
             // does not have to carry it.
             if ((flags & TERRAIN_VTF_FLAG) && _terrainDemTaps <= 1) {
                 defs.insert("DEM_HW_FILTER");
+            }
+            if (flags & CONTOUR_BANDS_FLAG) {
+                // The class count is a compile-time constant, so the band loop unrolls to the
+                // classes the style actually has instead of running to MAX_CONTOUR_BANDS and
+                // testing a uniform every iteration. It rides the flags, so the program cache
+                // keys on it: a style that changes its count builds one more program, once.
+                defs.insert("CONTOUR_CLASSES " + std::to_string(contourBandCount(flags)));
             }
 
             std::string lightingVsh;

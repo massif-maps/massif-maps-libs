@@ -201,6 +201,10 @@ namespace carto::vt {
         // Contour classes drawn by the ground/drape surface pass, finest interval first. Empty
         // draws none. Set every frame by the layer that owns them - they are its style, evaluated.
         void setContourBands(const std::vector<ContourBand>& bands);
+        // Measurement split: keeps the program compiled with the bands but uploads a count of 0,
+        // so a run says how much of the cost is the per-class work and how much is the varying
+        // plus derivatives the block needs at all.
+        void setContourBandsMuted(bool muted);
         // Draw the paint AS the ground (tangram's arrangement: the shading is a block on the
         // terrain draw, one draw per tile, at the bottom of the order) instead of as its layer's
         // own surface over the ground. Cheaper by one full-surface draw per tile, but it puts the
@@ -513,6 +517,9 @@ namespace carto::vt {
         void setupFogUniforms(const ShaderProgram& shaderProgram) const;
         void setupContourBandUniforms(const ShaderProgram& shaderProgram) const;
         unsigned int contourBandFlag() const;
+        static int contourBandCount(unsigned int flags);
+        // Where the class count rides in the shader flags (three bits, 1..MAX_CONTOUR_BANDS).
+        static constexpr unsigned int CONTOUR_COUNT_SHIFT = 17;
         cglib::mat4x4<double> calculateTileMatrix(const TileId& tileId, float coordScale = 1.0f) const;
         cglib::mat3x3<double> calculateTileMatrix2D(const TileId& tileId, float coordScale = 1.0f) const;
         cglib::mat4x4<float> calculateTileMVPMatrix(const TileId& tileId, float coordScale = 1.0f) const;
@@ -690,6 +697,7 @@ namespace carto::vt {
         TerrainLighting _terrainLighting;
         TerrainPaint _terrainPaint;
         std::vector<ContourBand> _contourBands;
+        bool _contourBandsMuted = false;
         bool _terrainPaintOnGround = false;      // the paint replaces the ground fill (see setTerrainPaintOnGround)
         int _terrainDemTaps = 16;                // texture fetches per terrain vertex (see setTerrainDemTaps)
         bool _terrainTileBackgrounds = false;    // per-layer per-tile background meshes (see setTerrainTileBackgrounds)

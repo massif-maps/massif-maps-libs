@@ -773,12 +773,15 @@ namespace carto::vt {
         // arrangement (res/scenes/hillshade.yaml computes them in the `color` block of the raster
         // style that IS the terrain surface). One class per elevation divisor, coarsest match
         // wins; the height comes from the vertex stage, so this costs no texture fetch.
-        #define CONTOUR_CLASSES 6
+        // CONTOUR_CLASSES is compiled in (buildShaderProgram), so this unrolls to the classes the
+        // style has - measured on a Crosscall, a class costs ~2.2 ms/frame at 824x1648 when the
+        // loop runs to a uniform count instead.
+        // The uniform arrays are declared at the maximum so one upload serves every variant.
         varying highp float vTerrainMeters;
-        uniform lowp vec4 u_contourColors[CONTOUR_CLASSES];
-        uniform highp_opt float u_contourIntervals[CONTOUR_CLASSES];
-        uniform mediump float u_contourHalfWidths[CONTOUR_CLASSES];
-        uniform mediump float u_contourClassCount;
+        uniform lowp vec4 u_contourColors[6];
+        uniform highp float u_contourIntervals[6];
+        uniform highp float u_contourInvIntervals[6]; // 1/interval: a divide per class per fragment is not free
+        uniform mediump float u_contourHalfWidths[6];
         #endif
         #if defined(TERRAIN_LIGHT) && defined(TERRAIN)
         // Precision qualifiers must match the vertex-stage declarations exactly, or the
@@ -863,24 +866,19 @@ namespace carto::vt {
             color = vec4(min(color.rgb * lit, vec3(color.a)), color.a);
         #endif
         #ifdef CONTOUR_BANDS
-            if (u_contourClassCount > 0.0) {
-                highp_opt float e = vTerrainMeters;
+            {
+                highp float e = vTerrainMeters;
+                // Metres of elevation per screen pixel, once for every class.
                 mediump float pxPerMetre = 1.0 / max(fwidth(e), 1e-4);
                 lowp vec4 band = vec4(0.0);
                 for (int i = 0; i < CONTOUR_CLASSES; i++) {
-                    if (float(i) >= u_contourClassCount) {
-                        break;
-                    }
-                    highp_opt float interval = u_contourIntervals[i];
-                    if (interval <= 0.0) {
-                        continue;
-                    }
-                    highp_opt float f = fract(e / interval);
-                    highp_opt float distM = min(f, 1.0 - f) * interval;
-                    mediump float cov = clamp(u_contourHalfWidths[i] - distM * pxPerMetre + 0.5, 0.0, 1.0) * u_contourColors[i].a;
-                    if (cov > 0.0) {
-                        band = vec4(u_contourColors[i].rgb, cov);
-                    }
+                    // Distance to the nearest line of this class, in pixels: one multiply by the
+                    // precomputed reciprocal instead of a divide, and the branch is a mix - a
+                    // coarser class simply overwrites a finer one where both cover the fragment.
+                    highp float f = fract(e * u_contourInvIntervals[i]);
+                    mediump float distPx = min(f, 1.0 - f) * u_contourIntervals[i] * pxPerMetre;
+                    mediump float cov = clamp(u_contourHalfWidths[i] - distPx + 0.5, 0.0, 1.0) * u_contourColors[i].a;
+                    band = mix(band, vec4(u_contourColors[i].rgb, cov), step(0.002, cov));
                 }
                 color.rgb = band.rgb * band.a + color.rgb * (1.0 - band.a);
                 color.a = band.a + color.a * (1.0 - band.a);
