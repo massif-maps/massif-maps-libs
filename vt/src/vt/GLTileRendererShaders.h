@@ -91,7 +91,8 @@ namespace carto::vt {
         FOG_FLAG = 512,
         GROUND_BASE_FLAG = 2048,
         DEM_HW_FILTER_FLAG = 4096,
-        CONTOUR_BANDS_FLAG = 8192
+        CONTOUR_BANDS_FLAG = 8192,
+        CONTOUR_LUT_FLAG = 16384
     };
 
     static const std::map<std::string, int> attribMap = {
@@ -177,7 +178,8 @@ namespace carto::vt {
         { FOG_FLAG, "FOG" },
         { GROUND_BASE_FLAG, "GROUND_BASE" },
         { DEM_HW_FILTER_FLAG, "DEM_HW_FILTER" },
-        { CONTOUR_BANDS_FLAG, "CONTOUR_BANDS" }
+        { CONTOUR_BANDS_FLAG, "CONTOUR_BANDS" },
+        { CONTOUR_LUT_FLAG, "CONTOUR_LUT" }
     };
 
     static const std::string textureFiltersFsh = R"GLSL(
@@ -773,15 +775,25 @@ namespace carto::vt {
         // arrangement (res/scenes/hillshade.yaml computes them in the `color` block of the raster
         // style that IS the terrain surface). One class per elevation divisor, coarsest match
         // wins; the height comes from the vertex stage, so this costs no texture fetch.
-        // CONTOUR_CLASSES is compiled in (buildShaderProgram), so this unrolls to the classes the
-        // style has - measured on a Crosscall, a class costs ~2.2 ms/frame at 824x1648 when the
-        // loop runs to a uniform count instead.
+        // CONTOUR_LUT is the normal path: the classes are indexed by elevation LEVEL in a small
+        // texture, so a fragment reads its class instead of testing all of them and the cost does
+        // not grow with the number of classes the style declares. The unrolled loop below is the
+        // fallback for a style whose intervals are not multiples of the finest one (see
+        // buildContourLut); CONTOUR_CLASSES is compiled in, so it runs exactly as many
+        // iterations as there are classes - measured on a Crosscall, ~1.6 ms/frame each at
+        // 824x1648.
         // The uniform arrays are declared at the maximum so one upload serves every variant.
         varying highp float vTerrainMeters;
+        #ifdef CONTOUR_LUT
+        uniform sampler2D u_contourLut;        // row 0 = colour + opacity, row 1 = half-width, interval
+        uniform highp vec4 u_contourLutParams; // 1/base, base, 1/size
+        uniform mediump vec2 u_contourLutUnits; // what row 1 counts in: pixels, then metres
+        #else
         uniform lowp vec4 u_contourColors[6];
         uniform highp float u_contourIntervals[6];
         uniform highp float u_contourInvIntervals[6]; // 1/interval: a divide per class per fragment is not free
         uniform mediump float u_contourHalfWidths[6];
+        #endif
         #endif
         #if defined(TERRAIN_LIGHT) && defined(TERRAIN)
         // Precision qualifiers must match the vertex-stage declarations exactly, or the
@@ -871,15 +883,37 @@ namespace carto::vt {
                 // Metres of elevation per screen pixel, once for every class.
                 mediump float pxPerMetre = 1.0 / max(fwidth(e), 1e-4);
                 lowp vec4 band = vec4(0.0);
+        #ifdef CONTOUR_LUT
+                // The nearest level of the finest class: every class line is a multiple of it, so
+                // this one index names the class - one fract, two fetches from a table of at most
+                // 256 texels, whatever the style declares. A class line the index misses is one
+                // that a nearer level hides, and that only happens when the finest class is closer
+                // than a pixel to itself, where it is a wash anyway.
+                highp float level = floor(e * u_contourLutParams.x + 0.5);
+                mediump float distPx = abs(e - level * u_contourLutParams.y) * pxPerMetre;
+                highp float u = fract(level * u_contourLutParams.z) + 0.5 * u_contourLutParams.z;
+                lowp vec4 cls = texture2D(u_contourLut, vec2(u, 0.25));
+                mediump vec4 row = texture2D(u_contourLut, vec2(u, 0.75));
+                mediump float halfWidth = row.r * u_contourLutUnits.x;
+                // Distance fades a class out where its own lines crowd into a wash - the traced
+                // path gets the same effect from the divisor ladder, which drops the class a zoom
+                // down; here one class set covers the whole screen, so the fade has to be local.
+                mediump float spacingPx = row.g * u_contourLutUnits.y * pxPerMetre;
+                // The same ramp lineFsh uses on a traced line: full opacity up to one device pixel
+                // inside the edge, zero at it. Same style, same weight, whichever path draws it.
+                band = vec4(cls.rgb, clamp(halfWidth - distPx, 0.0, 1.0) * cls.a * smoothstep(2.0, 5.0, spacingPx));
+        #else
                 for (int i = 0; i < CONTOUR_CLASSES; i++) {
                     // Distance to the nearest line of this class, in pixels: one multiply by the
                     // precomputed reciprocal instead of a divide, and the branch is a mix - a
                     // coarser class simply overwrites a finer one where both cover the fragment.
                     highp float f = fract(e * u_contourInvIntervals[i]);
-                    mediump float distPx = min(f, 1.0 - f) * u_contourIntervals[i] * pxPerMetre;
-                    mediump float cov = clamp(u_contourHalfWidths[i] - distPx + 0.5, 0.0, 1.0) * u_contourColors[i].a;
+                    mediump float spacingPx = u_contourIntervals[i] * pxPerMetre;
+                    mediump float distPx = min(f, 1.0 - f) * spacingPx;
+                    mediump float cov = clamp(u_contourHalfWidths[i] - distPx, 0.0, 1.0) * u_contourColors[i].a * smoothstep(2.0, 5.0, spacingPx);
                     band = mix(band, vec4(u_contourColors[i].rgb, cov), step(0.002, cov));
                 }
+        #endif
                 color.rgb = band.rgb * band.a + color.rgb * (1.0 - band.a);
                 color.a = band.a + color.a * (1.0 - band.a);
             }

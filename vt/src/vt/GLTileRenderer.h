@@ -122,6 +122,10 @@ namespace carto::vt {
             float interval = 0.0f;
             Color color;            // straight colour, opacity in the alpha channel
             float halfWidth = 0.0f; // screen pixels
+
+            bool operator == (const ContourBand& other) const {
+                return interval == other.interval && color == other.color && halfWidth == other.halfWidth;
+            }
         };
 
         /**
@@ -515,11 +519,18 @@ namespace carto::vt {
         // bound one of its own since the last draw.
         void resetProgramState();
         void setupFogUniforms(const ShaderProgram& shaderProgram) const;
-        void setupContourBandUniforms(const ShaderProgram& shaderProgram) const;
+        void setupContourBandUniforms(const ShaderProgram& shaderProgram);
+        // Rebuilds the level lookup table the banding shader reads instead of testing every class.
+        // Leaves _contourLutSize at 0 when the classes cannot be indexed that way (see the body),
+        // which is what puts the fragment back on the unrolled loop.
+        void buildContourLut();
         unsigned int contourBandFlag() const;
         static int contourBandCount(unsigned int flags);
         // Where the class count rides in the shader flags (three bits, 1..MAX_CONTOUR_BANDS).
         static constexpr unsigned int CONTOUR_COUNT_SHIFT = 17;
+        // Widest level table worth uploading. The size is lcm(interval)/min(interval), so it only
+        // grows when a style mixes intervals that are not multiples of each other.
+        static constexpr int CONTOUR_LUT_MAX_SIZE = 256;
         cglib::mat4x4<double> calculateTileMatrix(const TileId& tileId, float coordScale = 1.0f) const;
         cglib::mat3x3<double> calculateTileMatrix2D(const TileId& tileId, float coordScale = 1.0f) const;
         cglib::mat4x4<float> calculateTileMVPMatrix(const TileId& tileId, float coordScale = 1.0f) const;
@@ -698,6 +709,13 @@ namespace carto::vt {
         TerrainPaint _terrainPaint;
         std::vector<ContourBand> _contourBands;
         bool _contourBandsMuted = false;
+        std::vector<unsigned char> _contourLutData; // two RGBA8 rows: colour+opacity, then half-width
+        int _contourLutSize = 0;                    // texels, one per level; 0 = no table, loop instead
+        float _contourLutBase = 0.0f;               // metres between two levels (the finest interval)
+        float _contourLutWidthScale = 1.0f;         // half-width unit of the second row, in pixels
+        float _contourLutIntervalScale = 1.0f;      // interval unit of the second row, in metres
+        bool _contourLutDirty = false;
+        GLuint _contourLutTexture = 0;
         bool _terrainPaintOnGround = false;      // the paint replaces the ground fill (see setTerrainPaintOnGround)
         int _terrainDemTaps = 16;                // texture fetches per terrain vertex (see setTerrainDemTaps)
         bool _terrainTileBackgrounds = false;    // per-layer per-tile background meshes (see setTerrainTileBackgrounds)

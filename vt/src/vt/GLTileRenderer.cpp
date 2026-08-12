@@ -271,11 +271,90 @@ namespace carto::vt {
     void GLTileRenderer::setContourBands(const std::vector<ContourBand>& bands) {
         std::lock_guard<std::mutex> lock(_mutex);
 
-        _contourBands = bands;
-        if (_contourBands.size() > MAX_CONTOUR_BANDS) {
+        std::vector<ContourBand> newBands = bands;
+        if (newBands.size() > MAX_CONTOUR_BANDS) {
             // Finest first, and the fine ones are what merges into a wash when there are too many:
             // an over-long list loses those, not its index lines.
-            _contourBands.erase(_contourBands.begin(), _contourBands.begin() + (_contourBands.size() - MAX_CONTOUR_BANDS));
+            newBands.erase(newBands.begin(), newBands.begin() + (newBands.size() - MAX_CONTOUR_BANDS));
+        }
+        // The layer re-applies its classes every frame (a value pushed before the renderer exists
+        // is lost), so rebuilding and re-uploading the table here would be a per-frame cost.
+        if (newBands == _contourBands) {
+            return;
+        }
+        _contourBands = std::move(newBands);
+        buildContourLut();
+    }
+
+    void GLTileRenderer::buildContourLut() {
+        _contourLutSize = 0;
+        _contourLutBase = 0.0f;
+        _contourLutWidthScale = 1.0f;
+        _contourLutIntervalScale = 1.0f;
+        _contourLutData.clear();
+        _contourLutDirty = true;
+        if (_contourBands.empty()) {
+            return;
+        }
+
+        // Every class line sits on a multiple of the finest interval, so one index - the nearest
+        // level of that finest class - names the class a fragment belongs to. Any style whose
+        // intervals are not multiples of the finest one has no such index and keeps the loop.
+        float base = _contourBands.front().interval;
+        float maxHalfWidth = 0.0f;
+        for (const ContourBand& band : _contourBands) {
+            if (!(band.interval > 0.0f)) {
+                return;
+            }
+            base = std::min(base, band.interval);
+            maxHalfWidth = std::max(maxHalfWidth, band.halfWidth);
+        }
+
+        auto gcd = [](int a, int b) { while (b != 0) { int t = a % b; a = b; b = t; } return a; };
+        std::vector<int> ratios;
+        ratios.reserve(_contourBands.size());
+        int size = 1;
+        for (const ContourBand& band : _contourBands) {
+            double ratio = band.interval / base;
+            int steps = static_cast<int>(std::lround(ratio));
+            if (steps < 1 || std::abs(ratio - steps) > 1.0e-3) {
+                return;
+            }
+            ratios.push_back(steps);
+            size = size / gcd(size, steps) * steps;
+            if (size > CONTOUR_LUT_MAX_SIZE) {
+                return;
+            }
+        }
+
+        _contourLutSize = size;
+        _contourLutBase = base;
+        // The half-width row is 8 bits, so it carries the widest line the style asks for and every
+        // other one as a fraction of it - finer than the one-pixel coverage ramp can show.
+        _contourLutWidthScale = std::max(maxHalfWidth, 1.0f / 255.0f);
+        _contourLutIntervalScale = base * size; // the coarsest interval divides this by construction
+        _contourLutData.assign(static_cast<std::size_t>(size) * 2 * 4, 0);
+        auto toByte = [](float v) {
+            return static_cast<unsigned char>(std::min(std::max(v, 0.0f), 1.0f) * 255.0f + 0.5f);
+        };
+        for (int level = 0; level < size; level++) {
+            // Last match wins, exactly as the unrolled loop composites: the coarsest class that
+            // owns a level is the one drawn there. Levels no class owns keep alpha 0.
+            for (std::size_t i = 0; i < _contourBands.size(); i++) {
+                if (level % ratios[i] != 0) {
+                    continue;
+                }
+                const ContourBand& band = _contourBands[i];
+                std::size_t offset = static_cast<std::size_t>(level) * 4;
+                _contourLutData[offset + 0] = toByte(band.color[0]);
+                _contourLutData[offset + 1] = toByte(band.color[1]);
+                _contourLutData[offset + 2] = toByte(band.color[2]);
+                _contourLutData[offset + 3] = toByte(band.color[3]);
+                _contourLutData[static_cast<std::size_t>(size) * 4 + offset + 0] = toByte(band.halfWidth / _contourLutWidthScale);
+                // The interval too: a class whose lines fall closer than a few pixels apart is a
+                // wash, and the shader fades it out there (see the CONTOUR_LUT block).
+                _contourLutData[static_cast<std::size_t>(size) * 4 + offset + 1] = toByte(band.interval / _contourLutIntervalScale);
+            }
         }
     }
 
@@ -285,7 +364,7 @@ namespace carto::vt {
         if (count == 0 || !_terrainMode || !_terrainTextureProvider) {
             return 0;
         }
-        return CONTOUR_BANDS_FLAG | DERIVATIVES_FLAG | (static_cast<unsigned int>(count) << CONTOUR_COUNT_SHIFT);
+        return CONTOUR_BANDS_FLAG | DERIVATIVES_FLAG | (_contourLutSize > 0 ? CONTOUR_LUT_FLAG : 0) | (static_cast<unsigned int>(count) << CONTOUR_COUNT_SHIFT);
     }
 
     int GLTileRenderer::contourBandCount(unsigned int flags) {
@@ -298,8 +377,40 @@ namespace carto::vt {
         _contourBandsMuted = muted;
     }
 
-    void GLTileRenderer::setupContourBandUniforms(const ShaderProgram& shaderProgram) const {
+    void GLTileRenderer::setupContourBandUniforms(const ShaderProgram& shaderProgram) {
         if (_contourBands.empty()) {
+            return;
+        }
+        if (_contourLutSize > 0) {
+            if (_contourLutTexture == 0) {
+                glGenTextures(1, &_contourLutTexture);
+                _contourLutDirty = true;
+            }
+            glActiveTexture(GL_TEXTURE3);
+            glBindTexture(GL_TEXTURE_2D, _contourLutTexture);
+            if (_contourLutDirty) {
+                // One texel per level and per row: NEAREST, or a class would bleed into its
+                // neighbours and the half-width row into the colour row.
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, _contourLutSize, 2, 0, GL_RGBA, GL_UNSIGNED_BYTE, _contourLutData.data());
+                _contourLutDirty = false;
+            }
+            GLint lutLoc = glGetUniformLocation(shaderProgram.program, "u_contourLut");
+            GLint lutParamsLoc = glGetUniformLocation(shaderProgram.program, "u_contourLutParams");
+            GLint lutUnitsLoc = glGetUniformLocation(shaderProgram.program, "u_contourLutUnits");
+            if (lutLoc >= 0) {
+                glUniform1i(lutLoc, 3);
+            }
+            if (lutParamsLoc >= 0) {
+                glUniform4f(lutParamsLoc, 1.0f / _contourLutBase, _contourLutBase, 1.0f / _contourLutSize, 0.0f);
+            }
+            if (lutUnitsLoc >= 0) {
+                glUniform2f(lutUnitsLoc, _contourLutWidthScale, _contourLutIntervalScale);
+            }
+            glActiveTexture(GL_TEXTURE0);
             return;
         }
         std::array<float, MAX_CONTOUR_BANDS * 4> colors = { };
@@ -1420,6 +1531,12 @@ namespace carto::vt {
 
         // Release tile and screen VBOs
         deleteCompiledQuad(_screenQuad);
+
+        if (_contourLutTexture != 0) {
+            glDeleteTextures(1, &_contourLutTexture);
+            _contourLutTexture = 0;
+            _contourLutDirty = true;
+        }
         
         _renderTiles.reset();
         _visibleRenderTiles.reset();
