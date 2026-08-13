@@ -145,6 +145,9 @@ namespace carto::vt {
         // How labelVsh must read a glyph offset (attribs[3]); see calculateVertexData.
         static constexpr std::int8_t WORLD_OFFSET = 0;       // already spanned, add it as is
         static constexpr std::int8_t CAMERA_AXIS_OFFSET = 1; // x/y on the camera axes
+        // Same, plus the perspective cancel the CPU used to bake into the offset (see labelVsh).
+        // The offset is then free of view depth, which is what a persistent batch needs.
+        static constexpr std::int8_t CAMERA_AXIS_DEPTH_OFFSET = 2;
 
         static constexpr unsigned int MAX_LABEL_VERTICES = 16384;
         static constexpr unsigned int MAX_LINE_FITTING_ITERATIONS = 1; // number of iterations for line glyph placement on corners

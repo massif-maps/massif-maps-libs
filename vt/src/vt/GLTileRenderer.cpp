@@ -5762,6 +5762,7 @@ namespace carto::vt {
         // camera-relative, so these are the plain camera basis vectors.
         glUniform3f(shaderProgram.uniforms[U_LABELAXISX], _viewState.orientation[0](0), _viewState.orientation[0](1), _viewState.orientation[0](2));
         glUniform3f(shaderProgram.uniforms[U_LABELAXISY], _viewState.orientation[1](0), _viewState.orientation[1](1), _viewState.orientation[1](2));
+        glUniform1f(shaderProgram.uniforms[U_LABELDEPTHSCALE], _viewState.focusDistance > 0 ? 1.0f / _viewState.focusDistance : 0.0f);
         glUniform4fv(shaderProgram.uniforms[U_COLORTABLE], labelBatchParams.parameterCount, labelBatchParams.colorTable[0].data());
         glUniform1fv(shaderProgram.uniforms[U_WIDTHTABLE], labelBatchParams.parameterCount, labelBatchParams.widthTable.data());
         glUniform1fv(shaderProgram.uniforms[U_STROKEWIDTHTABLE], labelBatchParams.parameterCount, labelBatchParams.strokeWidthTable.data());
