@@ -144,7 +144,6 @@ namespace carto::vt {
         void setInteractionMode(bool enabled);
         void setTerrainMode(bool enabled, float depthBias);
         void setTerrainRegularGrid(bool enabled, int resolution);
-        void setTerrainPainterOrder(bool enabled);
         // Where this renderer's style layers start in the stack's depth ordering (see
         // renderGeometry2D). Every tile layer has its own renderer and its own style layers, so
         // without a base they would all claim ordinal 0 and fight each other once content writes.
@@ -640,7 +639,7 @@ namespace carto::vt {
         float _terrainDrawDepthBias = 0.0f;      // per-draw NDC (w-scaled) depth bias while rendering 2D layers (GPU draping mode)
         float _terrainDrawDepthClipUnits = 0.0f; // per-draw clip-constant slack units (distance-growing; see setupTerrainUniforms)
         bool _terrainSkirtsEnabled = false;
-        bool _terrainRegularGrid = false;        // shared unit-grid surfaces instead of per-tile tesselated meshes (planar terrain)
+        bool _terrainRegularGrid = false;        // tangram's model: one shared grid surface per tile + painter-order depth (no occluder, no slack)
         int _terrainRegularGridResolution = 0;   // resolution of the currently built shared grid
         bool _terrainEdgeStitching = false;      // snap grid surface edges to a coarser neighbour's lattice
         std::set<TileId> _visibleTileIds;        // this renderer's own visible tiles (surface cover when no external one is set)
@@ -648,7 +647,6 @@ namespace carto::vt {
         std::map<TileId, cglib::vec4<float>> _terrainEdgeCoarseningMap; // per drawn cover tile: lattice cell scale (2^k) on the west/east/south/north edge
         std::vector<std::shared_ptr<TileSurface>> _terrainGridSurfaces;
         std::vector<std::shared_ptr<TileSurface>> _terrainFlatSurfaces; // 1x1 grid for the flat drape bake // the single shared unit-grid surface, drawn per tile
-        bool _terrainPainterOrder = false;       // tangram painter-order depth model (no surface occluder / no slack); implies regular grid
         float _terrainDrawLayerOffset = 0.0f;    // painter-order per-draw (proxy - layer) offset
         float _terrainLineClearance = 0.0f;      // world units a draped line clears the ground by, constant in metres at any range
         float _terrainDrawClearance = 0.0f;      // per-draw METRE-constant clearance in world units (applyDepthBias); non-zero only for content that chords over the ground

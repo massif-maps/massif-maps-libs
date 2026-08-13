@@ -187,12 +187,6 @@ namespace carto::vt {
         }
     }
 
-    void GLTileRenderer::setTerrainPainterOrder(bool enabled) {
-        std::lock_guard<std::mutex> lock(_mutex);
-
-        _terrainPainterOrder = enabled;
-    }
-
     void GLTileRenderer::setTerrainLayerOrdinalBase(int base) {
         std::lock_guard<std::mutex> lock(_mutex);
 
@@ -1561,7 +1555,7 @@ namespace carto::vt {
                     glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
                 }
                 _terrainDrawDepthBias = _terrainDepthBias;
-                _terrainDrawDepthClipUnits = _terrainPainterOrder ? -TERRAIN_PAINTER_SURFACE_BACK : 0.0f; // painter-order: the ground surface is pushed back like the backgrounds/bitmaps
+                _terrainDrawDepthClipUnits = _terrainRegularGrid ? -TERRAIN_PAINTER_SURFACE_BACK : 0.0f; // painter-order: the ground surface is pushed back like the backgrounds/bitmaps
                 for (const RenderTile& renderTile : *_visibleRenderTiles) {
                     if (renderTile.visible) {
                         renderTileSurfaceFill(renderTile.targetTileId, _terrainBackgroundColor);
@@ -3110,12 +3104,12 @@ namespace carto::vt {
                         // bias - it passes at equal depth and is occluded (fails) behind a ridge.
                         // Any forward clip bias here leaks over ridges at range (the contour
                         // see-through), so keep it at zero in painter-order.
-                        _terrainDrawDepthBias = (_terrainPainterOrder ? 0.0f : _terrainDepthBias + 1.0f * TERRAIN_LAYER_DEPTH_DELTA) - proxyBias;
+                        _terrainDrawDepthBias = (_terrainRegularGrid ? 0.0f : _terrainDepthBias + 1.0f * TERRAIN_LAYER_DEPTH_DELTA) - proxyBias;
                         // Lattice clamp (regular-grid mode) makes draped geometry follow the
                         // reference grid surface within the tiny in-cell bilinear-vs-triangle
                         // twist, so the distance-growing slack collapses to a small margin;
                         // adaptive meshes keep the full calibrated slack.
-                        _terrainDrawDepthClipUnits = _terrainPainterOrder ? 0.0f : (_terrainRegularGrid ? 2.0f : 12.0f);
+                        _terrainDrawDepthClipUnits = _terrainRegularGrid ? 0.0f : 12.0f;
                     } else {
                         glEnable(GL_POLYGON_OFFSET_FILL);
                         glPolygonOffset(-1.0f, -2.0f);
