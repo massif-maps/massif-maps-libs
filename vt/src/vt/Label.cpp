@@ -171,6 +171,7 @@ namespace carto::vt {
         _glyphBBox = _variantBBoxes[_variantIndex];
         _textBBox = _variantTextBBoxes[_variantIndex];
         _cachedValid = false; // the quads are laid out around the pen, so they have to be rebuilt
+        touchDrawGenerationIfDrawn();
     }
 
     void Label::mergeGeometries(Label& label) {
@@ -326,6 +327,7 @@ namespace carto::vt {
     }
 
     void Label::snapPlacement(const Label& label) {
+        touchDrawGenerationIfDrawn();
         _placement = label._placement;
         _cachedFlippedPlacement = label._cachedFlippedPlacement;
         // The re-snapped placement below is rebuilt right here, before this label ever sees a
@@ -469,6 +471,7 @@ namespace carto::vt {
         _cachedFlippedPlacement.reset();
         _cachedPlacement.reset();
         _cachedValid = false;
+        touchDrawGenerationIfDrawn();
     }
 
     bool Label::updatePlacement(const ViewState& viewState) {
@@ -542,11 +545,13 @@ namespace carto::vt {
                 return false; // already unplaced, nothing changed - do not reset the opacity
             }
             _placement.reset();
+        touchDrawGenerationIfDrawn();
             return true;
         }
         VT_STAT_INC(placementSearches);
 
         _cachedFlippedPlacement.reset();
+        touchDrawGenerationIfDrawn();
         if (!_tilePoints.empty()) {
             _placement = findClippedPointPlacement(viewState, _tilePoints);
             if (_placement && !_tileLines.empty()) {
@@ -791,7 +796,12 @@ namespace carto::vt {
             }
 
             cglib::vec3<float> origin, xAxis, yAxis;
-            setupCoordinateSystem(viewState, placement, origin, xAxis, yAxis);
+            setupCoordinateSystem(viewState, placement, origin, xAxis, yAxis, !shaderDepthCancel);
+            if (shaderDepthCancel) {
+                // Against the latched base, not the camera: the anchor then holds through a pan
+                // and the whole batch can be kept (see GLTileRenderer::LabelBatchCache).
+                origin = cglib::vec3<float>::convert(placement->position - viewState.labelOrigin);
+            }
             // The plates first: within one label the draw order is the index order, so anything
             // appended after the glyphs would cover them.
             cglib::vec2<float> calloutShift(0, 0);
@@ -1508,14 +1518,13 @@ namespace carto::vt {
         _cachedMVPMatrix = mvpMatrix;
     }
 
-    void Label::setupCoordinateSystem(const ViewState& viewState, const std::shared_ptr<const Placement>& placement, cglib::vec3<float>& origin, cglib::vec3<float>& xAxis, cglib::vec3<float>& yAxis) const {
+    void Label::setupCoordinateSystem(const ViewState& viewState, const std::shared_ptr<const Placement>& placement, cglib::vec3<float>& origin, cglib::vec3<float>& xAxis, cglib::vec3<float>& yAxis, bool snapAnchor) const {
         cglib::vec3<double> position = placement->position;
-        if (viewState.planarProjection && _style->orientation != LabelOrientation::LINE && viewState.resolution > 0) {
+        if (snapAnchor && viewState.planarProjection && _style->orientation != LabelOrientation::LINE && viewState.resolution > 0) {
             // Snap the label anchor to a quarter of the (normalized) pixel grid: glyphs then
             // rasterize at a stable subpixel phase, which keeps text noticeably sharper and
             // shimmer-free (tangram-style screen-space anchoring)
-            cglib::mat4x4<double> viewProjMatrix = viewState.projectionMatrix * viewState.cameraMatrix;
-            cglib::vec4<double> clipPos = cglib::transform(cglib::vec4<double>(position(0), position(1), position(2), 1), viewProjMatrix);
+            cglib::vec4<double> clipPos = cglib::transform(cglib::vec4<double>(position(0), position(1), position(2), 1), viewState.viewProjMatrix);
             if (clipPos(3) > 0) {
                 double screenWidth = viewState.resolution * viewState.aspect;
                 double screenHeight = viewState.resolution;
@@ -1524,7 +1533,7 @@ namespace carto::vt {
                 double snappedX = std::round(pixelX * 4.0) * 0.25;
                 double snappedY = std::round(pixelY * 4.0) * 0.25;
                 cglib::vec3<double> snappedNDC((snappedX / screenWidth - 0.5) * 2.0, (snappedY / screenHeight - 0.5) * 2.0, clipPos(2) / clipPos(3));
-                position = cglib::transform_point(snappedNDC, cglib::inverse(viewProjMatrix));
+                position = cglib::transform_point(snappedNDC, viewState.invViewProjMatrix);
             }
         }
         origin = cglib::vec3<float>::convert(position - viewState.origin);
