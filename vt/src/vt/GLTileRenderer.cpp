@@ -134,6 +134,9 @@ namespace {
 }
 
 namespace carto::vt {
+    // The widest shadow texel that still reads as a shadow rather than a wash, in metres. It bounds
+    // how far the shadowed ground may reach for a given map resolution (see calculateShadowViewProj).
+    static constexpr double TARGET_SHADOW_TEXEL_METERS = 10.0;
     GLTileRenderer::GLTileRenderer(std::shared_ptr<GLExtensions> glExtensions, std::shared_ptr<const TileTransformer> transformer, float scale) :
         _tileSurfaceBuilder(transformer), _glExtensions(std::move(glExtensions)), _transformer(std::move(transformer)), _scale(scale)
     {
@@ -469,6 +472,14 @@ namespace carto::vt {
                 // shadows were blobs and got worse the more the view was tilted. At z16 this gives
                 // about a kilometre and a metre-scale texel instead.
                 double allowedGround = std::min(std::max(3.0 * slabExtent, 4.0 * groundNear), 60000.0 * metersToInternal);
+                // And never further than the map can REPRESENT. The outer cascade's texel is its
+                // extent over the resolution, so shadowing 50 km through a 1024 page buys texels
+                // wider than the ridges casting into them - a grey wash, not a shadow. Bounding the
+                // range by (target texel x resolution) instead ties how far shadows reach to how
+                // well they can be drawn, which is what the eye reads. Measured on the Crosscall,
+                // z14 tilt 30: 3.3/13.1/52.6 m texels and 205 caster tiles unbounded, against
+                // 1.2/1.9/8.4 m and 110 tiles here, with nothing visibly lost in the distance.
+                allowedGround = std::min(allowedGround, TARGET_SHADOW_TEXEL_METERS * metersToInternal * std::max(1, mapSize));
                 allowedGround = std::max(allowedGround, 1000.0 * metersToInternal);
                 if (maxDistance > 0) {
                     allowedGround = maxDistance; // an explicit distance is the caller's decision
