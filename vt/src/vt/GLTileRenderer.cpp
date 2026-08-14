@@ -1979,6 +1979,73 @@ namespace carto::vt {
         return TERRAIN_SHADOW_FLAG | DERIVATIVES_FLAG | cascadeFlag;
     }
 
+    unsigned int GLTileRenderer::surfaceShadowFlags() const {
+        // The terrain surface is drawn over the whole screen - as the drape, and again as the paint
+        // over it - so its shadow is resolved once into a screen-space mask and sampled from there.
+        // The pass that PRODUCES the mask is the one draw that still computes it analytically.
+        if (_terrainShadowMaskPass) {
+            return shadowReceiverFlags() | SHADOW_MASK_OUT_FLAG;
+        }
+        return shadowReceiverFlags() | (_terrainShadowMaskTexture != 0 ? SHADOW_MASK_IN_FLAG : 0);
+    }
+
+    void GLTileRenderer::setupSurfaceShadowUniforms(const ShaderProgram& shaderProgram, const cglib::mat4x4<double>& surfaceFrame, bool hasElevation) {
+        if (!_terrainShadowMaskPass && _terrainShadowMaskTexture != 0) {
+            glActiveTexture(GL_TEXTURE2);
+            glBindTexture(GL_TEXTURE_2D, _terrainShadowMaskTexture);
+            glUniform1i(shaderProgram.uniforms[U_SHADOWMASK], 2);
+            glActiveTexture(GL_TEXTURE0);
+            glUniform2f(shaderProgram.uniforms[U_SHADOWMASKSCALE], _terrainShadowMaskScale(0), _terrainShadowMaskScale(1));
+            return;
+        }
+        std::array<cglib::mat4x4<float>, MAX_SHADOW_CASCADES> shadowMatrices;
+        for (int i = 0; i < _terrainShadowCascades; i++) {
+            shadowMatrices[i] = cglib::mat4x4<float>::convert(_terrainShadowViewProjs[i] * surfaceFrame);
+        }
+        glUniformMatrix4fv(shaderProgram.uniforms[U_SHADOWMATRIX], _terrainShadowCascades, GL_FALSE, shadowMatrices[0].data());
+        glActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_2D, _terrainShadowTexture);
+        glUniform1i(shaderProgram.uniforms[U_SHADOWTEXTURE], 2);
+        glActiveTexture(GL_TEXTURE0);
+        // A tile whose elevation has not arrived is drawn FLAT, at zero. In the mountains that is a
+        // kilometre below everything around it, so the surrounding terrain shadows every texel of it
+        // and it reads as a solid dark block the exact shape of the tile. It has no relief to shadow
+        // anyway, so it takes no shadow until its heights are there.
+        glUniform4f(shaderProgram.uniforms[U_SHADOWPARAMS], 1.0f / std::max(1, _terrainShadowMapSize), hasElevation ? _terrainShadowStrength : 0.0f, _terrainShadowSoftness, 1.0f / _terrainShadowCascades);
+        glUniform4f(shaderProgram.uniforms[U_SHADOWBIAS], _terrainShadowBiases[0], _terrainShadowBiases[1], _terrainShadowBiases[2], _terrainShadowBiases[3]);
+    }
+
+    void GLTileRenderer::setTerrainShadowMask(GLuint texture, float invScreenWidth, float invScreenHeight) {
+        std::lock_guard<std::mutex> lock(_mutex);
+
+        _terrainShadowMaskTexture = texture;
+        _terrainShadowMaskScale = cglib::vec2<float>(invScreenWidth, invScreenHeight);
+    }
+
+    int GLTileRenderer::renderTerrainShadowMask(const std::vector<TileId>& tileIds) {
+        std::lock_guard<std::mutex> lock(_mutex);
+
+        resetProgramState(); // another renderer may have bound its own program since the last draw
+
+        if (!(_terrainRegularGrid && _terrainMode && _terrainTextureProvider)) {
+            return 0;
+        }
+        if (_terrainShadowTexture == 0 || _terrainShadowStrength <= 0.0f || !_terrainLighting.enabled) {
+            return 0;
+        }
+        // The same geometry, elevation and normal the surface will be drawn with - the fill path IS
+        // that draw, with a fragment shader that stops at the shadow value.
+        _terrainShadowMaskPass = true;
+        int draws = 0;
+        for (const TileId& tileId : tileIds) {
+            renderTileSurfaceFill(tileId, Color(1.0f, 1.0f, 1.0f, 1.0f), true);
+            draws++;
+        }
+        _terrainShadowMaskPass = false;
+        checkGLError();
+        return draws;
+    }
+
     void GLTileRenderer::useProgram(const ShaderProgram& shaderProgram) {
         // glUseProgram is one of the most expensive state changes on a tiler, and the draw
         // loop is style-layer-major: every tile of a layer draws with the same program, so
@@ -3793,7 +3860,7 @@ namespace carto::vt {
             // colour-masked or invisible, and lighting them is pure shader cost.
             bool litSurface = lit && terrainFlag != 0 && _terrainLighting.enabled;
             bool shadowedSurface = litSurface && _terrainShadowTexture != 0 && _terrainShadowStrength > 0.0f;
-            unsigned int lightFlags = (litSurface ? TERRAIN_LIGHT_FLAG : 0) | (shadowedSurface ? shadowReceiverFlags() : 0);
+            unsigned int lightFlags = (litSurface ? TERRAIN_LIGHT_FLAG : 0) | (shadowedSurface ? surfaceShadowFlags() : 0);
             const ShaderProgram& shaderProgram = buildShaderProgram("tilesurfacefill", backgroundVsh, backgroundFsh, LightingMode::NONE, RasterFilterMode::NONE, terrainFlag | lightFlags | fogFlag());
             useProgram(shaderProgram);
             setupFogUniforms(shaderProgram);
@@ -3806,19 +3873,7 @@ namespace carto::vt {
                 setupTerrainLightingUniforms(shaderProgram, tileId, surfaceFrame);
             }
             if (shadowedSurface) {
-                std::array<cglib::mat4x4<float>, MAX_SHADOW_CASCADES> shadowMatrices;
-                for (int i = 0; i < _terrainShadowCascades; i++) {
-                    shadowMatrices[i] = cglib::mat4x4<float>::convert(_terrainShadowViewProjs[i] * surfaceFrame);
-                }
-                glUniformMatrix4fv(shaderProgram.uniforms[U_SHADOWMATRIX], _terrainShadowCascades, GL_FALSE, shadowMatrices[0].data());
-                glActiveTexture(GL_TEXTURE2);
-                glBindTexture(GL_TEXTURE_2D, _terrainShadowTexture);
-                glUniform1i(shaderProgram.uniforms[U_SHADOWTEXTURE], 2);
-                glActiveTexture(GL_TEXTURE0);
-                // A tile drawn flat because its elevation has not arrived has no relief to shadow,
-                // and the terrain around it would shadow every texel of it (see renderTileSurfaceDrape).
-                glUniform4f(shaderProgram.uniforms[U_SHADOWPARAMS], 1.0f / std::max(1, _terrainShadowMapSize), hasElevation ? _terrainShadowStrength : 0.0f, _terrainShadowSoftness, 1.0f / _terrainShadowCascades);
-                glUniform4f(shaderProgram.uniforms[U_SHADOWBIAS], _terrainShadowBiases[0], _terrainShadowBiases[1], _terrainShadowBiases[2], _terrainShadowBiases[3]);
+                setupSurfaceShadowUniforms(shaderProgram, surfaceFrame, hasElevation);
             }
 
             glBindBuffer(GL_ARRAY_BUFFER, compiledTileSurface.vertexGeometryVBO);
@@ -4368,7 +4423,7 @@ namespace carto::vt {
         // way to know whether the layer asked for contours (the interval arrives as a uniform, set
         // by the shared normal-map setup func). The NORMALMAP path does the same for the same
         // reason - harmless when contours are off, since the branch is not taken.
-        unsigned int lightFlags = (litSurface ? TERRAIN_LIGHT_FLAG : 0) | (shadowedSurface ? shadowReceiverFlags() : DERIVATIVES_FLAG) | (asGround ? GROUND_BASE_FLAG : 0);
+        unsigned int lightFlags = (litSurface ? TERRAIN_LIGHT_FLAG : 0) | (shadowedSurface ? surfaceShadowFlags() : DERIVATIVES_FLAG) | (asGround ? GROUND_BASE_FLAG : 0);
 
         int draws = 0;
         for (std::size_t paintIndex = 0; paintIndex < paintTiles.size(); paintIndex++) {
@@ -4397,17 +4452,7 @@ namespace carto::vt {
                     setupTerrainLightingUniforms(shaderProgram, tileId, surfaceFrame);
                 }
                 if (shadowedSurface) {
-                    std::array<cglib::mat4x4<float>, MAX_SHADOW_CASCADES> shadowMatrices;
-                    for (int i = 0; i < _terrainShadowCascades; i++) {
-                        shadowMatrices[i] = cglib::mat4x4<float>::convert(_terrainShadowViewProjs[i] * surfaceFrame);
-                    }
-                    glUniformMatrix4fv(shaderProgram.uniforms[U_SHADOWMATRIX], _terrainShadowCascades, GL_FALSE, shadowMatrices[0].data());
-                    glActiveTexture(GL_TEXTURE2);
-                    glBindTexture(GL_TEXTURE_2D, _terrainShadowTexture);
-                    glUniform1i(shaderProgram.uniforms[U_SHADOWTEXTURE], 2);
-                    glActiveTexture(GL_TEXTURE0);
-                    glUniform4f(shaderProgram.uniforms[U_SHADOWPARAMS], 1.0f / std::max(1, _terrainShadowMapSize), hasElevation ? _terrainShadowStrength : 0.0f, _terrainShadowSoftness, 1.0f / _terrainShadowCascades);
-                    glUniform4f(shaderProgram.uniforms[U_SHADOWBIAS], _terrainShadowBiases[0], _terrainShadowBiases[1], _terrainShadowBiases[2], _terrainShadowBiases[3]);
+                    setupSurfaceShadowUniforms(shaderProgram, surfaceFrame, hasElevation);
                 }
 
                 float slopeScale = _terrainPaint.heightScale * calculateTerrainPaintReliefBoost(resolved.second.metersPerTexel) / resolved.second.metersPerTexel;
@@ -4764,7 +4809,7 @@ namespace carto::vt {
             bool lit = _terrainLighting.enabled && _terrainMode && static_cast<bool>(_terrainTextureProvider);
             bool shadowed = lit && _terrainShadowTexture != 0 && _terrainShadowStrength > 0.0f;
             bool hasElevation = true;
-            unsigned int flags = (_terrainMode && _terrainTextureProvider ? TERRAIN_FLAG | TERRAIN_VTF_FLAG : 0) | DRAPE_FLAG | (lit ? TERRAIN_LIGHT_FLAG : 0) | (shadowed ? shadowReceiverFlags() : 0);
+            unsigned int flags = (_terrainMode && _terrainTextureProvider ? TERRAIN_FLAG | TERRAIN_VTF_FLAG : 0) | DRAPE_FLAG | (lit ? TERRAIN_LIGHT_FLAG : 0) | (shadowed ? surfaceShadowFlags() : 0);
             const ShaderProgram& shaderProgram = buildShaderProgram("tilesurfacedrape", backgroundVsh, backgroundFsh, LightingMode::NONE, RasterFilterMode::NONE, flags | fogFlag());
             useProgram(shaderProgram);
             setupFogUniforms(shaderProgram);
@@ -4776,22 +4821,7 @@ namespace carto::vt {
                 setupTerrainLightingUniforms(shaderProgram, tileId, surfaceFrame);
             }
             if (shadowed) {
-                std::array<cglib::mat4x4<float>, MAX_SHADOW_CASCADES> shadowMatrices;
-                for (int i = 0; i < _terrainShadowCascades; i++) {
-                    shadowMatrices[i] = cglib::mat4x4<float>::convert(_terrainShadowViewProjs[i] * surfaceFrame);
-                }
-                glUniformMatrix4fv(shaderProgram.uniforms[U_SHADOWMATRIX], _terrainShadowCascades, GL_FALSE, shadowMatrices[0].data());
-                glActiveTexture(GL_TEXTURE2);
-                glBindTexture(GL_TEXTURE_2D, _terrainShadowTexture);
-                glUniform1i(shaderProgram.uniforms[U_SHADOWTEXTURE], 2);
-                glActiveTexture(GL_TEXTURE0);
-                // A tile whose elevation has not arrived is drawn FLAT, at zero. In the mountains
-                // that is a kilometre below everything around it, so the surrounding terrain
-                // shadows every texel of it and it reads as a solid dark block the exact shape of
-                // the tile - most visible far away, where elevation arrives last. It has no relief
-                // to shadow anyway, so it takes no shadow until its heights are there.
-                glUniform4f(shaderProgram.uniforms[U_SHADOWPARAMS], 1.0f / std::max(1, _terrainShadowMapSize), hasElevation ? _terrainShadowStrength : 0.0f, _terrainShadowSoftness, 1.0f / _terrainShadowCascades);
-                glUniform4f(shaderProgram.uniforms[U_SHADOWBIAS], _terrainShadowBiases[0], _terrainShadowBiases[1], _terrainShadowBiases[2], _terrainShadowBiases[3]);
+                setupSurfaceShadowUniforms(shaderProgram, surfaceFrame, hasElevation);
             }
 
             glBindBuffer(GL_ARRAY_BUFFER, compiledTileSurface.vertexGeometryVBO);

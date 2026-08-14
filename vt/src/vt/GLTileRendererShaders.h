@@ -66,6 +66,8 @@ namespace carto::vt {
         U_SHADOWTEXTURE,
         U_SHADOWPARAMS,
         U_SHADOWBIAS,
+        U_SHADOWMASK,
+        U_SHADOWMASKSCALE,
         U_FOGCOLOR,
         U_FOGPARAMS,
         U_DRAPEUVTRANSFORM,
@@ -97,7 +99,13 @@ namespace carto::vt {
         // shadowed surface costs (docs/rendering/08-lighting-sky-fog.md).
         SHADOW_CASCADES2_FLAG = 8192,
         SHADOW_CASCADES3_FLAG = 16384,
-        SHADOW_CASCADES4_FLAG = 32768
+        SHADOW_CASCADES4_FLAG = 32768,
+        // The shadow of the terrain SURFACE, computed once per screen pixel into a half-resolution
+        // mask (OUT) and then sampled by every surface that covers that pixel (IN). The lookup is
+        // the most expensive thing a shadowed fragment does and the ground is drawn over the whole
+        // screen, sometimes twice - once as the drape and once as the paint over it.
+        SHADOW_MASK_OUT_FLAG = 65536,
+        SHADOW_MASK_IN_FLAG = 131072
     };
 
     static const std::map<std::string, int> attribMap = {
@@ -158,6 +166,8 @@ namespace carto::vt {
         { "uShadowTexture",     U_SHADOWTEXTURE },
         { "uShadowParams",      U_SHADOWPARAMS },
         { "uShadowBias",        U_SHADOWBIAS },
+        { "uShadowMask",        U_SHADOWMASK },
+        { "uShadowMaskScale",   U_SHADOWMASKSCALE },
         { "uFogColor",          U_FOGCOLOR },
         { "uFogParams",         U_FOGPARAMS },
         { "uDrapeUVTransform",  U_DRAPEUVTRANSFORM },
@@ -185,7 +195,9 @@ namespace carto::vt {
         { DEM_HW_FILTER_FLAG, "DEM_HW_FILTER" },
         { SHADOW_CASCADES2_FLAG, "SHADOW_CASCADES_2" },
         { SHADOW_CASCADES3_FLAG, "SHADOW_CASCADES_3" },
-        { SHADOW_CASCADES4_FLAG, "SHADOW_CASCADES_4" }
+        { SHADOW_CASCADES4_FLAG, "SHADOW_CASCADES_4" },
+        { SHADOW_MASK_OUT_FLAG, "SHADOW_MASK_OUT" },
+        { SHADOW_MASK_IN_FLAG, "SHADOW_MASK_IN" }
     };
 
     static const std::string textureFiltersFsh = R"GLSL(
@@ -291,7 +303,11 @@ namespace carto::vt {
             return clipPos;
         }
         #endif
-        #ifdef TERRAIN_SHADOW
+        #if defined(TERRAIN_SHADOW) && defined(SHADOW_MASK_IN)
+        // The mask is sampled by screen position, so nothing has to be carried per vertex.
+        void applyShadowPos(highp vec3 pos) {
+        }
+        #elif defined(TERRAIN_SHADOW)
         #if defined(SHADOW_CASCADES_4)
         #define SHADOW_CASCADES 4
         #elif defined(SHADOW_CASCADES_3)
@@ -539,7 +555,22 @@ namespace carto::vt {
             return 1.0;
         }
         #endif
-        #ifdef TERRAIN_SHADOW
+        #if defined(TERRAIN_SHADOW) && defined(SHADOW_MASK_IN)
+        // The terrain's shadow, already resolved for this screen pixel by the mask pass. One fetch
+        // instead of a cascade choice, a matrix, derivatives and four taps - and the ground is
+        // covered twice over, by the drape and by the paint on top of it, so this is paid twice.
+        uniform sampler2D uShadowMask;
+        uniform highp vec2 uShadowMaskScale; // 1 / screen size, whatever resolution the mask is at
+        mediump float shadowFactorScreen() {
+            return texture2D(uShadowMask, gl_FragCoord.xy * uShadowMaskScale).r;
+        }
+        mediump float shadowFactorSlope(mediump float ndl) {
+            return shadowFactorScreen();
+        }
+        mediump float shadowFactor() {
+            return shadowFactorScreen();
+        }
+        #elif defined(TERRAIN_SHADOW)
         #if defined(SHADOW_CASCADES_4)
         #define SHADOW_CASCADES 4
         #elif defined(SHADOW_CASCADES_3)
@@ -848,6 +879,13 @@ namespace carto::vt {
             // The draped colour is premultiplied, so scaling rgb alone is a valid tint; clamp
             // back to alpha so an intensity above 1 cannot break premultiplication.
             mediump float ndl = max(0.0, dot(terrainNormal(), uSunDir));
+        #if defined(SHADOW_MASK_OUT) && defined(TERRAIN_SHADOW)
+            // The mask pass: this draw exists only to resolve the terrain's shadow for the pixel,
+            // from the same geometry, the same elevation and the same normal the surface itself
+            // will use, so the value the surface samples back is the one it would have computed.
+            gl_FragColor = vec4(vec3(shadowFactorSlope(ndl)), 1.0);
+            return;
+        #endif
             // Normalised Lambert: ambient is the floor, the sun fills the REMAINING headroom, so
             // a surface facing the sun lands at 1 instead of ambient+1. Adding them blows the
             // ground out to white at a high sun, and a clipped highlight cannot show a shadow.
@@ -1468,7 +1506,13 @@ namespace carto::vt {
             // receiver is coplanar with what cast into the shadow map, so at normal incidence it
             // gets the minimum bias, half the PCF taps fail and the ground shadows itself.
             // The colour is premultiplied, so scaling rgb alone keeps rgb <= a.
+        #ifdef SHADOW_MASK_IN
+            // The mask already holds this pixel's terrain shadow; the analytic form would also
+            // have to build the normal first, which is a 3x3 stencil over the elevation texture.
+            color = vec4(color.rgb * shadowFactorScreen(), color.a);
+        #else
             color = vec4(color.rgb * shadowFactorSlope(terrainNdl()), color.a);
+        #endif
         #endif
         #ifdef LIGHTING_FSH
             gl_FragColor = applyFog(applyLighting(color, normalize(vNormal)));
@@ -1638,7 +1682,13 @@ namespace carto::vt {
         #endif
         #ifdef TERRAIN_SHADOW
             // 2D content standing ON the ground takes the ground's shadow (see pointFsh).
+        #ifdef SHADOW_MASK_IN
+            // The mask already holds this pixel's terrain shadow; the analytic form would also
+            // have to build the normal first, which is a 3x3 stencil over the elevation texture.
+            color = vec4(color.rgb * shadowFactorScreen(), color.a);
+        #else
             color = vec4(color.rgb * shadowFactorSlope(terrainNdl()), color.a);
+        #endif
         #endif
         #ifdef LIGHTING_FSH
             gl_FragColor = applyFog(applyLighting(color, normalize(vNormal)));
@@ -1719,7 +1769,13 @@ namespace carto::vt {
         #endif
         #ifdef TERRAIN_SHADOW
             // 2D content standing ON the ground takes the ground's shadow (see pointFsh).
+        #ifdef SHADOW_MASK_IN
+            // The mask already holds this pixel's terrain shadow; the analytic form would also
+            // have to build the normal first, which is a 3x3 stencil over the elevation texture.
+            color = vec4(color.rgb * shadowFactorScreen(), color.a);
+        #else
             color = vec4(color.rgb * shadowFactorSlope(terrainNdl()), color.a);
+        #endif
         #endif
         #ifdef LIGHTING_FSH
             gl_FragColor = applyFog(applyLighting(color, normalize(vNormal)));
