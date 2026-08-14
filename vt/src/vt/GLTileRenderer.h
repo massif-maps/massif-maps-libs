@@ -482,6 +482,8 @@ namespace carto::vt {
         bool isEmptyBlendRequired(CompOp compOp) const;
 
         unsigned int fogFlag() const;
+        // TERRAIN_SHADOW plus the cascade count the receiver lookup is compiled for.
+        unsigned int shadowReceiverFlags() const;
         // Binds the program only when it is not the one already bound (see the definition).
         void useProgram(const ShaderProgram& shaderProgram);
         // Forgets which program is bound. Must be called wherever another renderer may have

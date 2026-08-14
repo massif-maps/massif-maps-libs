@@ -90,7 +90,14 @@ namespace carto::vt {
         PAINT_SURFACE_FLAG = 1024,
         FOG_FLAG = 512,
         GROUND_BASE_FLAG = 2048,
-        DEM_HW_FILTER_FLAG = 4096
+        DEM_HW_FILTER_FLAG = 4096,
+        // How many cascades the shadow lookup is compiled for (none of these = one). The count is
+        // a compile-time constant because it decides how many matrices the vertex stage applies and
+        // how many highp varyings it interpolates, and that - not the PCF taps - is what the
+        // shadowed surface costs (docs/rendering/08-lighting-sky-fog.md).
+        SHADOW_CASCADES2_FLAG = 8192,
+        SHADOW_CASCADES3_FLAG = 16384,
+        SHADOW_CASCADES4_FLAG = 32768
     };
 
     static const std::map<std::string, int> attribMap = {
@@ -175,7 +182,10 @@ namespace carto::vt {
         { PAINT_SURFACE_FLAG, "PAINT_SURFACE" },
         { FOG_FLAG, "FOG" },
         { GROUND_BASE_FLAG, "GROUND_BASE" },
-        { DEM_HW_FILTER_FLAG, "DEM_HW_FILTER" }
+        { DEM_HW_FILTER_FLAG, "DEM_HW_FILTER" },
+        { SHADOW_CASCADES2_FLAG, "SHADOW_CASCADES_2" },
+        { SHADOW_CASCADES3_FLAG, "SHADOW_CASCADES_3" },
+        { SHADOW_CASCADES4_FLAG, "SHADOW_CASCADES_4" }
     };
 
     static const std::string textureFiltersFsh = R"GLSL(
@@ -282,25 +292,47 @@ namespace carto::vt {
         }
         #endif
         #ifdef TERRAIN_SHADOW
+        #if defined(SHADOW_CASCADES_4)
+        #define SHADOW_CASCADES 4
+        #elif defined(SHADOW_CASCADES_3)
+        #define SHADOW_CASCADES 3
+        #elif defined(SHADOW_CASCADES_2)
+        #define SHADOW_CASCADES 2
+        #else
+        #define SHADOW_CASCADES 1
+        #endif
         // Tile-local -> light clip space, one matrix per cascade. The matrices are built per tile
         // so their input stays in [0,1] and float precision is never asked to hold a world
         // coordinate. EVERY cascade is computed here: which one a fragment ends up using is
         // decided in the fragment stage from the result, and a varying cannot be written
-        // conditionally on something only the fragment stage knows.
-        uniform highp mat4 uShadowMatrix[4];
+        // conditionally on something only the fragment stage knows. Compiled for the cascade count
+        // in use, because each one is a matrix per vertex and a highp varying per fragment.
+        uniform highp mat4 uShadowMatrix[SHADOW_CASCADES];
         varying highp vec3 vShadowPos0;
+        #if SHADOW_CASCADES >= 2
         varying highp vec3 vShadowPos1;
+        #endif
+        #if SHADOW_CASCADES >= 3
         varying highp vec3 vShadowPos2;
+        #endif
+        #if SHADOW_CASCADES >= 4
         varying highp vec3 vShadowPos3;
+        #endif
         void applyShadowPos(highp vec3 pos) {
             highp vec4 clip0 = uShadowMatrix[0] * vec4(pos, 1.0);
             vShadowPos0 = clip0.xyz / clip0.w * 0.5 + 0.5;
+        #if SHADOW_CASCADES >= 2
             highp vec4 clip1 = uShadowMatrix[1] * vec4(pos, 1.0);
             vShadowPos1 = clip1.xyz / clip1.w * 0.5 + 0.5;
+        #endif
+        #if SHADOW_CASCADES >= 3
             highp vec4 clip2 = uShadowMatrix[2] * vec4(pos, 1.0);
             vShadowPos2 = clip2.xyz / clip2.w * 0.5 + 0.5;
+        #endif
+        #if SHADOW_CASCADES >= 4
             highp vec4 clip3 = uShadowMatrix[3] * vec4(pos, 1.0);
             vShadowPos3 = clip3.xyz / clip3.w * 0.5 + 0.5;
+        #endif
         }
         #else
         void applyShadowPos(highp vec3 pos) {
@@ -508,13 +540,28 @@ namespace carto::vt {
         }
         #endif
         #ifdef TERRAIN_SHADOW
+        #if defined(SHADOW_CASCADES_4)
+        #define SHADOW_CASCADES 4
+        #elif defined(SHADOW_CASCADES_3)
+        #define SHADOW_CASCADES 3
+        #elif defined(SHADOW_CASCADES_2)
+        #define SHADOW_CASCADES 2
+        #else
+        #define SHADOW_CASCADES 1
+        #endif
         uniform sampler2D uShadowTexture;
         uniform mediump vec4 uShadowParams; // x = 1/mapSize within one cascade, y = strength, z = PCF radius in texels, w = 1/cascade count
         uniform mediump vec4 uShadowBias;   // normalised depth bias, per cascade
         varying highp vec3 vShadowPos0;
+        #if SHADOW_CASCADES >= 2
         varying highp vec3 vShadowPos1;
+        #endif
+        #if SHADOW_CASCADES >= 3
         varying highp vec3 vShadowPos2;
+        #endif
+        #if SHADOW_CASCADES >= 4
         varying highp vec3 vShadowPos3;
+        #endif
 
         // True when a light-space position does not land inside its cascade's page, with room for
         // the PCF kernel: such a fragment has to fall back to the next, coarser cascade.
@@ -544,21 +591,27 @@ namespace carto::vt {
             highp vec3 pos = vShadowPos0;
             mediump float page = 0.0;
             mediump float bias = uShadowBias.x;
+        #if SHADOW_CASCADES >= 2
             if (outsideShadowPage(pos, margin)) {
                 pos = vShadowPos1;
                 page = 1.0;
                 bias = uShadowBias.y;
             }
+        #endif
+        #if SHADOW_CASCADES >= 3
             if (outsideShadowPage(pos, margin)) {
                 pos = vShadowPos2;
                 page = 2.0;
                 bias = uShadowBias.z;
             }
+        #endif
+        #if SHADOW_CASCADES >= 4
             if (outsideShadowPage(pos, margin)) {
                 pos = vShadowPos3;
                 page = 3.0;
                 bias = uShadowBias.w;
             }
+        #endif
             // Derivatives are taken before any early return: a fragment that leaves the function
             // early would leave its quad neighbours with an undefined gradient.
             highp vec2 dzduv = vec2(0.0);
@@ -593,11 +646,19 @@ namespace carto::vt {
                 ref -= 0.5 * uShadowParams.x * (abs(dzduv.x) + abs(dzduv.y));
             }
         #endif
+            mediump float facing = smoothstep(0.0, 0.15, ndl);
             if (pos.x < 0.0 || pos.x > 1.0 || pos.y < 0.0 || pos.y > 1.0 || pos.z < 0.0 || pos.z > 1.0) {
                 // Outside every cascade: unshadowed rather than black - but the back-face rule
                 // below still applies, or the ground would brighten along a hard ring exactly where
                 // the last cascade ends.
-                return mix(1.0, smoothstep(0.0, 0.15, ndl), uShadowParams.y);
+                return mix(1.0, facing, uShadowParams.y);
+            }
+            // A surface turned away from the sun is in its own shadow whatever the map says, so the
+            // taps cannot change the answer: skipping them there is free. It is worth its own branch
+            // because that is a third of a hillside and about half of every building wall - the 3D
+            // pass is where this pays most.
+            if (facing <= 0.0) {
+                return mix(1.0, 0.0, uShadowParams.y);
             }
             // The constant bias grows as the surface turns away from the light, but only up to a
             // point: divided by N.L it runs away exactly where the shadows are - the slopes facing
@@ -608,14 +669,18 @@ namespace carto::vt {
             // the map, and the bias terms above stay in the units the derivatives produced.
             highp vec2 atlasScale = vec2(uShadowParams.w, 1.0);
             highp vec2 atlasBase = vec2(page * uShadowParams.w, 0.0);
+            // Four taps on the diagonals rather than a 3x3: the centre and the edge midpoints of a
+            // 3x3 carry almost the same answer as the corners, and the taps are the second cost of
+            // the lookup after the varyings. The spacing keeps the same penumbra width.
             mediump float lit = 0.0;
-            for (int j = -1; j <= 1; j++) {
-                for (int i = -1; i <= 1; i++) {
-                    highp vec2 offset = vec2(float(i) * o, float(j) * o);
+            highp float d = o * 0.75;
+            for (int j = 0; j < 2; j++) {
+                for (int i = 0; i < 2; i++) {
+                    highp vec2 offset = vec2(float(i) * 2.0 - 1.0, float(j) * 2.0 - 1.0) * d;
                     lit += ref + dot(offset, dzduv) <= shadowDepth(atlasBase + (pos.xy + offset) * atlasScale) ? 1.0 : 0.0;
                 }
             }
-            lit *= 1.0 / 9.0;
+            lit *= 0.25;
             // The outermost cascade ends somewhere - at the shadow distance, or at the point where
             // covering more ground would only coarsen every texel. Ending it abruptly draws a line
             // across the terrain, so the shadow fades out over the outer margin of the LAST page.
@@ -630,7 +695,7 @@ namespace carto::vt {
             // the map cannot say anything useful there anyway: its texels are seen edge-on, so the
             // depth stored for one covers the whole face. Shadowing those outright is both correct
             // and what makes it safe to keep the bias small everywhere else.
-            lit = min(lit, smoothstep(0.0, 0.15, ndl));
+            lit = min(lit, facing);
             return mix(1.0, lit, uShadowParams.y);
         }
         mediump float shadowFactor() {
