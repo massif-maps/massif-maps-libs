@@ -105,7 +105,11 @@ namespace carto::vt {
         // the most expensive thing a shadowed fragment does and the ground is drawn over the whole
         // screen, sometimes twice - once as the drape and once as the paint over it.
         SHADOW_MASK_OUT_FLAG = 65536,
-        SHADOW_MASK_IN_FLAG = 131072
+        SHADOW_MASK_IN_FLAG = 131072,
+        // One tap instead of the kernel. For 3D extrusion fragments: a wall is shadowed or lit over
+        // almost all of its area and its own silhouette is what the eye reads, so the kernel buys
+        // far less there than on terrain, where it is what makes a finite map look like a shadow.
+        SHADOW_SINGLE_TAP_FLAG = 262144
     };
 
     static const std::map<std::string, int> attribMap = {
@@ -197,7 +201,8 @@ namespace carto::vt {
         { SHADOW_CASCADES3_FLAG, "SHADOW_CASCADES_3" },
         { SHADOW_CASCADES4_FLAG, "SHADOW_CASCADES_4" },
         { SHADOW_MASK_OUT_FLAG, "SHADOW_MASK_OUT" },
-        { SHADOW_MASK_IN_FLAG, "SHADOW_MASK_IN" }
+        { SHADOW_MASK_IN_FLAG, "SHADOW_MASK_IN" },
+        { SHADOW_SINGLE_TAP_FLAG, "SHADOW_SINGLE_TAP" }
     };
 
     static const std::string textureFiltersFsh = R"GLSL(
@@ -700,10 +705,13 @@ namespace carto::vt {
             // the map, and the bias terms above stay in the units the derivatives produced.
             highp vec2 atlasScale = vec2(uShadowParams.w, 1.0);
             highp vec2 atlasBase = vec2(page * uShadowParams.w, 0.0);
+            mediump float lit = 0.0;
+        #ifdef SHADOW_SINGLE_TAP
+            lit = ref <= shadowDepth(atlasBase + pos.xy * atlasScale) ? 1.0 : 0.0;
+        #else
             // Four taps on the diagonals rather than a 3x3: the centre and the edge midpoints of a
             // 3x3 carry almost the same answer as the corners, and the taps are the second cost of
             // the lookup after the varyings. The spacing keeps the same penumbra width.
-            mediump float lit = 0.0;
             highp float d = o * 0.75;
             for (int j = 0; j < 2; j++) {
                 for (int i = 0; i < 2; i++) {
@@ -712,6 +720,7 @@ namespace carto::vt {
                 }
             }
             lit *= 0.25;
+        #endif
             // The outermost cascade ends somewhere - at the shadow distance, or at the point where
             // covering more ground would only coarsen every texel. Ending it abruptly draws a line
             // across the terrain, so the shadow fades out over the outer margin of the LAST page.

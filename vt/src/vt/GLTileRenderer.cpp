@@ -5221,7 +5221,10 @@ namespace carto::vt {
             // against a terrain surface pre-pass (renderGeometry3D seeds the 3D overlay's
             // depth buffer with it), so they need the same base-clearance slack as draped
             // 2D geometry - otherwise the lower walls are clipped by the ground on slopes.
-            shaderProgramPtr = &buildShaderProgram("polygon3d", polygon3DVsh, polygon3DFsh, LightingMode::GEOMETRY3D, RasterFilterMode::NONE, (styleParams.pattern ? PATTERN_FLAG : 0) | (styleParams.translate ? TRANSFORM_FLAG : 0) | (terrainVTF ? TERRAIN_VTF_FLAG | TERRAIN_FLAG : 0) | (shadowReceiver ? shadowReceiverFlags() : 0) | fogFlag());
+            // SHADOW_SINGLE_TAP: an extrusion cannot use the terrain's screen-space mask - that holds
+            // the ground's shadow, not its own - so it is the one receiver still running the kernel
+            // per fragment, over a wall that is shadowed or lit almost in one piece.
+            shaderProgramPtr = &buildShaderProgram("polygon3d", polygon3DVsh, polygon3DFsh, LightingMode::GEOMETRY3D, RasterFilterMode::NONE, (styleParams.pattern ? PATTERN_FLAG : 0) | (styleParams.translate ? TRANSFORM_FLAG : 0) | (terrainVTF ? TERRAIN_VTF_FLAG | TERRAIN_FLAG : 0) | (shadowReceiver ? shadowReceiverFlags() | SHADOW_SINGLE_TAP_FLAG : 0) | fogFlag());
             break;
         default:
             return;
