@@ -577,6 +577,9 @@ namespace massif::vt {
         void deleteDrapeResources();
         bool isDrapeableGeometry(TileGeometry::Type type) const;
         bool hasDrapeableContent(const RenderTileLayer& renderLayer) const;
+        // Element opacity a draped layer is baked with: the style's layer opacity, or 1 when the
+        // layer has a comp-op (which the bake can not reproduce).
+        float calculateDrapeOpacity(const RenderTileLayer& renderLayer) const;
         bool tileCovers(const TileId& tileId, const TileId& targetTileId) const;
         bool isTileDraped(const TileId& targetTileId) const;
         cglib::mat4x4<float> calculateDrapeMVPMatrix(const TileId& sourceTileId, const TileId& targetTileId) const;

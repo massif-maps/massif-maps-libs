@@ -4155,19 +4155,20 @@ namespace massif::vt {
                 // resolves source-vs-target overzoom); geometry is in source tile coordinates.
                 // Either may be coarser OR finer than the terrain tile, hence the sub-rect in
                 // each case.
+                float geometryOpacity = calculateDrapeOpacity(renderLayer);
                 drapeOrtho = calculateDrapeMVPMatrix(renderLayer.targetTileId, targetTileId);
                 for (const std::shared_ptr<TileBackground>& background : renderLayer.layer->getBackgrounds()) {
-                    renderTileBackground(renderLayer.targetTileId, 1.0f, 1.0f, renderLayer.tileSize, background);
+                    renderTileBackground(renderLayer.targetTileId, 1.0f, geometryOpacity, renderLayer.tileSize, background);
                     bakedPrimitives++;
                 }
                 for (const std::shared_ptr<TileBitmap>& bitmap : renderLayer.layer->getBitmaps()) {
-                    renderTileBitmap(renderLayer.sourceTileId, renderLayer.targetTileId, 1.0f, 1.0f, bitmap);
+                    renderTileBitmap(renderLayer.sourceTileId, renderLayer.targetTileId, 1.0f, geometryOpacity, bitmap);
                     bakedPrimitives++;
                 }
                 drapeOrtho = calculateDrapeMVPMatrix(renderLayer.sourceTileId, targetTileId);
                 for (const std::shared_ptr<TileGeometry>& geometry : renderLayer.layer->getGeometries()) {
                     if (isDrapeableGeometry(geometry->getType()) && isLayerDraped(renderLayer.layer)) {
-                        renderTileGeometry(renderLayer.sourceTileId, renderLayer.targetTileId, 1.0f, 1.0f, renderLayer.tileSize, geometry);
+                        renderTileGeometry(renderLayer.sourceTileId, renderLayer.targetTileId, 1.0f, geometryOpacity, renderLayer.tileSize, geometry);
                         bakedPrimitives++;
                     }
                 }
@@ -4635,6 +4636,17 @@ namespace massif::vt {
         return anyContent ? hash : 0;
     }
 
+    float GLTileRenderer::calculateDrapeOpacity(const RenderTileLayer& renderLayer) const {
+        // The style's own layer opacity, which the on-screen path passes as element opacity when
+        // the layer has no comp-op (see renderTileLayers). The bake used to hardcode 1.0 and drew
+        // every draped layer fully opaque. A comp-op layer needs the overlay buffer the bake has
+        // no equivalent of, so it keeps its current full-opacity behaviour.
+        if (!renderLayer.layer || renderLayer.layer->getCompOp()) {
+            return 1.0f;
+        }
+        return (renderLayer.layer->getOpacityFunc())(_viewState);
+    }
+
     bool GLTileRenderer::hasDrapeableContent(const RenderTileLayer& renderLayer) const {
         if (!renderLayer.layer || !isLayerDraped(renderLayer.layer)) {
             return false;
@@ -4761,19 +4773,20 @@ namespace massif::vt {
                 }
                 // Backgrounds and rasters draw the target tile's surface mesh (their own uv logic
                 // already resolves overzoom).
+                float geometryOpacity = calculateDrapeOpacity(renderLayer);
                 drapeOrtho = calculateDrapeMVPMatrix(renderLayer.targetTileId, targetTileId);
                 for (const std::shared_ptr<TileBackground>& background : renderLayer.layer->getBackgrounds()) {
-                    renderTileBackground(renderLayer.targetTileId, 1.0f, 1.0f, renderLayer.tileSize, background);
+                    renderTileBackground(renderLayer.targetTileId, 1.0f, geometryOpacity, renderLayer.tileSize, background);
                 }
                 for (const std::shared_ptr<TileBitmap>& bitmap : renderLayer.layer->getBitmaps()) {
-                    renderTileBitmap(renderLayer.sourceTileId, renderLayer.targetTileId, 1.0f, 1.0f, bitmap);
+                    renderTileBitmap(renderLayer.sourceTileId, renderLayer.targetTileId, 1.0f, geometryOpacity, bitmap);
                 }
                 // Geometry vertices are in SOURCE tile-local coordinates, so an overzoomed layer
                 // needs the sub-rect transform to land on the target tile's texture.
                 drapeOrtho = calculateDrapeMVPMatrix(renderLayer.sourceTileId, targetTileId);
                 for (const std::shared_ptr<TileGeometry>& geometry : renderLayer.layer->getGeometries()) {
                     if (isDrapeableGeometry(geometry->getType())) {
-                        renderTileGeometry(renderLayer.sourceTileId, renderLayer.targetTileId, 1.0f, 1.0f, renderLayer.tileSize, geometry);
+                        renderTileGeometry(renderLayer.sourceTileId, renderLayer.targetTileId, 1.0f, geometryOpacity, renderLayer.tileSize, geometry);
                     }
                 }
             }
