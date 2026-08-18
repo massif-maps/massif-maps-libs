@@ -227,6 +227,10 @@ namespace massif::vt {
         // True once an ESSL 3.00 program failed to build and its 1.00 fallback was used instead.
         // Sticky - the owner logs it once rather than every frame.
         bool hasShaderVersionFallback() const { return _essl3Failed; }
+        // Caster tiles skipped because their elevation was not loaded - they would otherwise be
+        // drawn as a flat sea-level plane. Tells a missing shadow caused by a tile that was never
+        // asked for apart from one clipped by the light box. Reading it clears it.
+        int consumeShadowCastersMissingElevation() { int n = _shadowCastersMissingElevation; _shadowCastersMissingElevation = 0; return n; }
         void setTerrainShadowMap(GLuint texture, int mapSize, int cascades, const std::array<float, MAX_SHADOW_CASCADES>& depthBiases, float strength, float softness, bool depthTexture, bool hardwarePCF, float normalOffset, const cglib::vec3<float>& sunDir, const std::array<cglib::mat4x4<double>, MAX_SHADOW_CASCADES>& lightViewProjs);
         // Light-space view-projection fitted to the given terrain tiles; false if the set is empty
         // or no elevation is loaded. minHeight/maxHeight bound the shadowed volume - a generous slab
@@ -709,6 +713,7 @@ namespace massif::vt {
         float _terrainShadowSoftness = 1.0f;
         bool _terrainShadowDepthTexture = false; // the map is the depth buffer, not a packed copy
         bool _terrainShadowHardwarePCF = false;  // ... and it is sampled through a comparison sampler
+        int _shadowCastersMissingElevation = 0;
         mutable bool _essl3Failed = false;       // an ESSL 3.00 program did not build; see hasShaderVersionFallback
         float _terrainShadowNormalOffset = 3.0f; // in shadow-map texels; mapbox's default
         cglib::vec3<float> _terrainShadowSunDir = cglib::vec3<float>(0.0f, 0.0f, 1.0f);

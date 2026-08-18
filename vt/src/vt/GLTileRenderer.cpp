@@ -613,6 +613,7 @@ namespace massif::vt {
                     // is not the terrain it stands for and is not what the receiver uses either (a
                     // tile without elevation receives no shadow at all).
                     if (!setupTerrainUniforms(shaderProgram, tileId, surfaceFrame, true)) {
+                        _shadowCastersMissingElevation++;
                         continue;
                     }
                     glUniformMatrix4fv(shaderProgram.uniforms[U_MVPMATRIX], 1, GL_FALSE, mvpMatrix.data());
