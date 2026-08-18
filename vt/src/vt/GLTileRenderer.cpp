@@ -291,7 +291,7 @@ namespace massif::vt {
         _tileMasks = mode;
     }
 
-    void GLTileRenderer::setTerrainShadowMap(GLuint texture, int mapSize, int cascades, const std::array<float, MAX_SHADOW_CASCADES>& depthBiases, float strength, float softness, float normalOffset, const cglib::vec3<float>& sunDir, const std::array<cglib::mat4x4<double>, MAX_SHADOW_CASCADES>& lightViewProjs) {
+    void GLTileRenderer::setTerrainShadowMap(GLuint texture, int mapSize, int cascades, const std::array<float, MAX_SHADOW_CASCADES>& depthBiases, float strength, float softness, bool depthTexture, float normalOffset, const cglib::vec3<float>& sunDir, const std::array<cglib::mat4x4<double>, MAX_SHADOW_CASCADES>& lightViewProjs) {
         std::lock_guard<std::mutex> lock(_mutex);
 
         _terrainShadowTexture = texture;
@@ -300,6 +300,7 @@ namespace massif::vt {
         _terrainShadowBiases = depthBiases;
         _terrainShadowStrength = strength;
         _terrainShadowSoftness = softness;
+        _terrainShadowDepthTexture = depthTexture;
         _terrainShadowNormalOffset = normalOffset;
         _terrainShadowSunDir = sunDir;
         _terrainShadowViewProjs = lightViewProjs;
@@ -1999,7 +2000,7 @@ namespace massif::vt {
         unsigned int cascadeFlag = (_terrainShadowCascades >= 4 ? SHADOW_CASCADES4_FLAG :
                                     _terrainShadowCascades == 3 ? SHADOW_CASCADES3_FLAG :
                                     _terrainShadowCascades == 2 ? SHADOW_CASCADES2_FLAG : 0);
-        return TERRAIN_SHADOW_FLAG | DERIVATIVES_FLAG | cascadeFlag;
+        return TERRAIN_SHADOW_FLAG | DERIVATIVES_FLAG | cascadeFlag | (_terrainShadowDepthTexture ? SHADOW_DEPTH_TEXTURE_FLAG : 0);
     }
 
     void GLTileRenderer::warmTerrainRasterShader() {

@@ -113,7 +113,10 @@ namespace massif::vt {
         // One tap instead of the kernel. For 3D extrusion fragments: a wall is shadowed or lit over
         // almost all of its area and its own silhouette is what the eye reads, so the kernel buys
         // far less there than on terrain, where it is what makes a finite map look like a shadow.
-        SHADOW_SINGLE_TAP_FLAG = 262144
+        SHADOW_SINGLE_TAP_FLAG = 262144,
+        // The shadow map IS the depth buffer, sampled directly, instead of a packed-RGB copy of it
+        // in a colour texture. Everything ES3-class; the packed path stays for the rest.
+        SHADOW_DEPTH_TEXTURE_FLAG = 524288
     };
 
     static const std::map<std::string, int> attribMap = {
@@ -210,7 +213,8 @@ namespace massif::vt {
         { SHADOW_CASCADES4_FLAG, "SHADOW_CASCADES_4" },
         { SHADOW_MASK_OUT_FLAG, "SHADOW_MASK_OUT" },
         { SHADOW_MASK_IN_FLAG, "SHADOW_MASK_IN" },
-        { SHADOW_SINGLE_TAP_FLAG, "SHADOW_SINGLE_TAP" }
+        { SHADOW_SINGLE_TAP_FLAG, "SHADOW_SINGLE_TAP" },
+        { SHADOW_DEPTH_TEXTURE_FLAG, "SHADOW_DEPTH_TEXTURE" }
     };
 
     static const std::string textureFiltersFsh = R"GLSL(
@@ -657,8 +661,13 @@ namespace massif::vt {
         // independent constant plus the caller's bias. The uv is in ATLAS space: the cascades are
         // pages of one texture, side by side, near page first.
         highp float shadowDepth(highp vec2 uv) {
+        #ifdef SHADOW_DEPTH_TEXTURE
+            // The depth buffer itself: no packing to undo, and the caster pass wrote no colour.
+            return texture2D(uShadowTexture, uv).r;
+        #else
             highp vec4 enc = texture2D(uShadowTexture, uv);
             return dot(enc.rgb, vec3(1.0, 1.0 / 255.0, 1.0 / 65025.0));
+        #endif
         }
         // 3x3 PCF over a radius in shadow-map texels. One shadow texel covers many metres of
         // ground, so a single tap gives hard stair-stepped edges; averaging over a small kernel is

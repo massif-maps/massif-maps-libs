@@ -224,7 +224,7 @@ namespace massif::vt {
         // Directional shadows. The owner renders the caster pass (renderShadowCasters) into its
         // own framebuffer from the light, then hands the packed-depth texture and the same
         // light matrix back here so the draped surface can look itself up in it.
-        void setTerrainShadowMap(GLuint texture, int mapSize, int cascades, const std::array<float, MAX_SHADOW_CASCADES>& depthBiases, float strength, float softness, float normalOffset, const cglib::vec3<float>& sunDir, const std::array<cglib::mat4x4<double>, MAX_SHADOW_CASCADES>& lightViewProjs);
+        void setTerrainShadowMap(GLuint texture, int mapSize, int cascades, const std::array<float, MAX_SHADOW_CASCADES>& depthBiases, float strength, float softness, bool depthTexture, float normalOffset, const cglib::vec3<float>& sunDir, const std::array<cglib::mat4x4<double>, MAX_SHADOW_CASCADES>& lightViewProjs);
         // Light-space view-projection fitted to the given terrain tiles; false if the set is empty
         // or no elevation is loaded. minHeight/maxHeight bound the shadowed volume - a generous slab
         // is what makes a low sun pixelated, since the box is fitted around it. The box is snapped
@@ -704,6 +704,7 @@ namespace massif::vt {
         bool _terrainShadowMaskPass = false; // the draw that produces the mask, not one that reads it
         float _terrainShadowStrength = 0.0f;
         float _terrainShadowSoftness = 1.0f;
+        bool _terrainShadowDepthTexture = false; // the map is the depth buffer, not a packed copy
         float _terrainShadowNormalOffset = 3.0f; // in shadow-map texels; mapbox's default
         cglib::vec3<float> _terrainShadowSunDir = cglib::vec3<float>(0.0f, 0.0f, 1.0f);
         unsigned int _warmedRasterShaderFlags = 0; // flag set warmTerrainRasterShader last built for (0 = none)
