@@ -233,7 +233,7 @@ namespace massif::vt {
         // is what makes a low sun pixelated, since the box is fitted around it. The box is snapped
         // to a world lattice of whole mapSize texels, so it repeats within one step. One call per
         // cascade, each covering its own slice of the view distance.
-        bool calculateShadowViewProj(const std::vector<TileId>& tileIds, const std::vector<TileId>& casterTileIds, const cglib::vec3<float>& sunDir, const std::vector<std::pair<double, double> >& tileHeights, double minHeight, double maxHeight, float distanceFactor, int mapSize, int cascade, int cascadeCount, std::vector<TileId>& boxCasterTileIds, double& depthRangeMeters, double& texelMeters, cglib::mat4x4<double>& lightViewProj) const;
+        bool calculateShadowViewProj(const std::vector<TileId>& tileIds, const std::vector<TileId>& casterTileIds, const cglib::vec3<float>& sunDir, const std::vector<std::pair<double, double> >& tileHeights, double minHeight, double maxHeight, float distanceFactor, double cameraDistance, int mapSize, int cascade, int cascadeCount, std::vector<TileId>& boxCasterTileIds, double& depthRangeMeters, double& texelMeters, cglib::mat4x4<double>& lightViewProj) const;
         // The terrain's shadow resolved once per screen pixel, into a half-resolution mask the
         // surface draws then sample by screen position instead of computing it each time.
         void setTerrainShadowMask(GLuint texture, float invScreenWidth, float invScreenHeight);
