@@ -5312,6 +5312,9 @@ namespace massif::vt {
                 uvScale *= zoomScale;
             }
             glUniform2f(shaderProgram.uniforms[U_UVSCALE], uvScale(0), uvScale(1));
+            // Which slots of this draw are patterned: a polygon geometry now carries plain fills
+            // alongside the patterned ones instead of being split at every alternation.
+            glUniform1fv(shaderProgram.uniforms[U_PATTERNTABLE], styleParams.parameterCount, styleParams.patternScales.data());
 
             const CompiledBitmap& compiledBitmap = buildCompiledBitmap(styleParams.pattern->bitmap, geometry->getType() != TileGeometry::Type::LINE);
             glActiveTexture(GL_TEXTURE0);
