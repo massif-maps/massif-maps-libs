@@ -3184,7 +3184,10 @@ namespace massif::vt {
                 continue;
             }
 
-            const std::shared_ptr<const Bitmap>& labelBitmap = labelStyle->glyphMap->getBitmapPattern()->bitmap;
+            // Held by value for the whole iteration: getBitmapPattern returns a temporary, a tile
+            // thread can reset the map's pattern, and a reference through its -> is not extended.
+            std::shared_ptr<const BitmapPattern> labelPattern = labelStyle->glyphMap->getBitmapPattern();
+            const std::shared_ptr<const Bitmap>& labelBitmap = labelPattern->bitmap;
             if (lastLabelStyle != labelStyle) {
                 cglib::vec4<float> color = cglib::vec4<float>(evaluateColorFunc(labelStyle->colorFunc).rgba());
                 float size = evaluateFloatFunc(labelStyle->sizeFunc);
