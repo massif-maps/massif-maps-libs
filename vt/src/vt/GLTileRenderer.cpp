@@ -291,7 +291,7 @@ namespace massif::vt {
         _tileMasks = mode;
     }
 
-    void GLTileRenderer::setTerrainShadowMap(GLuint texture, int mapSize, int cascades, const std::array<float, MAX_SHADOW_CASCADES>& depthBiases, float strength, float softness, const std::array<cglib::mat4x4<double>, MAX_SHADOW_CASCADES>& lightViewProjs) {
+    void GLTileRenderer::setTerrainShadowMap(GLuint texture, int mapSize, int cascades, const std::array<float, MAX_SHADOW_CASCADES>& depthBiases, float strength, float softness, float normalOffset, const cglib::vec3<float>& sunDir, const std::array<cglib::mat4x4<double>, MAX_SHADOW_CASCADES>& lightViewProjs) {
         std::lock_guard<std::mutex> lock(_mutex);
 
         _terrainShadowTexture = texture;
@@ -300,6 +300,8 @@ namespace massif::vt {
         _terrainShadowBiases = depthBiases;
         _terrainShadowStrength = strength;
         _terrainShadowSoftness = softness;
+        _terrainShadowNormalOffset = normalOffset;
+        _terrainShadowSunDir = sunDir;
         _terrainShadowViewProjs = lightViewProjs;
         // Pages beyond the cascade count do not exist in the atlas, and the receiver lookup is
         // compiled for the count (see shadowReceiverFlags), so those slots are never uploaded and
@@ -2028,6 +2030,44 @@ namespace massif::vt {
         return shadowReceiverFlags() | (_terrainShadowMaskTexture != 0 ? SHADOW_MASK_IN_FLAG : 0);
     }
 
+    void GLTileRenderer::setupShadowNormalOffsetUniforms(const ShaderProgram& shaderProgram, const cglib::mat4x4<double>& tileFrame) const {
+        cglib::vec4<float> offsets = calculateShadowNormalOffsets(tileFrame);
+        glUniform4f(shaderProgram.uniforms[U_SHADOWNORMALOFFSET], offsets(0), offsets(1), offsets(2), offsets(3));
+        glUniform3f(shaderProgram.uniforms[U_SHADOWSUNDIR], _terrainShadowSunDir(0), _terrainShadowSunDir(1), _terrainShadowSunDir(2));
+    }
+
+    cglib::vec4<float> GLTileRenderer::calculateShadowNormalOffsets(const cglib::mat4x4<double>& tileFrame) const {
+        // The normal offset is a number of shadow-map TEXELS, and the shader adds it to a
+        // tile-local position. One texel is (box width / mapSize) in world units, and the box width
+        // is read straight off the light matrix: its ortho part scales x by 2/(r-l), and the view
+        // part is a pure rotation, so the first row's LENGTH is that scale. Reading it back here
+        // instead of threading it through the caller keeps the two in step by construction.
+        cglib::vec4<float> offsets(0.0f, 0.0f, 0.0f, 0.0f);
+        double tileScale = cglib::length(cglib::vec3<double>(tileFrame(0, 0), tileFrame(0, 1), tileFrame(0, 2)));
+        if (!(tileScale > 0) || !(_terrainShadowNormalOffset > 0) || _terrainShadowMapSize <= 0) {
+            return offsets;
+        }
+        // CLAMPED to the near cascade's offset, not each cascade's own. The offset moves the sample
+        // across the shadow map, so on the far cascade - whose texel is metres of ground - three of
+        // them walk a roof out of the mountain shadow it stands in, and the further the value is
+        // raised the more of the roof loses it. mapbox does not hit this: two cascades over a
+        // shorter range, so their worst texel is small. Acne is a NEAR-surface problem anyway.
+        double nearOffsetWorld = 0;
+        for (int i = 0; i < _terrainShadowCascades; i++) {
+            const cglib::mat4x4<double>& m = _terrainShadowViewProjs[i];
+            double boxScale = cglib::length(cglib::vec3<double>(m(0, 0), m(0, 1), m(0, 2)));
+            if (!(boxScale > 0)) {
+                continue;
+            }
+            double offsetWorld = _terrainShadowNormalOffset * 2.0 / (boxScale * _terrainShadowMapSize);
+            if (i == 0) {
+                nearOffsetWorld = offsetWorld;
+            }
+            offsets[i] = static_cast<float>(std::min(offsetWorld, nearOffsetWorld) / tileScale);
+        }
+        return offsets;
+    }
+
     void GLTileRenderer::setupSurfaceShadowUniforms(const ShaderProgram& shaderProgram, const cglib::mat4x4<double>& surfaceFrame, bool hasElevation) {
         if (!_terrainShadowMaskPass && _terrainShadowMaskTexture != 0) {
             glActiveTexture(GL_TEXTURE2);
@@ -2042,6 +2082,7 @@ namespace massif::vt {
             shadowMatrices[i] = cglib::mat4x4<float>::convert(_terrainShadowViewProjs[i] * surfaceFrame);
         }
         glUniformMatrix4fv(shaderProgram.uniforms[U_SHADOWMATRIX], _terrainShadowCascades, GL_FALSE, shadowMatrices[0].data());
+        setupShadowNormalOffsetUniforms(shaderProgram, surfaceFrame);
         glActiveTexture(GL_TEXTURE2);
         glBindTexture(GL_TEXTURE_2D, _terrainShadowTexture);
         glUniform1i(shaderProgram.uniforms[U_SHADOWTEXTURE], 2);
@@ -5303,6 +5344,7 @@ namespace massif::vt {
                 shadowMatrices[i] = cglib::mat4x4<float>::convert(_terrainShadowViewProjs[i] * shadowFrame);
             }
             glUniformMatrix4fv(shaderProgram.uniforms[U_SHADOWMATRIX], _terrainShadowCascades, GL_FALSE, shadowMatrices[0].data());
+            setupShadowNormalOffsetUniforms(shaderProgram, shadowFrame);
             glActiveTexture(GL_TEXTURE2);
             glBindTexture(GL_TEXTURE_2D, _terrainShadowTexture);
             glUniform1i(shaderProgram.uniforms[U_SHADOWTEXTURE], 2);

@@ -66,6 +66,8 @@ namespace massif::vt {
         U_SHADOWTEXTURE,
         U_SHADOWPARAMS,
         U_SHADOWBIAS,
+        U_SHADOWNORMALOFFSET,
+        U_SHADOWSUNDIR,
         U_SHADOWMASK,
         U_SHADOWMASKSCALE,
         U_FOGCOLOR,
@@ -172,6 +174,8 @@ namespace massif::vt {
         { "uShadowTexture",     U_SHADOWTEXTURE },
         { "uShadowParams",      U_SHADOWPARAMS },
         { "uShadowBias",        U_SHADOWBIAS },
+        { "uShadowNormalOffset", U_SHADOWNORMALOFFSET },
+        { "uShadowSunDir",      U_SHADOWSUNDIR },
         { "uShadowMask",        U_SHADOWMASK },
         { "uShadowMaskScale",   U_SHADOWMASKSCALE },
         { "uFogColor",          U_FOGCOLOR },
@@ -314,6 +318,8 @@ namespace massif::vt {
         #endif
         #if defined(TERRAIN_SHADOW) && defined(SHADOW_MASK_IN)
         // The mask is sampled by screen position, so nothing has to be carried per vertex.
+        void applyShadowPos(highp vec3 pos, mediump vec3 normal) {
+        }
         void applyShadowPos(highp vec3 pos) {
         }
         #elif defined(TERRAIN_SHADOW)
@@ -333,6 +339,15 @@ namespace massif::vt {
         // conditionally on something only the fragment stage knows. Compiled for the cascade count
         // in use, because each one is a matrix per vertex and a highp varying per fragment.
         uniform highp mat4 uShadowMatrix[SHADOW_CASCADES];
+        // NORMAL OFFSET, mapbox's model (3d-style/shaders/_prelude_shadow.vertex.glsl): the point
+        // looked up in the shadow map is pushed OUT ALONG ITS OWN NORMAL, per cascade, in tile-local
+        // units. Acne then goes away by moving the sample sideways instead of by lifting its depth,
+        // so the depth bias can stay small and the shadow stays ATTACHED to the wall that casts it -
+        // which is the whole difference on a building. A dedicated sun uniform: uSunDir belongs to
+        // the fragment stage here, and one name declared in two blocks of the same stage is a link
+        // error.
+        uniform mediump vec4 uShadowNormalOffset;
+        uniform mediump vec3 uShadowSunDir;
         varying highp vec3 vShadowPos0;
         #if SHADOW_CASCADES >= 2
         varying highp vec3 vShadowPos1;
@@ -343,23 +358,34 @@ namespace massif::vt {
         #if SHADOW_CASCADES >= 4
         varying highp vec3 vShadowPos3;
         #endif
-        void applyShadowPos(highp vec3 pos) {
-            highp vec4 clip0 = uShadowMatrix[0] * vec4(pos, 1.0);
+        void applyShadowPos(highp vec3 pos, mediump vec3 normal) {
+            // Scaled by how far the surface faces AWAY from the sun: a face lit head-on needs
+            // almost no offset, a grazing one needs the full texel. mapbox's curve verbatim.
+            mediump float dotScale = min(1.0 - dot(normal, uShadowSunDir), 1.0) * 0.5 + 0.5;
+            mediump vec3 offset = normal * dotScale;
+            highp vec4 clip0 = uShadowMatrix[0] * vec4(pos + offset * uShadowNormalOffset.x, 1.0);
             vShadowPos0 = clip0.xyz / clip0.w * 0.5 + 0.5;
         #if SHADOW_CASCADES >= 2
-            highp vec4 clip1 = uShadowMatrix[1] * vec4(pos, 1.0);
+            highp vec4 clip1 = uShadowMatrix[1] * vec4(pos + offset * uShadowNormalOffset.y, 1.0);
             vShadowPos1 = clip1.xyz / clip1.w * 0.5 + 0.5;
         #endif
         #if SHADOW_CASCADES >= 3
-            highp vec4 clip2 = uShadowMatrix[2] * vec4(pos, 1.0);
+            highp vec4 clip2 = uShadowMatrix[2] * vec4(pos + offset * uShadowNormalOffset.z, 1.0);
             vShadowPos2 = clip2.xyz / clip2.w * 0.5 + 0.5;
         #endif
         #if SHADOW_CASCADES >= 4
-            highp vec4 clip3 = uShadowMatrix[3] * vec4(pos, 1.0);
+            highp vec4 clip3 = uShadowMatrix[3] * vec4(pos + offset * uShadowNormalOffset.w, 1.0);
             vShadowPos3 = clip3.xyz / clip3.w * 0.5 + 0.5;
         #endif
         }
+        // No normal to hand: the terrain surface and draped content take their N.L from the DEM in
+        // the fragment stage, where a vertex offset cannot reach. A zero normal is a zero offset.
+        void applyShadowPos(highp vec3 pos) {
+            applyShadowPos(pos, vec3(0.0));
+        }
         #else
+        void applyShadowPos(highp vec3 pos, mediump vec3 normal) {
+        }
         void applyShadowPos(highp vec3 pos) {
         }
         #endif
@@ -1859,8 +1885,8 @@ namespace massif::vt {
             pos = vec3(uTransformMatrix * vec4(pos, 1.0));
         #endif
             pos = applyTerrain(pos) + aVertexNormal * (aVertexHeight * uHeightScale);
-            applyShadowPos(pos);
             vec3 normal = normalize(sideVertex > 0.0 ? aVertexBinormal : aVertexNormal);
+            applyShadowPos(pos, normal);
         #ifdef TERRAIN_SHADOW
             vShadowNormal = normal;
         #endif
