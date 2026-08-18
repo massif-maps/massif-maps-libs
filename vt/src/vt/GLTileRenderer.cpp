@@ -134,9 +134,11 @@ namespace {
 }
 
 namespace massif::vt {
-    // The widest shadow texel that still reads as a shadow rather than a wash, in metres. It bounds
-    // how far the shadowed ground may reach for a given map resolution (see calculateShadowViewProj).
-    static constexpr double TARGET_SHADOW_TEXEL_METERS = 10.0;
+    // How far shadows reach, as a multiple of the camera-to-focus distance. mapbox's model verbatim
+    // (3d-style/render/shadow_renderer.ts: cameraToCenterDistance * 1.5 * 3.0). A METRIC radius
+    // cannot hold at two zooms - the budget this replaces was 10 m x mapSize, i.e. ~10 km at every
+    // camera, which ended a mountain's shadow one screen away at z12.
+    static constexpr double SHADOW_CUTOUT_DISTANCE_FACTOR = 4.5;
     GLTileRenderer::GLTileRenderer(std::shared_ptr<GLExtensions> glExtensions, std::shared_ptr<const TileTransformer> transformer, float scale) :
         _tileSurfaceBuilder(transformer), _glExtensions(std::move(glExtensions)), _transformer(std::move(transformer)), _scale(scale)
     {
@@ -337,7 +339,7 @@ namespace massif::vt {
         resetProgramState();
     }
 
-    bool GLTileRenderer::calculateShadowViewProj(const std::vector<TileId>& tileIds, const std::vector<TileId>& casterTileIds, const cglib::vec3<float>& sunDir, const std::vector<std::pair<double, double> >& tileHeights, double minHeight, double maxHeight, float maxDistanceMeters, int mapSize, int cascade, int cascadeCount, std::vector<TileId>& boxCasterTileIds, double& depthRangeMeters, double& texelMeters, cglib::mat4x4<double>& lightViewProj) const {
+    bool GLTileRenderer::calculateShadowViewProj(const std::vector<TileId>& tileIds, const std::vector<TileId>& casterTileIds, const cglib::vec3<float>& sunDir, const std::vector<std::pair<double, double> >& tileHeights, double minHeight, double maxHeight, float distanceFactor, int mapSize, int cascade, int cascadeCount, std::vector<TileId>& boxCasterTileIds, double& depthRangeMeters, double& texelMeters, cglib::mat4x4<double>& lightViewProj) const {
         std::lock_guard<std::mutex> lock(_mutex);
 
         if (tileIds.empty()) {
@@ -401,7 +403,11 @@ namespace massif::vt {
             bool visFirst = true;
             groundPolygon.clear();
             cglib::mat4x4<double> invCameraProj = cglib::inverse(_viewState.projectionMatrix * _viewState.cameraMatrix);
-            double maxDistance = (maxDistanceMeters > 0 ? maxDistanceMeters * metersToInternal : 0);
+            // The cutout is a distance from the CAMERA, in multiples of the camera-to-focus
+            // distance. That distance follows the zoom alone, so the same factor holds from a city
+            // to a massif; 0 only when the application never set it, and the fit then falls back to
+            // the ground the cover spans.
+            double maxDistance = (_viewState.focusDistance > 0 ? (distanceFactor > 0 ? distanceFactor : SHADOW_CUTOUT_DISTANCE_FACTOR) * _viewState.focusDistance : 0);
             const cglib::vec3<double>& eye = _viewState.origin; // camera position in world units
             // Each frustum edge, reduced to the piece that can see shadowed GROUND. The footprint is
             // built from the sampled rays' distance RANGE and opening ANGLE, not from the rays
@@ -446,10 +452,13 @@ namespace massif::vt {
                     double cosAngle = std::min(1.0, std::max(-1.0, cglib::dot_product(unitHorizontal, viewDir)));
                     halfAngle = std::max(halfAngle, std::acos(cosAngle));
                 }
+                // The cutout is NOT applied here. Clamping the ray before the slab test dropped
+                // every ray whose slab crossing started beyond the cutout - which is every one of
+                // them from a high oblique camera, where the eye is further from the ground than
+                // the cutout is long. The range then came out empty and the fit fell back to the
+                // whole tile cover: one enormous box per cascade, i.e. shadows everywhere and
+                // square. It belongs on the resulting ground RANGE, below.
                 double t0 = 0, t1 = 1;
-                if (maxDistance > 0 && length > maxDistance) {
-                    t1 = maxDistance / length; // cap the far end at the shadow distance
-                }
                 if (std::abs(delta(2)) > 1.0e-12) {
                     double ta = (minZ - p0(2)) / delta(2), tb = (maxZ - p0(2)) / delta(2);
                     t0 = std::max(t0, std::min(ta, tb));
@@ -480,36 +489,11 @@ namespace massif::vt {
             }
             // Cap how far the shadowed ground reaches: unbounded it runs to the horizon at a tilt
             // (measured 176 km of box at tilt 39 against 12 km at tilt 35 - four degrees apart), and
-            // texel size follows the extent almost linearly. The unit is relief/tan(altitude), the
-            // distance a ridge throws its shadow, i.e. the scale over which shadows carry
-            // information. Three of them, because groundNear is a distance from the EYE (15 km up at
-            // zoom 11) and one ended the shadows just past the bottom of the screen.
-            if (groundFar > groundNear) {
-                cglib::vec3<double> sunUnit = cglib::unit(cglib::vec3<double>(sunDir(0), sunDir(1), sunDir(2)));
-                double horizontal = std::sqrt(std::max(0.0, 1.0 - sunUnit(2) * sunUnit(2)));
-                double slabExtent = (maxZ - minZ) * horizontal / std::max(0.05, std::abs(sunUnit(2)));
-                // The second term is what makes this scale with the VIEW rather than being a fixed
-                // number of kilometres. groundNear is the distance to the nearest visible ground,
-                // so it grows both as the camera rises and as the view tilts towards the horizon -
-                // exactly the two ways the useful shadow range grows. A fixed 8 km floor meant that
-                // zooming into a city still spent the map on 8 km of ground while the camera was
-                // 400 m up: 8 m texels against buildings 10-30 m wide, which is why building
-                // shadows were blobs and got worse the more the view was tilted. At z16 this gives
-                // about a kilometre and a metre-scale texel instead.
-                double allowedGround = std::min(std::max(3.0 * slabExtent, 4.0 * groundNear), 60000.0 * metersToInternal);
-                // And never further than the map can REPRESENT. The outer cascade's texel is its
-                // extent over the resolution, so shadowing 50 km through a 1024 page buys texels
-                // wider than the ridges casting into them - a grey wash, not a shadow. Bounding the
-                // range by (target texel x resolution) instead ties how far shadows reach to how
-                // well they can be drawn, which is what the eye reads. Measured on the Crosscall,
-                // z14 tilt 30: 3.3/13.1/52.6 m texels and 205 caster tiles unbounded, against
-                // 1.2/1.9/8.4 m and 110 tiles here, with nothing visibly lost in the distance.
-                allowedGround = std::min(allowedGround, TARGET_SHADOW_TEXEL_METERS * metersToInternal * std::max(1, mapSize));
-                allowedGround = std::max(allowedGround, 1000.0 * metersToInternal);
-                if (maxDistance > 0) {
-                    allowedGround = maxDistance; // an explicit distance is the caller's decision
-                }
-                groundFar = std::min(groundFar, groundNear + allowedGround);
+            // texel size follows the extent almost linearly. The cutout is a distance from the eye,
+            // as groundFar is, so it applies directly. The guard keeps a factor below 1 - which
+            // would put the cutout in front of the visible ground - from emptying the range.
+            if (groundFar > groundNear && maxDistance > groundNear) {
+                groundFar = std::min(groundFar, maxDistance);
             }
             // Split the GROUND distance range, not the raw frustum: above a mountain the first
             // kilometres of every edge are air, and a cascade cut from the frustum owns only sky.
@@ -592,20 +576,22 @@ namespace massif::vt {
             // of tiles around the focus while the near slice sits in front of them), and cascade 0
             // returning false takes every shadow on screen with it. Measured: z16 tilt 50 over
             // Grenoble, 4 drape tiles, "shadows WANTED BUT UNAVAILABLE" and a black-and-white map.
+            double trimMinX = minX, trimMaxX = maxX, trimMinY = minY, trimMaxY = maxY;
             if (!visFirst) {
-                double trimMinX = std::max(minX, visMinX), trimMaxX = std::min(maxX, visMaxX);
-                double trimMinY = std::max(minY, visMinY), trimMaxY = std::min(maxY, visMaxY);
-                if (trimMaxX > trimMinX && trimMaxY > trimMinY) {
-                    minX = trimMinX; maxX = trimMaxX;
-                    minY = trimMinY; maxY = trimMaxY;
-                }
-            } else if (maxDistance > 0) {
-                double trimMinX = std::max(minX, eye(0) - maxDistance), trimMaxX = std::min(maxX, eye(0) + maxDistance);
-                double trimMinY = std::max(minY, eye(1) - maxDistance), trimMaxY = std::min(maxY, eye(1) + maxDistance);
-                if (trimMaxX > trimMinX && trimMaxY > trimMinY) {
-                    minX = trimMinX; maxX = trimMaxX;
-                    minY = trimMinY; maxY = trimMaxY;
-                }
+                trimMinX = std::max(trimMinX, visMinX); trimMaxX = std::min(trimMaxX, visMaxX);
+                trimMinY = std::max(trimMinY, visMinY); trimMaxY = std::min(trimMaxY, visMaxY);
+            }
+            // Missing the cover entirely - or no footprint at all - must NOT leave the whole cover
+            // standing: an unbounded box is a hundred kilometres of ground through one page, which
+            // reads as shadows everywhere and square. The cutout radius around the camera is the
+            // conservative answer.
+            if (!(trimMaxX > trimMinX && trimMaxY > trimMinY) && maxDistance > 0) {
+                trimMinX = std::max(minX, eye(0) - maxDistance); trimMaxX = std::min(maxX, eye(0) + maxDistance);
+                trimMinY = std::max(minY, eye(1) - maxDistance); trimMaxY = std::min(maxY, eye(1) + maxDistance);
+            }
+            if (trimMaxX > trimMinX && trimMaxY > trimMinY) {
+                minX = trimMinX; maxX = trimMaxX;
+                minY = trimMinY; maxY = trimMaxY;
             }
             if (maxX <= minX || maxY <= minY) {
                 texelMeters = -5; // the drawn tiles themselves are degenerate: nothing to shadow
