@@ -224,7 +224,10 @@ namespace massif::vt {
         // Directional shadows. The owner renders the caster pass (renderShadowCasters) into its
         // own framebuffer from the light, then hands the packed-depth texture and the same
         // light matrix back here so the draped surface can look itself up in it.
-        void setTerrainShadowMap(GLuint texture, int mapSize, int cascades, const std::array<float, MAX_SHADOW_CASCADES>& depthBiases, float strength, float softness, bool depthTexture, float normalOffset, const cglib::vec3<float>& sunDir, const std::array<cglib::mat4x4<double>, MAX_SHADOW_CASCADES>& lightViewProjs);
+        // True once an ESSL 3.00 program failed to build and its 1.00 fallback was used instead.
+        // Sticky - the owner logs it once rather than every frame.
+        bool hasShaderVersionFallback() const { return _essl3Failed; }
+        void setTerrainShadowMap(GLuint texture, int mapSize, int cascades, const std::array<float, MAX_SHADOW_CASCADES>& depthBiases, float strength, float softness, bool depthTexture, bool hardwarePCF, float normalOffset, const cglib::vec3<float>& sunDir, const std::array<cglib::mat4x4<double>, MAX_SHADOW_CASCADES>& lightViewProjs);
         // Light-space view-projection fitted to the given terrain tiles; false if the set is empty
         // or no elevation is loaded. minHeight/maxHeight bound the shadowed volume - a generous slab
         // is what makes a low sun pixelated, since the box is fitted around it. The box is snapped
@@ -705,6 +708,8 @@ namespace massif::vt {
         float _terrainShadowStrength = 0.0f;
         float _terrainShadowSoftness = 1.0f;
         bool _terrainShadowDepthTexture = false; // the map is the depth buffer, not a packed copy
+        bool _terrainShadowHardwarePCF = false;  // ... and it is sampled through a comparison sampler
+        mutable bool _essl3Failed = false;       // an ESSL 3.00 program did not build; see hasShaderVersionFallback
         float _terrainShadowNormalOffset = 3.0f; // in shadow-map texels; mapbox's default
         cglib::vec3<float> _terrainShadowSunDir = cglib::vec3<float>(0.0f, 0.0f, 1.0f);
         unsigned int _warmedRasterShaderFlags = 0; // flag set warmTerrainRasterShader last built for (0 = none)

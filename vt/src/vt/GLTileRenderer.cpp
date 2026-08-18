@@ -291,7 +291,7 @@ namespace massif::vt {
         _tileMasks = mode;
     }
 
-    void GLTileRenderer::setTerrainShadowMap(GLuint texture, int mapSize, int cascades, const std::array<float, MAX_SHADOW_CASCADES>& depthBiases, float strength, float softness, bool depthTexture, float normalOffset, const cglib::vec3<float>& sunDir, const std::array<cglib::mat4x4<double>, MAX_SHADOW_CASCADES>& lightViewProjs) {
+    void GLTileRenderer::setTerrainShadowMap(GLuint texture, int mapSize, int cascades, const std::array<float, MAX_SHADOW_CASCADES>& depthBiases, float strength, float softness, bool depthTexture, bool hardwarePCF, float normalOffset, const cglib::vec3<float>& sunDir, const std::array<cglib::mat4x4<double>, MAX_SHADOW_CASCADES>& lightViewProjs) {
         std::lock_guard<std::mutex> lock(_mutex);
 
         _terrainShadowTexture = texture;
@@ -301,6 +301,7 @@ namespace massif::vt {
         _terrainShadowStrength = strength;
         _terrainShadowSoftness = softness;
         _terrainShadowDepthTexture = depthTexture;
+        _terrainShadowHardwarePCF = hardwarePCF;
         _terrainShadowNormalOffset = normalOffset;
         _terrainShadowSunDir = sunDir;
         _terrainShadowViewProjs = lightViewProjs;
@@ -2000,7 +2001,13 @@ namespace massif::vt {
         unsigned int cascadeFlag = (_terrainShadowCascades >= 4 ? SHADOW_CASCADES4_FLAG :
                                     _terrainShadowCascades == 3 ? SHADOW_CASCADES3_FLAG :
                                     _terrainShadowCascades == 2 ? SHADOW_CASCADES2_FLAG : 0);
-        return TERRAIN_SHADOW_FLAG | DERIVATIVES_FLAG | cascadeFlag | (_terrainShadowDepthTexture ? SHADOW_DEPTH_TEXTURE_FLAG : 0);
+        // Hardware comparison needs BOTH a real depth texture to compare against and ESSL 3.00 for
+        // the sampler type. Either missing falls back to manual taps, not to no shadows.
+        unsigned int hwFlags = 0;
+        if (_terrainShadowDepthTexture) {
+            hwFlags = SHADOW_DEPTH_TEXTURE_FLAG | (_terrainShadowHardwarePCF ? (ESSL3_FLAG | SHADOW_HW_FLAG) : 0);
+        }
+        return TERRAIN_SHADOW_FLAG | DERIVATIVES_FLAG | cascadeFlag | hwFlags;
     }
 
     void GLTileRenderer::warmTerrainRasterShader() {
@@ -5907,7 +5914,23 @@ namespace massif::vt {
             fogCommonFsh.replace(fogCommonFsh.find(FOG_BLEND_PLACEHOLDER), FOG_BLEND_PLACEHOLDER.size(), _fogShaderSource.empty() ? fogBlendFsh : _fogShaderSource);
 
             ShaderProgram shaderProgram;
-            createShaderProgram(shaderProgram, commonVsh + lightingVsh + vsh, fogCommonFsh + lightingFsh + filterFsh + fsh, defs, uniformMap, attribMap);
+            std::string fullVsh = commonVsh + lightingVsh + vsh;
+            std::string fullFsh = fogCommonFsh + lightingFsh + filterFsh + fsh;
+            try {
+                createShaderProgram(shaderProgram, fullVsh, fullFsh, defs, uniformMap, attribMap);
+            } catch (const std::exception& ex) {
+                // A driver that will not take the ESSL 3.00 variant - or an application shader
+                // concatenated into it that is 1.00-only - must not take the whole map with it.
+                // The 1.00 path is a complete implementation, only slower.
+                if (defs.count("ESSL3") == 0) {
+                    throw;
+                }
+                _essl3Failed = true; // the owner logs it once; vt has no logger of its own
+                std::set<std::string> fallbackDefs = defs;
+                fallbackDefs.erase("ESSL3");
+                fallbackDefs.erase("SHADOW_HW");
+                createShaderProgram(shaderProgram, fullVsh, fullFsh, fallbackDefs, uniformMap, attribMap);
+            }
 
             it = _shaderProgramMap.emplace(shaderProgramId, shaderProgram).first;
         }
@@ -5978,10 +6001,26 @@ namespace massif::vt {
     }
 
     void GLTileRenderer::createShaderProgram(ShaderProgram& shaderProgram, const std::string& vsh, const std::string& fsh, const std::set<std::string>& defs, const std::map<std::string, int>& uniformMap, const std::map<std::string, int>& attribMap) {
-        auto compileShader = [&defs](GLenum type, const std::string& sh) -> GLuint {
-            std::string shaderSourceStr = "#version 100\n";
+        // GLSL ES 3.00 for the programs that ask for it, 1.00 for the rest, from ONE set of shader
+        // sources: the differences are a handful of renamed keywords, and mapbox does the same (their
+        // fragment shaders write `glFragColor`, a macro, for this reason). The only source-level cost
+        // is that a fragment shader writes glFragColor, never gl_FragColor - a name starting with gl_
+        // cannot be #defined, so that one had to be a real rename.
+        bool essl3 = defs.count("ESSL3") > 0;
+        auto compileShader = [&defs, essl3](GLenum type, const std::string& sh) -> GLuint {
+            std::string shaderSourceStr = essl3 ? "#version 300 es\n" : "#version 100\n";
             for (const std::string& def : defs) {
                 shaderSourceStr += "#define " + def + "\n";
+            }
+            if (essl3) {
+                shaderSourceStr += "#define texture2D texture\n#define texture2DLod textureLod\n";
+                if (type == GL_VERTEX_SHADER) {
+                    shaderSourceStr += "#define attribute in\n#define varying out\n";
+                } else {
+                    shaderSourceStr += "#define varying in\nout mediump vec4 glFragColor;\n";
+                }
+            } else if (type == GL_FRAGMENT_SHADER) {
+                shaderSourceStr += "#define glFragColor gl_FragColor\n";
             }
             shaderSourceStr += sh;
 
@@ -5999,7 +6038,38 @@ namespace massif::vt {
                 glGetShaderInfoLog(shader, infoLogLength, &charactersWritten, infoLog.data());
                 std::string msg(infoLog.begin(), infoLog.begin() + charactersWritten);
                 glDeleteShader(shader);
-                throw std::runtime_error("Shader compiling failed: " + msg);
+                // The reported line number is into the CONCATENATED source, which nothing on disk
+                // matches - quote it, or every compile error costs a round of guessing.
+                std::size_t colon = msg.find(':');
+                std::size_t colon2 = colon == std::string::npos ? std::string::npos : msg.find(':', colon + 1);
+                int line = 0;
+                if (colon2 != std::string::npos) {
+                    line = std::atoi(msg.c_str() + colon2 + 1); // "ERROR: 0:376:" - the line is after the SECOND colon
+                }
+                if (line > 0) {
+                    std::size_t pos = 0;
+                    for (int i = 1; i < std::max(1, line - 2) && pos != std::string::npos; i++) {
+                        pos = shaderSourceStr.find('\n', pos);
+                        if (pos != std::string::npos) {
+                            pos++;
+                        }
+                    }
+                    std::size_t end = pos;
+                    for (int i = 0; i < 5 && end != std::string::npos; i++) {
+                        end = shaderSourceStr.find('\n', end);
+                        if (end != std::string::npos) {
+                            end++;
+                        }
+                    }
+                    if (pos != std::string::npos) {
+                        msg += " | source near line " + std::to_string(line) + ": " + shaderSourceStr.substr(pos, (end == std::string::npos ? shaderSourceStr.size() : end) - pos);
+                    }
+                }
+                std::string defList;
+                for (const std::string& def : defs) {
+                    defList += " " + def;
+                }
+                throw std::runtime_error("Shader compiling failed: " + msg + " | defines:" + defList);
             }
             return shader;
         };

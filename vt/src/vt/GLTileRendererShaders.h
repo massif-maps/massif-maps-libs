@@ -116,7 +116,14 @@ namespace massif::vt {
         SHADOW_SINGLE_TAP_FLAG = 262144,
         // The shadow map IS the depth buffer, sampled directly, instead of a packed-RGB copy of it
         // in a colour texture. Everything ES3-class; the packed path stays for the rest.
-        SHADOW_DEPTH_TEXTURE_FLAG = 524288
+        SHADOW_DEPTH_TEXTURE_FLAG = 524288,
+        // The program is compiled as GLSL ES 3.00 rather than 1.00. Only what needs it asks for it;
+        // the keyword differences are handled by a prelude in createShaderProgram.
+        ESSL3_FLAG = 1048576,
+        // Hardware depth comparison (sampler2DShadow). Implies ESSL3 - the type does not exist in
+        // GLSL ES 1.00, and GL_EXT_shadow_samplers is not advertised on an ES3 context because the
+        // feature is core there.
+        SHADOW_HW_FLAG = 2097152
     };
 
     static const std::map<std::string, int> attribMap = {
@@ -214,7 +221,9 @@ namespace massif::vt {
         { SHADOW_MASK_OUT_FLAG, "SHADOW_MASK_OUT" },
         { SHADOW_MASK_IN_FLAG, "SHADOW_MASK_IN" },
         { SHADOW_SINGLE_TAP_FLAG, "SHADOW_SINGLE_TAP" },
-        { SHADOW_DEPTH_TEXTURE_FLAG, "SHADOW_DEPTH_TEXTURE" }
+        { SHADOW_DEPTH_TEXTURE_FLAG, "SHADOW_DEPTH_TEXTURE" },
+        { ESSL3_FLAG, "ESSL3" },
+        { SHADOW_HW_FLAG, "SHADOW_HW" }
     };
 
     static const std::string textureFiltersFsh = R"GLSL(
@@ -534,7 +543,7 @@ namespace massif::vt {
     static const std::string FOG_BLEND_PLACEHOLDER = "$FOG_BLEND$";
 
     static const std::string commonFsh = R"GLSL(
-        #ifdef DERIVATIVES
+        #if defined(DERIVATIVES) && !defined(ESSL3)
         #extension GL_OES_standard_derivatives : enable
         #endif
         #ifdef GL_FRAGMENT_PRECISION_HIGH
@@ -637,7 +646,14 @@ namespace massif::vt {
         #else
         #define SHADOW_CASCADES 1
         #endif
+        #ifdef SHADOW_HW
+        // A COMPARISON sampler: one fetch does four depth compares and returns their bilinear
+        // average, in the texture unit. Four of these are sixteen samples for what the packed path
+        // paid for four unfiltered ones. ESSL 3.00 only - see SHADOW_DEPTH_TEXTURE.
+        uniform highp sampler2DShadow uShadowTexture;
+        #else
         uniform sampler2D uShadowTexture;
+        #endif
         uniform mediump vec4 uShadowParams; // x = 1/mapSize within one cascade, y = strength, z = PCF radius in texels, w = 1/cascade count
         uniform mediump vec4 uShadowBias;   // normalised depth bias, per cascade
         varying highp vec3 vShadowPos0;
@@ -660,13 +676,16 @@ namespace massif::vt {
         // The caster pass packs window-space depth into RGB; unpack and compare with a slope
         // independent constant plus the caller's bias. The uv is in ATLAS space: the cascades are
         // pages of one texture, side by side, near page first.
-        highp float shadowDepth(highp vec2 uv) {
-        #ifdef SHADOW_DEPTH_TEXTURE
+        // One tap: is this reference depth in front of what the map holds here? 1 = lit.
+        mediump float shadowTap(highp vec2 uv, highp float ref) {
+        #if defined(SHADOW_HW)
+            return texture(uShadowTexture, vec3(uv, ref));
+        #elif defined(SHADOW_DEPTH_TEXTURE)
             // The depth buffer itself: no packing to undo, and the caster pass wrote no colour.
-            return texture2D(uShadowTexture, uv).r;
+            return ref <= texture2D(uShadowTexture, uv).r ? 1.0 : 0.0;
         #else
             highp vec4 enc = texture2D(uShadowTexture, uv);
-            return dot(enc.rgb, vec3(1.0, 1.0 / 255.0, 1.0 / 65025.0));
+            return ref <= dot(enc.rgb, vec3(1.0, 1.0 / 255.0, 1.0 / 65025.0)) ? 1.0 : 0.0;
         #endif
         }
         // 3x3 PCF over a radius in shadow-map texels. One shadow texel covers many metres of
@@ -764,7 +783,7 @@ namespace massif::vt {
             highp vec2 atlasBase = vec2(page * uShadowParams.w, 0.0);
             mediump float lit = 0.0;
         #ifdef SHADOW_SINGLE_TAP
-            lit = ref <= shadowDepth(atlasBase + pos.xy * atlasScale) ? 1.0 : 0.0;
+            lit = shadowTap(atlasBase + pos.xy * atlasScale, ref);
         #else
             // Four taps on the diagonals rather than a 3x3: the centre and the edge midpoints of a
             // 3x3 carry almost the same answer as the corners, and the taps are the second cost of
@@ -773,7 +792,7 @@ namespace massif::vt {
             for (int j = 0; j < 2; j++) {
                 for (int i = 0; i < 2; i++) {
                     highp vec2 offset = vec2(float(i) * 2.0 - 1.0, float(j) * 2.0 - 1.0) * d;
-                    lit += ref + dot(offset, dzduv) <= shadowDepth(atlasBase + (pos.xy + offset) * atlasScale) ? 1.0 : 0.0;
+                    lit += shadowTap(atlasBase + (pos.xy + offset) * atlasScale, ref + dot(offset, dzduv));
                 }
             }
             lit *= 0.25;
@@ -868,7 +887,7 @@ namespace massif::vt {
             highp vec3 enc = vec3(1.0, 255.0, 65025.0) * depth; // 'packed' is a reserved word
             enc = fract(enc);
             enc -= enc.yzz * vec3(1.0 / 255.0, 1.0 / 255.0, 0.0);
-            gl_FragColor = vec4(enc, 1.0);
+            glFragColor = vec4(enc, 1.0);
         }
     )GLSL";
 
@@ -949,7 +968,7 @@ namespace massif::vt {
             // The mask pass: this draw exists only to resolve the terrain's shadow for the pixel,
             // from the same geometry, the same elevation and the same normal the surface itself
             // will use, so the value the surface samples back is the one it would have computed.
-            gl_FragColor = vec4(vec3(shadowFactorSlope(ndl)), 1.0);
+            glFragColor = vec4(vec3(shadowFactorSlope(ndl)), 1.0);
             return;
         #endif
             // Normalised Lambert: ambient is the floor, the sun fills the REMAINING headroom, so
@@ -966,11 +985,11 @@ namespace massif::vt {
             color = vec4(min(color.rgb * lit, vec3(color.a)), color.a);
         #endif
         #if defined(LIGHTING_VSH)
-            gl_FragColor = applyFog(vColor * color * uOpacity);
+            glFragColor = applyFog(vColor * color * uOpacity);
         #elif defined(LIGHTING_FSH)
-            gl_FragColor = applyFog(applyLighting(color, normalize(vNormal)) * uOpacity);
+            glFragColor = applyFog(applyLighting(color, normalize(vNormal)) * uOpacity);
         #else
-            gl_FragColor = applyFog(color * uOpacity);
+            glFragColor = applyFog(color * uOpacity);
         #endif
         }
     )GLSL";
@@ -1043,11 +1062,11 @@ namespace massif::vt {
             color = vec4(min(color.rgb * lit, vec3(color.a)), color.a);
         #endif
         #if defined(LIGHTING_VSH)
-            gl_FragColor = applyFog(vColor * color * uOpacity);
+            glFragColor = applyFog(vColor * color * uOpacity);
         #elif defined(LIGHTING_FSH)
-            gl_FragColor = applyFog(applyLighting(color, normalize(vNormal)) * uOpacity);
+            glFragColor = applyFog(applyLighting(color, normalize(vNormal)) * uOpacity);
         #else
-            gl_FragColor = applyFog(color * uOpacity);
+            glFragColor = applyFog(color * uOpacity);
         #endif
         }
     )GLSL";
@@ -1163,9 +1182,9 @@ namespace massif::vt {
                 shade.rgb = u_contourColor.rgb * cov + shade.rgb * (1.0 - cov);
                 shade.a = cov + shade.a * (1.0 - cov);
             }
-            gl_FragColor = applyFog(shade * uOpacity);
+            glFragColor = applyFog(shade * uOpacity);
         #else
-            gl_FragColor = applyFog(color * uOpacity);
+            glFragColor = applyFog(color * uOpacity);
         #endif
         }
     )GLSL";
@@ -1352,9 +1371,9 @@ namespace massif::vt {
             color = vec4(color.rgb + uGroundColor.rgb * uGroundColor.a * (1.0 - color.a),
                          color.a + uGroundColor.a * (1.0 - color.a));
         #endif
-            gl_FragColor = applyFog(color); // drawn in the scene, so it fogs with it
+            glFragColor = applyFog(color); // drawn in the scene, so it fogs with it
         #else
-            gl_FragColor = color * uPaintParams.y;
+            glFragColor = color * uPaintParams.y;
         #endif
         }
     )GLSL";
@@ -1375,7 +1394,7 @@ namespace massif::vt {
 
         void main(void) {
             lowp vec4 color = texture2D(uTexture, gl_FragCoord.xy * uUVScale);
-            gl_FragColor = color * uColor;
+            glFragColor = color * uColor;
         }
     )GLSL";
 
@@ -1467,9 +1486,9 @@ namespace massif::vt {
                 color = clamp((color.r - offset) / size, 0.0, 1.0) * vColor;
             }
         #ifdef LIGHTING_FSH
-            gl_FragColor = applyLighting(color, normalize(vNormal));
+            glFragColor = applyLighting(color, normalize(vNormal));
         #else
-            gl_FragColor = color;
+            glFragColor = color;
         #endif
         }
     )GLSL";
@@ -1586,9 +1605,9 @@ namespace massif::vt {
         #endif
         #endif
         #ifdef LIGHTING_FSH
-            gl_FragColor = applyFog(applyLighting(color, normalize(vNormal)));
+            glFragColor = applyFog(applyLighting(color, normalize(vNormal)));
         #else
-            gl_FragColor = applyFog(color);
+            glFragColor = applyFog(color);
         #endif
         }
     )GLSL";
@@ -1762,9 +1781,9 @@ namespace massif::vt {
         #endif
         #endif
         #ifdef LIGHTING_FSH
-            gl_FragColor = applyFog(applyLighting(color, normalize(vNormal)));
+            glFragColor = applyFog(applyLighting(color, normalize(vNormal)));
         #else
-            gl_FragColor = applyFog(color);
+            glFragColor = applyFog(color);
         #endif
         }
     )GLSL";
@@ -1849,9 +1868,9 @@ namespace massif::vt {
         #endif
         #endif
         #ifdef LIGHTING_FSH
-            gl_FragColor = applyFog(applyLighting(color, normalize(vNormal)));
+            glFragColor = applyFog(applyLighting(color, normalize(vNormal)));
         #else
-            gl_FragColor = applyFog(color);
+            glFragColor = applyFog(color);
         #endif
         }
     )GLSL";
@@ -1932,9 +1951,9 @@ namespace massif::vt {
                 discard;
             }
         #ifdef LIGHTING_FSH
-            gl_FragColor = applyFog(applyLighting(vColor, normalize(vNormal), vHeight, vSideVertex > 0.0));
+            glFragColor = applyFog(applyLighting(vColor, normalize(vNormal), vHeight, vSideVertex > 0.0));
         #else
-            gl_FragColor = applyFog(vColor);
+            glFragColor = applyFog(vColor);
         #endif
         #ifdef TERRAIN_SHADOW
             // Extrusions receive as well as cast: a building in the shadow of a ridge, or of a
@@ -1944,7 +1963,7 @@ namespace massif::vt {
             // itself as soon as a shadow texel covers more ground than a roof is wide - which is
             // what shredded the buildings on zooming out. It also lets the back-face rule shadow
             // a wall facing away from the sun, which no depth comparison can decide.
-            gl_FragColor.rgb *= shadowFactorSlope(max(0.0, dot(normalize(vShadowNormal), uSunDir)));
+            glFragColor.rgb *= shadowFactorSlope(max(0.0, dot(normalize(vShadowNormal), uSunDir)));
         #endif
         }
     )GLSL";
