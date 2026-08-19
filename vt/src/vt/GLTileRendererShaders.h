@@ -2011,7 +2011,9 @@ namespace massif::vt {
             vec4 color = uColorTable[styleIndex];
             vTilePos = (uTileMatrix * vec3(aVertexUV * uUVScale, 1.0)).xy;
         #ifdef LIGHTING_VSH
-            vColor = applyLighting3D(color, normal, wallT, sideVertex);
+            // Unshadowed: the shadow is a per-fragment term, so a per-vertex lighting still takes
+            // it as a plain multiply in the fragment shader (and loses its ambient doing so).
+            vColor = applyLighting3D(color, normal, wallT, sideVertex, 1.0);
         #else
             vColor = color;
         #endif
@@ -2040,12 +2042,6 @@ namespace massif::vt {
             if (min(vTilePos.x, vTilePos.y) < -0.01 || max(vTilePos.x, vTilePos.y) > 1.01) {
                 discard;
             }
-        #ifdef LIGHTING_FSH
-            glFragColor = applyFog(applyLighting3D(vColor, normalize(vNormal), vWallT, vSideVertex));
-        #else
-            glFragColor = applyFog(vColor);
-        #endif
-        #ifdef TERRAIN_SHADOW
             // Extrusions receive as well as cast: a building in the shadow of a ridge, or of a
             // taller neighbour, darkens the same way the ground does.
             // N.L is the extrusion's own normal, not normal incidence: a roof IS its own caster,
@@ -2053,7 +2049,19 @@ namespace massif::vt {
             // itself as soon as a shadow texel covers more ground than a roof is wide - which is
             // what shredded the buildings on zooming out. It also lets the back-face rule shadow
             // a wall facing away from the sun, which no depth comparison can decide.
-            glFragColor.rgb *= shadowFactorSlope(max(0.0, dot(normalize(vShadowNormal), uSunDir)));
+            mediump float shadow = 1.0;
+        #ifdef TERRAIN_SHADOW
+            shadow = shadowFactorSlope(max(0.0, dot(normalize(vShadowNormal), uSunDir)));
+        #endif
+        #ifdef LIGHTING_FSH
+            // The shadow goes INTO the lighting, where it dims the sun alone. Multiplied over the
+            // finished colour instead it took the ambient with it, and since a wall facing away
+            // from the sun is fully shadowed by the back-face rule above, every such wall went
+            // black - the whole reason facades did not match mapbox.
+            glFragColor = applyFog(applyLighting3D(vColor, normalize(vNormal), vWallT, vSideVertex, shadow));
+        #else
+            glFragColor = applyFog(vColor);
+            glFragColor.rgb *= shadow;
         #endif
         }
     )GLSL";
