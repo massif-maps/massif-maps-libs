@@ -583,6 +583,44 @@ namespace massif::vt {
         return true;
     }
 
+    template <typename Func>
+    void GLTileRenderer::forEachVisibleExtrusion(const std::vector<TileId>* coveredBy, Func&& func) const {
+        if (!_visibleRenderTiles) {
+            return;
+        }
+        for (const RenderTile& renderTile : *_visibleRenderTiles) {
+            if (!renderTile.visible) {
+                continue;
+            }
+            if (coveredBy) {
+                bool covered = false;
+                for (const TileId& tileId : *coveredBy) {
+                    if (tileCovers(renderTile.targetTileId, tileId)) {
+                        covered = true;
+                        break;
+                    }
+                }
+                if (!covered) {
+                    continue;
+                }
+            }
+            for (auto it = renderTile.renderLayers.begin(); it != renderTile.renderLayers.end(); it++) {
+                const RenderTileLayer& renderLayer = it->second;
+                if (!renderLayer.layer) {
+                    continue;
+                }
+                for (const std::shared_ptr<TileGeometry>& geometry : renderLayer.layer->getGeometries()) {
+                    if (geometry->getType() != TileGeometry::Type::POLYGON3D) {
+                        continue;
+                    }
+                    if (!func(renderLayer, geometry)) {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
     int GLTileRenderer::renderShadowCasters(const std::vector<TileId>& tileIds, const cglib::mat4x4<double>& lightViewProj, bool castGround) {
         std::lock_guard<std::mutex> lock(_mutex);
 
@@ -634,45 +672,21 @@ namespace massif::vt {
         // 3D extrusions cast too: buildings on the terrain, and on each other. They are the one
         // kind of tile content that is real 3D rather than a skin on the ground, so they are
         // exactly what the drape cannot represent and what a shadow map is for.
-        if (_visibleRenderTiles) {
-            // Cast from both faces: culling the front faces stored the far side of the building
-            // and detached its shadow from its own footprint. The acne that motivated it is
-            // handled by the slope-scaled caster offset, which the tightened light frustum made
-            // effective again.
-            _shadowCasterViewProj = &lightViewProj;
-            for (const RenderTile& renderTile : *_visibleRenderTiles) {
-                if (!renderTile.visible) {
-                    continue;
-                }
-                bool covered = false;
-                for (const TileId& tileId : tileIds) {
-                    if (tileCovers(renderTile.targetTileId, tileId)) {
-                        covered = true;
-                        break;
-                    }
-                }
-                if (!covered) {
-                    continue;
-                }
-                for (auto it = renderTile.renderLayers.begin(); it != renderTile.renderLayers.end(); it++) {
-                    const RenderTileLayer& renderLayer = it->second;
-                    if (!renderLayer.layer) {
-                        continue;
-                    }
-                    for (const std::shared_ptr<TileGeometry>& geometry : renderLayer.layer->getGeometries()) {
-                        if (geometry->getType() == TileGeometry::Type::POLYGON3D) {
-                            // The tile's OWN blend, not 1: an extrusion fades in by GROWING - blend
-                            // scales its height - so a caster drawn at full height throws the
-                            // shadow of a finished building from under a half-grown one, and the
-                            // shadow pops out of existence when the tile is finally dropped.
-                            renderTileGeometry(renderLayer.sourceTileId, renderLayer.targetTileId, renderLayer.blend, 1.0f, renderLayer.tileSize, geometry);
-                            draws++;
-                        }
-                    }
-                }
-            }
-            _shadowCasterViewProj = nullptr;
-        }
+        // Cast from both faces: culling the front faces stored the far side of the building
+        // and detached its shadow from its own footprint. The acne that motivated it is
+        // handled by the slope-scaled caster offset, which the tightened light frustum made
+        // effective again.
+        _shadowCasterViewProj = &lightViewProj;
+        forEachVisibleExtrusion(&tileIds, [this, &draws](const RenderTileLayer& renderLayer, const std::shared_ptr<TileGeometry>& geometry) {
+            // The tile's OWN blend, not 1: an extrusion fades in by GROWING - blend scales its
+            // height - so a caster drawn at full height throws the shadow of a finished building
+            // from under a half-grown one, and the shadow pops out of existence when the tile is
+            // finally dropped.
+            renderTileGeometry(renderLayer.sourceTileId, renderLayer.targetTileId, renderLayer.blend, 1.0f, renderLayer.tileSize, geometry);
+            draws++;
+            return true;
+        });
+        _shadowCasterViewProj = nullptr;
         return draws;
     }
 
@@ -685,27 +699,11 @@ namespace massif::vt {
         // pass each time) or never (which leaves the shadow of a building that is not that shape).
         float signature = 0.0f;
         int count = 0;
-        if (!_visibleRenderTiles) {
-            return signature;
-        }
-        for (const RenderTile& renderTile : *_visibleRenderTiles) {
-            if (!renderTile.visible) {
-                continue;
-            }
-            for (auto it = renderTile.renderLayers.begin(); it != renderTile.renderLayers.end(); it++) {
-                const RenderTileLayer& renderLayer = it->second;
-                if (!renderLayer.layer) {
-                    continue;
-                }
-                for (const std::shared_ptr<TileGeometry>& geometry : renderLayer.layer->getGeometries()) {
-                    if (geometry->getType() == TileGeometry::Type::POLYGON3D) {
-                        signature += renderLayer.blend;
-                        count++;
-                        break; // one contribution per layer, not per geometry batch
-                    }
-                }
-            }
-        }
+        forEachVisibleExtrusion(nullptr, [&signature, &count](const RenderTileLayer& renderLayer, const std::shared_ptr<TileGeometry>&) {
+            signature += renderLayer.blend;
+            count++;
+            return false; // one contribution per layer, not per geometry batch
+        });
         // The MEAN, not the sum: twenty tiles fading in together move a sum twenty times as fast
         // as one does, and the map would be redrawn on every frame of exactly the moment this is
         // meant to protect. A single tile fading alone moves the mean by less than the step and
@@ -3007,142 +3005,150 @@ namespace massif::vt {
             if (renderLayers.empty()) {
                 continue;
             }
-            const std::shared_ptr<const TileLayer>& layer = renderLayers.front()->layer;
-
-            // Layer settings
-            float layerOpacity = (layer->getOpacityFunc())(_viewState);
-            float geometryOpacity = 1.0f;
-            if (!layer->getCompOp()) { // use the hack to conform with normal '2D' layers
-                std::swap(layerOpacity, geometryOpacity);
-            }
-            CompOp layerCompOp = (layer->getCompOp() ? *layer->getCompOp() : CompOp::SRC_OVER);
-
-            // The 3D overlay buys comp-op compositing and 'flatten then blend once' for a fading
-            // layer; neither applies to the normal opaque case, which it costs a full-screen clear,
-            // a terrain surface pre-pass and a composite every frame. Tangram has no overlay at all.
-            // Inline only when the extrusions are the frame's last tile content (buildingOrder 1) -
-            // they write depth and would otherwise occlude the 2D content drawn after them.
-            bool useOverlay = !allowInline || static_cast<bool>(layer->getCompOp()) || geometryOpacity < 1.0f - 1.0f / 255.0f;
-
-            // Prepare the overlay buffer.
-            GLint currentFBO = 0;
-            if (useOverlay) {
-                glGetIntegerv(GL_FRAMEBUFFER_BINDING, &currentFBO);
-
-                if (_overlayBuffer3D.fbo == 0) {
-                    // Packed depth-stencil, which is the only way to get a 24-bit depth buffer
-                    // here: 16 bits over a terrain-sized near-far range quantises to several metres
-                    // at a couple of kilometres, enough to eat the bottom of every extrusion once
-                    // the terrain surface is an occluder in this buffer. The stencil half is unused.
-                    createFrameBuffer(_overlayBuffer3D, true, true, true);
-                }
-
-                glBindFramebuffer(GL_FRAMEBUFFER, _overlayBuffer3D.fbo);
-                glClearColor(0, 0, 0, 0);
-                glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-            }
-
-            // Seed the OVERLAY's own depth buffer with the terrain surfaces: it is composited back
-            // as a flat quad with depth testing off, so without this a building behind a ridge
-            // paints straight over it. Skipped inline (the main framebuffer already holds that
-            // cover) and skipped for a comp-op layer with no extrusions - this is a full surface draw.
-            bool terrainOccluders = _terrainMode && static_cast<bool>(_terrainTextureProvider) &&
-                std::any_of(renderLayers.begin(), renderLayers.end(), [](const RenderTileLayer* renderLayer) {
-                    const std::vector<std::shared_ptr<TileGeometry>>& geometries = renderLayer->layer->getGeometries();
-                    return std::any_of(geometries.begin(), geometries.end(), [](const std::shared_ptr<TileGeometry>& geometry) {
-                        return geometry->getType() == TileGeometry::Type::POLYGON3D;
-                    });
-                });
-            if (terrainOccluders) {
-                if (useOverlay) {
-                    glEnable(GL_DEPTH_TEST);
-                    glDepthFunc(GL_LESS);
-                    glDepthMask(GL_TRUE);
-                    glDisable(GL_CULL_FACE); // displaced surfaces can face away near ridge crests
-                    glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
-                    _terrainDrawDepthBias = _terrainDepthBias;
-                    _terrainDrawDepthClipUnits = 0.0f; // TRUE depth: the occluder is never pushed back
-                    // The overlay has its own depth buffer, so it needs its own seeding even under a
-                    // shared ground - but from the SAME cover, so an extrusion is occluded by exactly
-                    // the ridge that occludes it in the main framebuffer.
-                    if (_terrainSharedGround) {
-                        for (const TileId& tileId : _terrainGroundTiles) {
-                            renderTileSurfaceFill(tileId, Color());
-                        }
-                    } else {
-                        for (const RenderTile& renderTile : renderTiles) {
-                            if (renderTile.visible) {
-                                renderTileSurfaceFill(renderTile.targetTileId, Color());
-                            }
-                        }
-                    }
-                    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-                    glEnable(GL_CULL_FACE);
-                    glCullFace(GL_BACK);
-                }
-                // Extrusion clearance, two errors: the base ring samples elevation at arbitrary xy
-                // while the mesh interpolates over cells (clip slack), and a wall standing ON the
-                // surface is only separable to the depth buffer's resolution, which grows as
-                // distance^2/near (constant-NDC) - without it the buffer eats most of a 40 m
-                // building from a couple of km out. Uniform, so building-vs-building is unaffected.
-                _terrainDrawDepthBias = _terrainDepthBias + TERRAIN_EXTRUSION_DEPTH_DELTAS * TERRAIN_LAYER_DEPTH_DELTA;
-                _terrainDrawDepthClipUnits = (_terrainRegularGrid ? 2.0f : 12.0f);
-            }
-
-            if (!useOverlay) {
-                // Same depth state the overlay's pre-pass leaves behind, so an extrusion is
-                // resolved against the ground and against other extrusions exactly as before.
-                glEnable(GL_DEPTH_TEST);
-                glDepthFunc(GL_LESS);
-                glDepthMask(GL_TRUE);
-                // A fading tile's extrusions are PREMULTIPLIED by their blend - colour and alpha
-                // both - and the overlay path resolved that in its composite. Drawn inline there is
-                // no composite, so they have to blend here or a half-faded building is written to
-                // the framebuffer as near-black: the dark flash at the start of a fade in and the
-                // end of a fade out. It also makes the degenerate first frames invisible rather
-                // than a black footprint, since an extrusion fades in by GROWING from zero height.
-                glEnable(GL_BLEND);
-                glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
-                glBlendEquation(GL_FUNC_ADD);
-            }
+            Pass3DState pass = begin3DPass(renderLayers, renderTiles, allowInline);
 
             // Render tile layers for this layer
             for (const RenderTileLayer* renderLayer : renderLayers) {
                 for (const std::shared_ptr<TileGeometry>& geometry : renderLayer->layer->getGeometries()) {
                     if (geometry->getType() == TileGeometry::Type::POLYGON3D) {
                         // NOTE: geometry comp op is not supported for 3D polygons. Blending is disabled, setGLBlendState not needed
-                        renderTileGeometry(renderLayer->sourceTileId, renderLayer->targetTileId, renderLayer->blend, geometryOpacity, renderLayer->tileSize, geometry);
+                        renderTileGeometry(renderLayer->sourceTileId, renderLayer->targetTileId, renderLayer->blend, pass.geometryOpacity, renderLayer->tileSize, geometry);
                     }
                 }
             }
 
-            if (!useOverlay) {
-                glDisable(GL_BLEND); // the overlay path below composites instead
+            end3DPass(pass);
+        }
+    }
+
+    GLTileRenderer::Pass3DState GLTileRenderer::begin3DPass(const std::vector<const RenderTileLayer*>& renderLayers, const std::vector<RenderTile>& renderTiles, bool allowInline) {
+        Pass3DState state;
+        const std::shared_ptr<const TileLayer>& layer = renderLayers.front()->layer;
+
+        // Layer settings
+        state.layerOpacity = (layer->getOpacityFunc())(_viewState);
+        if (!layer->getCompOp()) { // use the hack to conform with normal '2D' layers
+            std::swap(state.layerOpacity, state.geometryOpacity);
+        }
+        state.layerCompOp = (layer->getCompOp() ? *layer->getCompOp() : CompOp::SRC_OVER);
+
+        // The 3D overlay buys comp-op compositing and 'flatten then blend once' for a fading
+        // layer; neither applies to the normal opaque case, which it costs a full-screen clear,
+        // a terrain surface pre-pass and a composite every frame. Tangram has no overlay at all.
+        // Inline only when the extrusions are the frame's last tile content (buildingOrder 1) -
+        // they write depth and would otherwise occlude the 2D content drawn after them.
+        state.useOverlay = !allowInline || static_cast<bool>(layer->getCompOp()) || state.geometryOpacity < 1.0f - 1.0f / 255.0f;
+
+        // Prepare the overlay buffer.
+        if (state.useOverlay) {
+            glGetIntegerv(GL_FRAMEBUFFER_BINDING, &state.previousFBO);
+
+            if (_overlayBuffer3D.fbo == 0) {
+                // Packed depth-stencil, which is the only way to get a 24-bit depth buffer
+                // here: 16 bits over a terrain-sized near-far range quantises to several metres
+                // at a couple of kilometres, enough to eat the bottom of every extrusion once
+                // the terrain surface is an occluder in this buffer. The stencil half is unused.
+                createFrameBuffer(_overlayBuffer3D, true, true, true);
             }
 
-            if (terrainOccluders) {
-                _terrainDrawDepthBias = _terrainDepthBias;
-                _terrainDrawDepthClipUnits = 0.0f;
-            }
+            glBindFramebuffer(GL_FRAMEBUFFER, _overlayBuffer3D.fbo);
+            glClearColor(0, 0, 0, 0);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        }
 
-            // Blend the rendered layer with framebuffer
-            if (useOverlay) {
-                if (!_overlayBuffer3D.depthStencilAttachments.empty()) {
-                    // TODO: for now it crashes. See why
-//                    glInvalidateFramebuffer(GL_FRAMEBUFFER, static_cast<GLsizei>(_overlayBuffer3D.depthStencilAttachments.size()), _overlayBuffer3D.depthStencilAttachments.data());
-                }
-
-                glBindFramebuffer(GL_FRAMEBUFFER, currentFBO);
-
-                glEnable(GL_BLEND);
-                glDisable(GL_DEPTH_TEST);
-                glDepthMask(GL_FALSE);
-                setCompOp(layerCompOp);
-                blendScreenTexture(layerOpacity, _overlayBuffer3D.colorTexture);
-                glDepthMask(GL_TRUE);
+        // Seed the OVERLAY's own depth buffer with the terrain surfaces: it is composited back
+        // as a flat quad with depth testing off, so without this a building behind a ridge
+        // paints straight over it. Skipped inline (the main framebuffer already holds that
+        // cover) and skipped for a comp-op layer with no extrusions - this is a full surface draw.
+        state.terrainOccluders = _terrainMode && static_cast<bool>(_terrainTextureProvider) &&
+            std::any_of(renderLayers.begin(), renderLayers.end(), [](const RenderTileLayer* renderLayer) {
+                const std::vector<std::shared_ptr<TileGeometry>>& geometries = renderLayer->layer->getGeometries();
+                return std::any_of(geometries.begin(), geometries.end(), [](const std::shared_ptr<TileGeometry>& geometry) {
+                    return geometry->getType() == TileGeometry::Type::POLYGON3D;
+                });
+            });
+        if (state.terrainOccluders) {
+            if (state.useOverlay) {
                 glEnable(GL_DEPTH_TEST);
-                glDisable(GL_BLEND);
+                glDepthFunc(GL_LESS);
+                glDepthMask(GL_TRUE);
+                glDisable(GL_CULL_FACE); // displaced surfaces can face away near ridge crests
+                glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+                _terrainDrawDepthBias = _terrainDepthBias;
+                _terrainDrawDepthClipUnits = 0.0f; // TRUE depth: the occluder is never pushed back
+                // The overlay has its own depth buffer, so it needs its own seeding even under a
+                // shared ground - but from the SAME cover, so an extrusion is occluded by exactly
+                // the ridge that occludes it in the main framebuffer.
+                if (_terrainSharedGround) {
+                    for (const TileId& tileId : _terrainGroundTiles) {
+                        renderTileSurfaceFill(tileId, Color());
+                    }
+                } else {
+                    for (const RenderTile& renderTile : renderTiles) {
+                        if (renderTile.visible) {
+                            renderTileSurfaceFill(renderTile.targetTileId, Color());
+                        }
+                    }
+                }
+                glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+                glEnable(GL_CULL_FACE);
+                glCullFace(GL_BACK);
             }
+            // Extrusion clearance, two errors: the base ring samples elevation at arbitrary xy
+            // while the mesh interpolates over cells (clip slack), and a wall standing ON the
+            // surface is only separable to the depth buffer's resolution, which grows as
+            // distance^2/near (constant-NDC) - without it the buffer eats most of a 40 m
+            // building from a couple of km out. Uniform, so building-vs-building is unaffected.
+            _terrainDrawDepthBias = _terrainDepthBias + TERRAIN_EXTRUSION_DEPTH_DELTAS * TERRAIN_LAYER_DEPTH_DELTA;
+            _terrainDrawDepthClipUnits = (_terrainRegularGrid ? 2.0f : 12.0f);
+        }
+
+        if (!state.useOverlay) {
+            // Same depth state the overlay's pre-pass leaves behind, so an extrusion is
+            // resolved against the ground and against other extrusions exactly as before.
+            glEnable(GL_DEPTH_TEST);
+            glDepthFunc(GL_LESS);
+            glDepthMask(GL_TRUE);
+            // A fading tile's extrusions are PREMULTIPLIED by their blend - colour and alpha
+            // both - and the overlay path resolved that in its composite. Drawn inline there is
+            // no composite, so they have to blend here or a half-faded building is written to
+            // the framebuffer as near-black: the dark flash at the start of a fade in and the
+            // end of a fade out. It also makes the degenerate first frames invisible rather
+            // than a black footprint, since an extrusion fades in by GROWING from zero height.
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+            glBlendEquation(GL_FUNC_ADD);
+        }
+        return state;
+    }
+
+    void GLTileRenderer::end3DPass(const Pass3DState& state) {
+        if (!state.useOverlay) {
+            glDisable(GL_BLEND); // the overlay path below composites instead
+        }
+
+        if (state.terrainOccluders) {
+            _terrainDrawDepthBias = _terrainDepthBias;
+            _terrainDrawDepthClipUnits = 0.0f;
+        }
+
+        // Blend the rendered layer with framebuffer
+        if (state.useOverlay) {
+            if (!_overlayBuffer3D.depthStencilAttachments.empty()) {
+                // TODO: for now it crashes. See why
+//                glInvalidateFramebuffer(GL_FRAMEBUFFER, static_cast<GLsizei>(_overlayBuffer3D.depthStencilAttachments.size()), _overlayBuffer3D.depthStencilAttachments.data());
+            }
+
+            glBindFramebuffer(GL_FRAMEBUFFER, state.previousFBO);
+
+            glEnable(GL_BLEND);
+            glDisable(GL_DEPTH_TEST);
+            glDepthMask(GL_FALSE);
+            setCompOp(state.layerCompOp);
+            blendScreenTexture(state.layerOpacity, _overlayBuffer3D.colorTexture);
+            glDepthMask(GL_TRUE);
+            glEnable(GL_DEPTH_TEST);
+            glDisable(GL_BLEND);
         }
     }
     
@@ -5128,60 +5134,7 @@ namespace massif::vt {
         }
         VT_STAT_SPLIT(geomProgramNs, statClock);
 
-        cglib::mat4x4<float> mvpMatrix;
-        if (_shadowCasterViewProj) {
-            mvpMatrix = cglib::mat4x4<float>::convert((*_shadowCasterViewProj) * calculateTileMatrix(sourceTileId, 1.0f / vertexGeomLayoutParams.coordScale));
-        } else if (flatDrape) {
-            // fill coords * (1/coordScale) = tile-local [0,1]; the override maps [0,1] -> clip.
-            cglib::mat4x4<float> local = cglib::scale4_matrix(cglib::vec3<float>(1.0f / vertexGeomLayoutParams.coordScale, 1.0f / vertexGeomLayoutParams.coordScale, 1.0f));
-            mvpMatrix = (*_drapeMVPOverride) * local;
-        } else {
-            mvpMatrix = calculateTileMVPMatrix(sourceTileId, 1.0f / vertexGeomLayoutParams.coordScale);
-        }
-        glUniformMatrix4fv(shaderProgram.uniforms[U_MVPMATRIX], 1, GL_FALSE, mvpMatrix.data());
-        if (terrainFlag != 0 && geometry->getType() != TileGeometry::Type::POLYGON3D) {
-            glUniform1f(shaderProgram.uniforms[U_DEPTHBIAS], terrainVTF ? _terrainDrawDepthBias : _terrainDepthBias);
-        } else if (terrainVTF && !_shadowCasterViewProj && geometry->getType() == TileGeometry::Type::POLYGON3D) {
-            // Extrusions: only the VTF path has a terrain surface to clear (the caster pass
-            // renders depth from the light and must not be biased towards the camera).
-            glUniform1f(shaderProgram.uniforms[U_DEPTHBIAS], _terrainDrawDepthBias);
-        }
-        if (terrainVTF) {
-            // The elevation TEXTURE is the TARGET tile's - that is the surface this content stands
-            // on - while the vertex FRAME is the SOURCE tile's, since the vertices are source-local.
-            // They were swapped: content then sat at a different DEM level than the ground beneath
-            // it and slid during a pan until source and target became the same tile.
-            setupTerrainUniforms(shaderProgram, targetTileId, calculateTileMatrix(sourceTileId, 1.0f / vertexGeomLayoutParams.coordScale));
-        }
-        if (shadowReceiver) {
-            cglib::mat4x4<double> shadowFrame = calculateTileMatrix(sourceTileId, 1.0f / vertexGeomLayoutParams.coordScale);
-            std::array<cglib::mat4x4<float>, MAX_SHADOW_CASCADES> shadowMatrices;
-            for (int i = 0; i < _terrainShadowCascades; i++) {
-                shadowMatrices[i] = cglib::mat4x4<float>::convert(_terrainShadowViewProjs[i] * shadowFrame);
-            }
-            glUniformMatrix4fv(shaderProgram.uniforms[U_SHADOWMATRIX], _terrainShadowCascades, GL_FALSE, shadowMatrices[0].data());
-            setupShadowNormalOffsetUniforms(shaderProgram, shadowFrame);
-            glActiveTexture(GL_TEXTURE2);
-            glBindTexture(GL_TEXTURE_2D, _terrainShadowTexture);
-            glUniform1i(shaderProgram.uniforms[U_SHADOWTEXTURE], 2);
-            glActiveTexture(GL_TEXTURE0);
-            glUniform4f(shaderProgram.uniforms[U_SHADOWPARAMS], 1.0f / std::max(1, _terrainShadowMapSize), _terrainShadowStrength, _terrainShadowSoftness, 1.0f / _terrainShadowCascades);
-            glUniform4f(shaderProgram.uniforms[U_SHADOWBIAS], _terrainShadowBiases[0], _terrainShadowBiases[1], _terrainShadowBiases[2], _terrainShadowBiases[3]);
-        }
-        if (shadowReceiver || terrainLit) {
-            // Undraped 2D content takes its N.L from the TERRAIN, not from its own (meaningless)
-            // normal - see terrainNdl in commonFsh - so both the shadow and the sun need the slope
-            // scale and the sun direction. The uniforms this sets that a program does not declare
-            // resolve to -1, where glUniform is a no-op.
-            setupTerrainLightingUniforms(shaderProgram, targetTileId, calculateTileMatrix(sourceTileId, 1.0f / vertexGeomLayoutParams.coordScale));
-        }
-        
-        if (styleParams.translate) {
-            float zoomScale = std::pow(2.0f, sourceTileId.zoom - _viewState.zoom);
-            cglib::vec2<float> translate = (*styleParams.translate) * zoomScale;
-            cglib::mat4x4<float> transformMatrix = _transformer->calculateTileTransform(sourceTileId, translate, 1.0f / vertexGeomLayoutParams.coordScale);
-            glUniformMatrix4fv(shaderProgram.uniforms[U_TRANSFORMMATRIX], 1, GL_FALSE, transformMatrix.data());
-        }
+        setupGeometryCommonUniforms(shaderProgram, sourceTileId, targetTileId, geometry, GeometryDrawMode { flatDrape, terrainVTF, shadowReceiver, terrainLit, terrainFlag });
         VT_STAT_SPLIT(geomTerrainNs, statClock);
 
         std::array<cglib::vec4<float>, TileGeometry::StyleParameters::MAX_PARAMETERS> colors;
@@ -5329,47 +5282,7 @@ namespace massif::vt {
 
         const CompiledGeometry& compiledGeometry = buildCompiledTileGeometry(geometry);
         VT_STAT_SPLIT(geomCompileNs, statClock);
-        if (compiledGeometry.geometryVAO != 0) {
-            glBindVertexArray(compiledGeometry.geometryVAO);
-        }
-        if (compiledGeometry.geometryVAO == 0 || compiledGeometry.geometryVAOProgram != shaderProgram.program) {
-            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, compiledGeometry.indicesVBO);
-            glBindBuffer(GL_ARRAY_BUFFER, compiledGeometry.vertexGeometryVBO);
-
-            enableVertexAttrib(shaderProgram.attribs[A_VERTEXPOSITION], vertexGeomLayoutParams.dimensions, GL_SHORT, GL_FALSE, vertexGeomLayoutParams.vertexSize, bufferGLOffset(vertexGeomLayoutParams.coordOffset));
-
-            if (vertexGeomLayoutParams.attribsOffset >= 0) {
-                enableVertexAttrib(shaderProgram.attribs[A_VERTEXATTRIBS], 4, GL_BYTE, GL_FALSE, vertexGeomLayoutParams.vertexSize, bufferGLOffset(vertexGeomLayoutParams.attribsOffset));
-            }
-            
-            if (vertexGeomLayoutParams.texCoordOffset >= 0) {
-                enableVertexAttrib(shaderProgram.attribs[A_VERTEXUV], 2, GL_SHORT, GL_FALSE, vertexGeomLayoutParams.vertexSize, bufferGLOffset(vertexGeomLayoutParams.texCoordOffset));
-            }
-            
-            if (_lightingShader2D || geometry->getType() == TileGeometry::Type::POLYGON3D) {
-                if (vertexGeomLayoutParams.normalOffset >= 0) {
-                    enableVertexAttrib(shaderProgram.attribs[A_VERTEXNORMAL], vertexGeomLayoutParams.dimensions, GL_SHORT, GL_TRUE, vertexGeomLayoutParams.vertexSize, bufferGLOffset(vertexGeomLayoutParams.normalOffset));
-                }
-            }
-
-            if (vertexGeomLayoutParams.binormalOffset >= 0) {
-                enableVertexAttrib(shaderProgram.attribs[A_VERTEXBINORMAL], vertexGeomLayoutParams.dimensions, GL_SHORT, GL_FALSE, vertexGeomLayoutParams.vertexSize, bufferGLOffset(vertexGeomLayoutParams.binormalOffset));
-            }
-            
-            if (vertexGeomLayoutParams.heightOffset >= 0) {
-                enableVertexAttrib(shaderProgram.attribs[A_VERTEXHEIGHT], 1, GL_SHORT, GL_FALSE, vertexGeomLayoutParams.vertexSize, bufferGLOffset(vertexGeomLayoutParams.heightOffset));
-            }
-        }
-
-        if (!(vertexGeomLayoutParams.attribsOffset >= 0)) {
-            setConstVertexAttrib(shaderProgram.attribs[A_VERTEXATTRIBS], 0, 0, 0, 0);
-        }
-
-        if (_lightingShader2D || geometry->getType() == TileGeometry::Type::POLYGON3D) {
-            if (!(vertexGeomLayoutParams.normalOffset >= 0)) {
-                setConstVertexAttrib(shaderProgram.attribs[A_VERTEXNORMAL], 0, 0, 1);
-            }
-        }
+        bindGeometryVertexLayout(shaderProgram, geometry, compiledGeometry);
 
         if (geometry->getType() != TileGeometry::Type::POLYGON3D && _lightingShader2D) {
             _lightingShader2D->setupFunc(shaderProgram.program, _viewState);
@@ -5383,23 +5296,137 @@ namespace massif::vt {
         VT_STAT_INC(geometryDraws);
         VT_STAT_ADD(geometryIndices, geometry->getIndicesCount());
 
+        unbindGeometryVertexLayout(shaderProgram, geometry, compiledGeometry);
+
+        if (styleParams.pattern) {
+            glBindTexture(GL_TEXTURE_2D, 0);
+        }
+
+        checkGLError();
+    }
+
+    void GLTileRenderer::setupGeometryCommonUniforms(const ShaderProgram& shaderProgram, const TileId& sourceTileId, const TileId& targetTileId, const std::shared_ptr<TileGeometry>& geometry, const GeometryDrawMode& mode) {
+        const TileGeometry::StyleParameters& styleParams = geometry->getStyleParameters();
+        const TileGeometry::VertexGeometryLayoutParameters& vertexGeomLayoutParams = geometry->getVertexGeometryLayoutParameters();
+
+        cglib::mat4x4<float> mvpMatrix;
+        if (_shadowCasterViewProj) {
+            mvpMatrix = cglib::mat4x4<float>::convert((*_shadowCasterViewProj) * calculateTileMatrix(sourceTileId, 1.0f / vertexGeomLayoutParams.coordScale));
+        } else if (mode.flatDrape) {
+            // fill coords * (1/coordScale) = tile-local [0,1]; the override maps [0,1] -> clip.
+            cglib::mat4x4<float> local = cglib::scale4_matrix(cglib::vec3<float>(1.0f / vertexGeomLayoutParams.coordScale, 1.0f / vertexGeomLayoutParams.coordScale, 1.0f));
+            mvpMatrix = (*_drapeMVPOverride) * local;
+        } else {
+            mvpMatrix = calculateTileMVPMatrix(sourceTileId, 1.0f / vertexGeomLayoutParams.coordScale);
+        }
+        glUniformMatrix4fv(shaderProgram.uniforms[U_MVPMATRIX], 1, GL_FALSE, mvpMatrix.data());
+        if (mode.terrainFlag != 0 && geometry->getType() != TileGeometry::Type::POLYGON3D) {
+            glUniform1f(shaderProgram.uniforms[U_DEPTHBIAS], mode.terrainVTF ? _terrainDrawDepthBias : _terrainDepthBias);
+        } else if (mode.terrainVTF && !_shadowCasterViewProj && geometry->getType() == TileGeometry::Type::POLYGON3D) {
+            // Extrusions: only the VTF path has a terrain surface to clear (the caster pass
+            // renders depth from the light and must not be biased towards the camera).
+            glUniform1f(shaderProgram.uniforms[U_DEPTHBIAS], _terrainDrawDepthBias);
+        }
+        if (mode.terrainVTF) {
+            // The elevation TEXTURE is the TARGET tile's - that is the surface this content stands
+            // on - while the vertex FRAME is the SOURCE tile's, since the vertices are source-local.
+            // They were swapped: content then sat at a different DEM level than the ground beneath
+            // it and slid during a pan until source and target became the same tile.
+            setupTerrainUniforms(shaderProgram, targetTileId, calculateTileMatrix(sourceTileId, 1.0f / vertexGeomLayoutParams.coordScale));
+        }
+        if (mode.shadowReceiver) {
+            cglib::mat4x4<double> shadowFrame = calculateTileMatrix(sourceTileId, 1.0f / vertexGeomLayoutParams.coordScale);
+            std::array<cglib::mat4x4<float>, MAX_SHADOW_CASCADES> shadowMatrices;
+            for (int i = 0; i < _terrainShadowCascades; i++) {
+                shadowMatrices[i] = cglib::mat4x4<float>::convert(_terrainShadowViewProjs[i] * shadowFrame);
+            }
+            glUniformMatrix4fv(shaderProgram.uniforms[U_SHADOWMATRIX], _terrainShadowCascades, GL_FALSE, shadowMatrices[0].data());
+            setupShadowNormalOffsetUniforms(shaderProgram, shadowFrame);
+            glActiveTexture(GL_TEXTURE2);
+            glBindTexture(GL_TEXTURE_2D, _terrainShadowTexture);
+            glUniform1i(shaderProgram.uniforms[U_SHADOWTEXTURE], 2);
+            glActiveTexture(GL_TEXTURE0);
+            glUniform4f(shaderProgram.uniforms[U_SHADOWPARAMS], 1.0f / std::max(1, _terrainShadowMapSize), _terrainShadowStrength, _terrainShadowSoftness, 1.0f / _terrainShadowCascades);
+            glUniform4f(shaderProgram.uniforms[U_SHADOWBIAS], _terrainShadowBiases[0], _terrainShadowBiases[1], _terrainShadowBiases[2], _terrainShadowBiases[3]);
+        }
+        if (mode.shadowReceiver || mode.terrainLit) {
+            // Undraped 2D content takes its N.L from the TERRAIN, not from its own (meaningless)
+            // normal - see terrainNdl in commonFsh - so both the shadow and the sun need the slope
+            // scale and the sun direction. The uniforms this sets that a program does not declare
+            // resolve to -1, where glUniform is a no-op.
+            setupTerrainLightingUniforms(shaderProgram, targetTileId, calculateTileMatrix(sourceTileId, 1.0f / vertexGeomLayoutParams.coordScale));
+        }
+
+        if (styleParams.translate) {
+            float zoomScale = std::pow(2.0f, sourceTileId.zoom - _viewState.zoom);
+            cglib::vec2<float> translate = (*styleParams.translate) * zoomScale;
+            cglib::mat4x4<float> transformMatrix = _transformer->calculateTileTransform(sourceTileId, translate, 1.0f / vertexGeomLayoutParams.coordScale);
+            glUniformMatrix4fv(shaderProgram.uniforms[U_TRANSFORMMATRIX], 1, GL_FALSE, transformMatrix.data());
+        }
+    }
+
+    void GLTileRenderer::bindGeometryVertexLayout(const ShaderProgram& shaderProgram, const std::shared_ptr<TileGeometry>& geometry, const CompiledGeometry& compiledGeometry) {
+        const TileGeometry::VertexGeometryLayoutParameters& vertexGeomLayoutParams = geometry->getVertexGeometryLayoutParameters();
+        bool lit = _lightingShader2D || geometry->getType() == TileGeometry::Type::POLYGON3D;
+
+        if (compiledGeometry.geometryVAO != 0) {
+            glBindVertexArray(compiledGeometry.geometryVAO);
+        }
+        if (compiledGeometry.geometryVAO == 0 || compiledGeometry.geometryVAOProgram != shaderProgram.program) {
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, compiledGeometry.indicesVBO);
+            glBindBuffer(GL_ARRAY_BUFFER, compiledGeometry.vertexGeometryVBO);
+
+            enableVertexAttrib(shaderProgram.attribs[A_VERTEXPOSITION], vertexGeomLayoutParams.dimensions, GL_SHORT, GL_FALSE, vertexGeomLayoutParams.vertexSize, bufferGLOffset(vertexGeomLayoutParams.coordOffset));
+
+            if (vertexGeomLayoutParams.attribsOffset >= 0) {
+                enableVertexAttrib(shaderProgram.attribs[A_VERTEXATTRIBS], 4, GL_BYTE, GL_FALSE, vertexGeomLayoutParams.vertexSize, bufferGLOffset(vertexGeomLayoutParams.attribsOffset));
+            }
+
+            if (vertexGeomLayoutParams.texCoordOffset >= 0) {
+                enableVertexAttrib(shaderProgram.attribs[A_VERTEXUV], 2, GL_SHORT, GL_FALSE, vertexGeomLayoutParams.vertexSize, bufferGLOffset(vertexGeomLayoutParams.texCoordOffset));
+            }
+
+            if (lit && vertexGeomLayoutParams.normalOffset >= 0) {
+                enableVertexAttrib(shaderProgram.attribs[A_VERTEXNORMAL], vertexGeomLayoutParams.dimensions, GL_SHORT, GL_TRUE, vertexGeomLayoutParams.vertexSize, bufferGLOffset(vertexGeomLayoutParams.normalOffset));
+            }
+
+            if (vertexGeomLayoutParams.binormalOffset >= 0) {
+                enableVertexAttrib(shaderProgram.attribs[A_VERTEXBINORMAL], vertexGeomLayoutParams.dimensions, GL_SHORT, GL_FALSE, vertexGeomLayoutParams.vertexSize, bufferGLOffset(vertexGeomLayoutParams.binormalOffset));
+            }
+
+            if (vertexGeomLayoutParams.heightOffset >= 0) {
+                enableVertexAttrib(shaderProgram.attribs[A_VERTEXHEIGHT], 1, GL_SHORT, GL_FALSE, vertexGeomLayoutParams.vertexSize, bufferGLOffset(vertexGeomLayoutParams.heightOffset));
+            }
+        }
+
+        if (!(vertexGeomLayoutParams.attribsOffset >= 0)) {
+            setConstVertexAttrib(shaderProgram.attribs[A_VERTEXATTRIBS], 0, 0, 0, 0);
+        }
+
+        if (lit && !(vertexGeomLayoutParams.normalOffset >= 0)) {
+            setConstVertexAttrib(shaderProgram.attribs[A_VERTEXNORMAL], 0, 0, 1);
+        }
+    }
+
+    void GLTileRenderer::unbindGeometryVertexLayout(const ShaderProgram& shaderProgram, const std::shared_ptr<TileGeometry>& geometry, const CompiledGeometry& compiledGeometry) {
+        const TileGeometry::VertexGeometryLayoutParameters& vertexGeomLayoutParams = geometry->getVertexGeometryLayoutParameters();
+        bool lit = _lightingShader2D || geometry->getType() == TileGeometry::Type::POLYGON3D;
+
         if (compiledGeometry.geometryVAO != 0) {
             glBindVertexArray(0);
         } else {
             if (vertexGeomLayoutParams.heightOffset >= 0) {
                 disableVertexAttrib(shaderProgram.attribs[A_VERTEXHEIGHT]);
             }
-            
+
             if (vertexGeomLayoutParams.binormalOffset >= 0) {
                 disableVertexAttrib(shaderProgram.attribs[A_VERTEXBINORMAL]);
             }
 
-            if (_lightingShader2D || geometry->getType() == TileGeometry::Type::POLYGON3D) {
-                if (vertexGeomLayoutParams.normalOffset >= 0) {
-                    disableVertexAttrib(shaderProgram.attribs[A_VERTEXNORMAL]);
-                }
+            if (lit && vertexGeomLayoutParams.normalOffset >= 0) {
+                disableVertexAttrib(shaderProgram.attribs[A_VERTEXNORMAL]);
             }
-            
+
             if (vertexGeomLayoutParams.texCoordOffset >= 0) {
                 disableVertexAttrib(shaderProgram.attribs[A_VERTEXUV]);
             }
@@ -5407,7 +5434,7 @@ namespace massif::vt {
             if (vertexGeomLayoutParams.attribsOffset >= 0) {
                 disableVertexAttrib(shaderProgram.attribs[A_VERTEXATTRIBS]);
             }
-            
+
             disableVertexAttrib(shaderProgram.attribs[A_VERTEXPOSITION]);
         }
 
@@ -5417,12 +5444,6 @@ namespace massif::vt {
 
             compiledGeometry.geometryVAOProgram = (compiledGeometry.geometryVAO != 0 ? shaderProgram.program : 0);
         }
-        
-        if (styleParams.pattern) {
-            glBindTexture(GL_TEXTURE_2D, 0);
-        }
-
-        checkGLError();
     }
 
     void GLTileRenderer::renderLabelBatch(const LabelBatchParameters& labelBatchParams, const std::shared_ptr<const Bitmap>& bitmap) {

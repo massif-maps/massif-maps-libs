@@ -541,6 +541,25 @@ namespace massif::vt {
 
         void renderGeometry2D(const std::vector<RenderTile>& renderTiles, GLint stencilBits);
         void renderGeometry3D(const std::vector<RenderTile>& renderTiles, bool allowInline);
+        // What begin3DPass set up, and what end3DPass has to undo. One layer's worth.
+        struct Pass3DState {
+            bool useOverlay = false;
+            bool terrainOccluders = false;
+            GLint previousFBO = 0;
+            float layerOpacity = 1.0f;
+            float geometryOpacity = 1.0f;
+            CompOp layerCompOp = CompOp::SRC_OVER;
+        };
+        // Opens the 3D pass for one style layer: the overlay framebuffer when the layer needs one,
+        // the terrain occluder pre-pass, and the depth/blend state the draws run under. Anything
+        // drawn between the two calls is resolved against the ground exactly as an extrusion is.
+        Pass3DState begin3DPass(const std::vector<const RenderTileLayer*>& renderLayers, const std::vector<RenderTile>& renderTiles, bool allowInline);
+        void end3DPass(const Pass3DState& state);
+        // Every POLYGON3D geometry of every visible tile, in draw order, optionally restricted to
+        // the tiles covered by `coveredBy`. The callback returns false to skip the rest of that
+        // layer's geometries.
+        template <typename Func>
+        void forEachVisibleExtrusion(const std::vector<TileId>* coveredBy, Func&& func) const;
         void renderLabels(const std::vector<std::shared_ptr<Label>>& labels);
         // One batching pass over a label list, in list order. CALLOUT leader lines get a pass of
         // their own before the text, so that no line is drawn over another label's glyphs.
@@ -601,6 +620,22 @@ namespace massif::vt {
         void renderTileBackground(const TileId& tileId, float blend, float opacity, float tileSize, const std::shared_ptr<TileBackground>& background);
         void renderTileBitmap(const TileId& sourceTileId, const TileId& targetTileId, float blend, float opacity, const std::shared_ptr<TileBitmap>& bitmap);
         void renderTileGeometry(const TileId& sourceTileId, const TileId& targetTileId, float blend, float opacity, float tileSize, const std::shared_ptr<TileGeometry>& geometry);
+        // Which optional blocks a geometry draw runs with. Decided once by renderTileGeometry and
+        // handed to the uniform setup, so the program flags and the uniforms cannot disagree.
+        struct GeometryDrawMode {
+            bool flatDrape = false;
+            bool terrainVTF = false;
+            bool shadowReceiver = false;
+            bool terrainLit = false;
+            unsigned int terrainFlag = 0;
+        };
+        // Everything a geometry draw needs that does not depend on its type: the MVP, the terrain
+        // depth bias and elevation, the shadow cascades and the style translation.
+        void setupGeometryCommonUniforms(const ShaderProgram& shaderProgram, const TileId& sourceTileId, const TileId& targetTileId, const std::shared_ptr<TileGeometry>& geometry, const GeometryDrawMode& mode);
+        // The vertex attribute layout of one compiled geometry. Bound as a VAO where the geometry
+        // has one, attribute by attribute otherwise - which is also what the unbind undoes.
+        void bindGeometryVertexLayout(const ShaderProgram& shaderProgram, const std::shared_ptr<TileGeometry>& geometry, const CompiledGeometry& compiledGeometry);
+        void unbindGeometryVertexLayout(const ShaderProgram& shaderProgram, const std::shared_ptr<TileGeometry>& geometry, const CompiledGeometry& compiledGeometry);
         void renderLabelBatch(const LabelBatchParameters& labelBatchParams, const std::shared_ptr<const Bitmap>& bitmap);
 
         const CompiledBitmap& buildCompiledBitmap(const std::shared_ptr<const Bitmap>& bitmap, bool genMipmaps);

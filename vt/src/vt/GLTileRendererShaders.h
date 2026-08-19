@@ -1956,7 +1956,7 @@ namespace massif::vt {
             vec4 color = uColorTable[styleIndex];
             vTilePos = (uTileMatrix * vec3(aVertexUV * uUVScale, 1.0)).xy;
         #ifdef LIGHTING_VSH
-            vColor = applyLighting(color, normal, height, sideVertex > 0.0);
+            vColor = applyLighting3D(color, normal, height, sideVertex > 0.0);
         #else
             vColor = color;
         #endif
@@ -1986,7 +1986,7 @@ namespace massif::vt {
                 discard;
             }
         #ifdef LIGHTING_FSH
-            glFragColor = applyFog(applyLighting(vColor, normalize(vNormal), vHeight, vSideVertex > 0.0));
+            glFragColor = applyFog(applyLighting3D(vColor, normalize(vNormal), vHeight, vSideVertex > 0.0));
         #else
             glFragColor = applyFog(vColor);
         #endif
