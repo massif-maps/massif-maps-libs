@@ -507,6 +507,7 @@ namespace massif::vt {
             std::size_t i0 = _coords.size();
             tesselatePolygon3D(verticesList, minHeight, maxHeight, static_cast<std::int8_t>(styleIndex), style);
             _ids.fill(id, _indices.size() - _ids.size());
+            _groundIds.fill(id, _groundIndices.size() - _groundIds.size());
             _geoPosIndexes.fill(0, _indices.size() - _geoPosIndexes.size());
             if (transform) {
                 for (std::size_t i = i0; i < _coords.size(); i++) {
@@ -713,8 +714,39 @@ namespace massif::vt {
     std::shared_ptr<TileLayer> TileLayerBuilder::buildTileLayer() const {
         std::vector<std::shared_ptr<TileGeometry>> geometryList = _geometryList;
         packGeometry(geometryList);
+        packGroundSkirt(geometryList);
 
         return std::make_shared<TileLayer>(_layerName, _layerIdx, _compOp, _opacityFunc, _backgroundList, _bitmapList, std::move(geometryList), _labelList);
+    }
+
+    void TileLayerBuilder::packGroundSkirt(std::vector<std::shared_ptr<TileGeometry>>& geometryList) const {
+        if (_groundIndices.empty()) {
+            return;
+        }
+        VertexArray<cglib::vec3<float>> coords;
+        VertexArray<cglib::vec3<float>> normals;
+        coords.reserve(_groundCoords.size());
+        normals.reserve(_groundCoords.size());
+        for (std::size_t i = 0; i < _groundCoords.size(); i++) {
+            coords.append(_transformer->calculatePoint(_groundCoords[i]));
+            normals.append(_transformer->calculateNormal(_groundCoords[i]));
+        }
+        VertexArray<float> heights;
+        heights.reserve(_groundHeights.size());
+        for (std::size_t i = 0; i < _groundHeights.size(); i++) {
+            heights.append(_transformer->calculateHeight(_groundCoords[i], _groundHeights[i]));
+        }
+
+        // White, so the draw survives the all-transparent skip in renderTileGeometry: the darkening
+        // itself is the per-vertex distance times the style's intensity, not a colour.
+        TileGeometry::StyleParameters styleParameters;
+        styleParameters.parameterCount = 1;
+        styleParameters.colorFuncs[0] = ColorFunction(Color(1.0f, 1.0f, 1.0f, 1.0f));
+
+        VertexArray<cglib::vec2<float>> texCoords;
+        VertexArray<cglib::vec3<float>> binormals;
+        VertexArray<std::uint16_t> geoPosIndexes;
+        packGeometry(TileGeometry::Type::POLYGON3DGROUND, 3, 1.0f, 1.0f, 1.0f, 1.0f, coords, texCoords, normals, binormals, heights, _groundAttribs, _groundIndices, _groundIds, geoPosIndexes, styleParameters, std::vector<TileGeometry::FeatureStyleRange>(), geometryList);
     }
 
     void TileLayerBuilder::beginStyleVariant(std::uint64_t stateKey) {
@@ -1184,6 +1216,73 @@ namespace massif::vt {
         return true;
     }
 
+    void TileLayerBuilder::appendGroundSkirt(const std::vector<cglib::vec2<float>>& points, float height, std::int8_t styleIndex) {
+        if (points.size() < 3 || _polygon3DGroundRadius <= 0.0f) {
+            return;
+        }
+        // Which way is OUT. The binormal below is 90 degrees off the tangent, and whether that
+        // points away from the ring's interior depends on its winding - an exterior ring and a
+        // courtyard hole wind opposite ways, and both want the skirt on the side with no building.
+        float area = 0.0f;
+        for (std::size_t i = 0, j = points.size() - 1; i < points.size(); j = i++) {
+            area += points[j](0) * points[i](1) - points[i](0) * points[j](1);
+        }
+        float sign = area < 0.0f ? -1.0f : 1.0f;
+        // The radius arrives in METRES and the points are TILE-LOCAL, so it has to be converted or
+        // a 3 m skirt reaches three tile widths and multiplies the whole map to black.
+        // calculateHeight is that conversion - it is 2^zoom / circumference / cos(latitude), which
+        // is what a metre is worth in tile-local units horizontally as well as vertically. One
+        // sample per ring: a tile spans too little latitude for the stretch to vary across it.
+        float radius = _transformer->calculateHeight(points[0], _polygon3DGroundRadius);
+        if (!(radius > 0.0f)) {
+            return;
+        }
+
+        auto outward = [sign](const cglib::vec2<float>& from, const cglib::vec2<float>& to) {
+            cglib::vec2<float> t = cglib::unit(to - from);
+            return cglib::vec2<float>(t(1), -t(0)) * sign;
+        };
+        // 0 against the wall, 1 at the far edge of the skirt: the shader fades the darkening over it.
+        const cglib::vec4<std::int8_t> atWall(styleIndex, 0, 0, 0);
+        const cglib::vec4<std::int8_t> atEdge(styleIndex, 0, 0, 127);
+        auto quad = [&](const cglib::vec2<float>& a, const cglib::vec2<float>& b, const cglib::vec2<float>& n) {
+            cglib::vec2<float> ao = a + n * radius;
+            cglib::vec2<float> bo = b + n * radius;
+            std::size_t i0 = _groundCoords.size();
+            _groundCoords.append(a, b, bo, ao);
+            _groundHeights.append(height, height, height, height);
+            _groundAttribs.append(atWall, atWall, atEdge, atEdge);
+            _groundIndices.append(i0 + 0, i0 + 1, i0 + 2);
+            _groundIndices.append(i0 + 0, i0 + 2, i0 + 3);
+        };
+
+        for (std::size_t i = 0, j = points.size() - 1; i < points.size(); j = i++) {
+            if (points[i] == points[j]) {
+                continue;
+            }
+            cglib::vec2<float> n = outward(points[j], points[i]);
+            quad(points[j], points[i], n);
+
+            // The wedge at the corner. Offsetting a footprint outward makes the two edges diverge
+            // at every convex vertex, and without this a rectangular building has four undarkened
+            // notches. One triangle is enough - the skirt is a soft falloff, not an edge. A reflex
+            // corner needs none: there the two quads overlap instead of parting.
+            std::size_t k = (i + 1) % points.size();
+            if (points[k] == points[i]) {
+                continue;
+            }
+            cglib::vec2<float> nNext = outward(points[i], points[k]);
+            float cross = n(0) * nNext(1) - n(1) * nNext(0);
+            if (cross * sign > 0.0f) {
+                std::size_t i0 = _groundCoords.size();
+                _groundCoords.append(points[i], points[i] + n * radius, points[i] + nNext * radius);
+                _groundHeights.append(height, height, height);
+                _groundAttribs.append(atWall, atEdge, atEdge);
+                _groundIndices.append(i0 + 0, i0 + 1, i0 + 2);
+            }
+        }
+    }
+
     std::uint64_t TileLayerBuilder::roofKey(const std::vector<std::vector<cglib::vec2<float>>>& pointsList, float height) {
         // Summed, so the ring's start vertex and its winding do not matter - the same building
         // arriving from two source layers is rarely digitised identically.
@@ -1297,6 +1396,11 @@ namespace massif::vt {
         // did. The walls above are already suppressed for it; without this the roof survives.
         if (!_polygon3DRoofs.insert(roofKey(pointsList, maxHeight)).second) {
             return true;
+        }
+
+        // The contact shadow, at the foot of the building rather than at its roof.
+        for (const std::vector<cglib::vec2<float>>& points : pointsList) {
+            appendGroundSkirt(points, minHeight, styleIndex);
         }
 
         std::size_t offset = _coords.size();

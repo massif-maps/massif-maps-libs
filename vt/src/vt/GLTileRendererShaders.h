@@ -62,6 +62,7 @@ namespace massif::vt {
         U_SUNCOLOR,
         U_AMBIENTCOLOR,
         U_LIGHTPARAMS,
+        U_GROUNDAOPARAMS,
         U_TERRAINSLOPESCALE,
         U_SHADOWMATRIX,
         U_SHADOWTEXTURE,
@@ -185,6 +186,7 @@ namespace massif::vt {
         { "uSunColor",          U_SUNCOLOR },
         { "uAmbientColor",      U_AMBIENTCOLOR },
         { "uLightParams",       U_LIGHTPARAMS },
+        { "uGroundAOParams",    U_GROUNDAOPARAMS },
         { "uTerrainSlopeScale", U_TERRAINSLOPESCALE },
         { "uShadowMatrix",      U_SHADOWMATRIX },
         { "uShadowTexture",     U_SHADOWTEXTURE },
@@ -1910,6 +1912,38 @@ namespace massif::vt {
         #else
             glFragColor = applyFog(color);
         #endif
+        }
+    )GLSL";
+
+    // The contact shadow an extrusion casts on the ground it stands on: a flat skirt around the
+    // footprint, MULTIPLIED over whatever the ground already drew. It carries no colour of its
+    // own - only how far each vertex is from the wall.
+    static const std::string polygon3DGroundVsh = R"GLSL(
+        attribute vec3 aVertexPosition;
+        attribute vec3 aVertexNormal;
+        attribute float aVertexHeight;
+        attribute vec4 aVertexAttribs;
+        uniform mat4 uMVPMatrix;
+        uniform float uHeightScale;
+        varying lowp float vGroundDist;
+
+        void main(void) {
+            vec3 pos = applyTerrain(aVertexPosition) + aVertexNormal * (aVertexHeight * uHeightScale);
+            vGroundDist = aVertexAttribs[3] * (1.0 / 127.0);
+            gl_Position = applyDepthBias(uMVPMatrix * vec4(pos, 1.0));
+        }
+    )GLSL";
+
+    static const std::string polygon3DGroundFsh = R"GLSL(
+        uniform mediump vec2 uGroundAOParams; // x = intensity, y = attenuation
+        varying lowp float vGroundDist;
+
+        void main(void) {
+            // 1 at the far edge of the skirt (no change), 1 - intensity against the wall. The
+            // attenuation is mapbox's ground-attenuation: it bends the falloff without moving
+            // either end of it.
+            mediump float f = mix(1.0 - uGroundAOParams.x, 1.0, pow(vGroundDist, uGroundAOParams.y));
+            glFragColor = vec4(f, f, f, 1.0);
         }
     )GLSL";
 

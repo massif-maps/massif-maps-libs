@@ -711,6 +711,13 @@ namespace massif::vt {
         return count > 0 ? signature / count : 0.0f;
     }
 
+    void GLTileRenderer::setGroundAO(float intensity, float attenuation) {
+        std::lock_guard<std::mutex> lock(_mutex);
+
+        _groundAOIntensity = intensity;
+        _groundAOAttenuation = attenuation;
+    }
+
     void GLTileRenderer::setTerrainDepthWrite(bool enabled) {
         std::lock_guard<std::mutex> lock(_mutex);
 
@@ -2904,7 +2911,8 @@ namespace massif::vt {
                     if (drapedTile && isDrapeableGeometry(geometry->getType()) && isLayerDraped(renderLayer->layer)) {
                         continue;
                     }
-                    if (geometry->getType() != TileGeometry::Type::POLYGON3D) {
+                    // POLYGON3DGROUND is a contact shadow for the 3D pass, not 2D content.
+                    if (geometry->getType() != TileGeometry::Type::POLYGON3D && geometry->getType() != TileGeometry::Type::POLYGON3DGROUND) {
                         CompOp geometryCompOp = geometry->getStyleParameters().compOp;
                         if (currentCompOp != geometryCompOp) {
                             setCompOp(geometryCompOp);
@@ -2989,7 +2997,7 @@ namespace massif::vt {
 
                 bool contains3DGeometry = false;
                 for (const std::shared_ptr<TileGeometry>& geometry : layer->getGeometries()) {
-                    contains3DGeometry = (geometry->getType() == TileGeometry::Type::POLYGON3D) || contains3DGeometry;
+                    contains3DGeometry = (geometry->getType() == TileGeometry::Type::POLYGON3D || geometry->getType() == TileGeometry::Type::POLYGON3DGROUND) || contains3DGeometry;
                 }
                 if (contains3DGeometry || (layer->getCompOp() && isEmptyBlendRequired(*layer->getCompOp()))) {
                     if (!_rendererLayerIndexRange || (it->first >= _rendererLayerIndexRange->first && it->first < _rendererLayerIndexRange->second)) {
@@ -3006,6 +3014,25 @@ namespace massif::vt {
                 continue;
             }
             Pass3DState pass = begin3DPass(renderLayers, renderTiles, allowInline);
+
+            // The contact shadows go down FIRST, multiplied into the ground, so an extrusion drawn
+            // after them covers its own skirt where the two meet. Depth is read but not written:
+            // the skirt lies on the surface and must not become an occluder for the walls.
+            if (_groundAOIntensity > 0.0f) {
+                glEnable(GL_BLEND);
+                glBlendFunc(GL_ZERO, GL_SRC_COLOR);
+                glBlendEquation(GL_FUNC_ADD);
+                glDepthMask(GL_FALSE);
+                for (const RenderTileLayer* renderLayer : renderLayers) {
+                    for (const std::shared_ptr<TileGeometry>& geometry : renderLayer->layer->getGeometries()) {
+                        if (geometry->getType() == TileGeometry::Type::POLYGON3DGROUND) {
+                            renderTileGeometry(renderLayer->sourceTileId, renderLayer->targetTileId, renderLayer->blend, pass.geometryOpacity, renderLayer->tileSize, geometry);
+                        }
+                    }
+                }
+                glDepthMask(GL_TRUE);
+                glDisable(GL_BLEND);
+            }
 
             // Render tile layers for this layer
             for (const RenderTileLayer* renderLayer : renderLayers) {
@@ -5109,6 +5136,15 @@ namespace massif::vt {
         case TileGeometry::Type::POLYGON:
             shaderProgramPtr = &buildShaderProgram("polygon", polygonVsh, polygonFsh, LightingMode::GEOMETRY2D, RasterFilterMode::NONE, (styleParams.pattern ? PATTERN_FLAG : 0) | (styleParams.translate ? TRANSFORM_FLAG : 0) | terrainFlag | (shadowReceiver ? shadowReceiverFlags() : 0) | lightFlag | fogFlag());
             break;
+        case TileGeometry::Type::POLYGON3DGROUND:
+            // Flat on the ground, so it takes the terrain displacement and the same clearance a
+            // draped line does - it must sit ON the surface, not inside it. No lighting: it is a
+            // multiplier over ground that is already lit.
+            if (_shadowCasterViewProj) {
+                return; // a contact shadow casts nothing
+            }
+            shaderProgramPtr = &buildShaderProgram("polygon3dground", polygon3DGroundVsh, polygon3DGroundFsh, LightingMode::NONE, RasterFilterMode::NONE, terrainFlag | fogFlag());
+            break;
         case TileGeometry::Type::POLYGON3D:
             if (_shadowCasterViewProj) {
                 // Caster pass: same vertex shader (so the extrusion is identical to the drawn
@@ -5236,6 +5272,9 @@ namespace massif::vt {
                 }
                 glUniform1fv(shaderProgram.uniforms[U_STROKESCALETABLE], styleParams.parameterCount, strokeScales.data());
             }
+        } else if (geometry->getType() == TileGeometry::Type::POLYGON3DGROUND) {
+            glUniform1f(shaderProgram.uniforms[U_HEIGHTSCALE], blend / vertexGeomLayoutParams.heightScale * vertexGeomLayoutParams.coordScale);
+            glUniform2f(shaderProgram.uniforms[U_GROUNDAOPARAMS], _groundAOIntensity, _groundAOAttenuation);
         } else if (geometry->getType() == TileGeometry::Type::POLYGON3D) {
             glUniform1f(shaderProgram.uniforms[U_UVSCALE], 1.0f / vertexGeomLayoutParams.texCoordScale);
             glUniform1f(shaderProgram.uniforms[U_HEIGHTSCALE], blend / vertexGeomLayoutParams.heightScale * vertexGeomLayoutParams.coordScale);

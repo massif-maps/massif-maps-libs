@@ -177,6 +177,9 @@ namespace massif::vt {
         void setTerrainDrapeFills(bool enabled, bool includeLines);
         void setTerrainDrapeResolution(int resolution);
         void setTerrainLighting(const TerrainLighting& lighting);
+        // The contact shadow extrusions cast on the ground (POLYGON3DGROUND): how dark it goes
+        // against the wall, and the falloff curve out to the skirt's edge.
+        void setGroundAO(float intensity, float attenuation);
         // Turns this renderer into a paint baker (see TerrainPaint): it draws the DEM-derived
         // paint for every draped tile and nothing else. Only effective under a cross-layer drape
         // target, which is where the layer order is resolved.
@@ -732,6 +735,8 @@ namespace massif::vt {
         static constexpr int TILE_BORDER_SEGMENTS = 16; // per edge, so the line follows the terrain
         bool _debugSurfacePrefill = false;
         TerrainLighting _terrainLighting;
+        float _groundAOIntensity = 0.0f;
+        float _groundAOAttenuation = 0.69f;
         TerrainPaint _terrainPaint;
         bool _terrainPaintOnGround = false;      // the paint replaces the ground fill (see setTerrainPaintOnGround)
         int _terrainDemTaps = 16;                // texture fetches per terrain vertex (see setTerrainDemTaps)

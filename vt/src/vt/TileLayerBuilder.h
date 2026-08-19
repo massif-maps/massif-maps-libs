@@ -72,6 +72,8 @@ namespace massif::vt {
         // what makes 'building-vertical-gradient-height' mean anything on a wall taller than it.
         // 0 = no split.
         void setPolygon3DGradientHeight(float height) { _polygon3DGradientHeight = height; }
+        // Metres the contact shadow on the ground reaches out from a footprint. 0 = no skirt.
+        void setPolygon3DGroundRadius(float radius) { _polygon3DGroundRadius = radius; }
         void setPolygonClipBox(const cglib::bbox2<float>& clipBox);
 
         void addBackground(const std::shared_ptr<TileBackground>& background);
@@ -111,6 +113,8 @@ namespace massif::vt {
         };
 
         void packGeometry(std::vector<std::shared_ptr<TileGeometry>>& geometryList) const;
+        // The skirt stream, packed once per layer into its own POLYGON3DGROUND geometry.
+        void packGroundSkirt(std::vector<std::shared_ptr<TileGeometry>>& geometryList) const;
         void packGeometry(TileGeometry::Type type, int dimensions, float coordScale, float binormalScale, float texCoordScale, float heightScale, const VertexArray<cglib::vec3<float>>& coords, const VertexArray<cglib::vec2<float>>& texCoords, const VertexArray<cglib::vec3<float>>& normals, const VertexArray<cglib::vec3<float>>& binormals, const VertexArray<float>& heights, const VertexArray<cglib::vec4<std::int8_t>>& attribs, const VertexArray<std::size_t>& indices, const VertexArray<long long>& ids, const VertexArray<std::uint16_t >& geoPosIndexes, const TileGeometry::StyleParameters& styleParameters, std::vector<TileGeometry::FeatureStyleRange> featureStyleRanges, std::vector<std::shared_ptr<TileGeometry>>& geometryList) const;
         void registerStyleVariantSlot(int styleIndex);
 
@@ -119,6 +123,12 @@ namespace massif::vt {
         bool tesselatePolygon3D(const std::vector<std::vector<cglib::vec2<float>>>& pointsList, float minHeight, float maxHeight, std::int8_t styleIndex, const Polygon3DStyle& style);
         // One wall quad of an extrusion, over the height range [lo, hi].
         void appendWallQuad(const cglib::vec2<float>& p0, const cglib::vec2<float>& p1, const cglib::vec2<float>& binormal, float lo, float hi, std::int8_t styleIndex);
+        // The contact shadow on the ground around one footprint ring: a skirt reaching
+        // _polygon3DGroundRadius outward, plus a triangle filling the wedge that offsetting leaves
+        // at every convex corner. Accumulated apart from the walls because the builder has ONE
+        // vertex stream, keyed by _builderParameters.type, and this is a different geometry.
+        void appendGroundSkirt(const std::vector<cglib::vec2<float>>& points, float height, std::int8_t styleIndex);
+
         // A footprint plus the height its roof sits at. Order- and winding-independent (the parts
         // are summed), so the same building digitised twice from a different start vertex matches.
         static std::uint64_t roofKey(const std::vector<std::vector<cglib::vec2<float>>>& pointsList, float height);
@@ -164,6 +174,13 @@ namespace massif::vt {
         // z-fights. A building:part normally differs in height from its parent, putting its roof on
         // another plane entirely.
         std::unordered_set<std::uint64_t> _polygon3DRoofs;
+        float _polygon3DGroundRadius = 0.0f;   // metres the contact shadow reaches; 0 = off
+        // The skirt's own stream (see appendGroundSkirt), packed once by buildTileLayer.
+        VertexArray<cglib::vec2<float>> _groundCoords;
+        VertexArray<float> _groundHeights;
+        VertexArray<cglib::vec4<std::int8_t>> _groundAttribs;
+        VertexArray<std::size_t> _groundIndices;
+        VertexArray<long long> _groundIds;
         VertexArray<std::size_t> _indices;
         VertexArray<std::uint16_t> _geoPosIndexes;
         VertexArray<long long> _ids;

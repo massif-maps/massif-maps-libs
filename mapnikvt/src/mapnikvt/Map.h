@@ -51,6 +51,11 @@ namespace massif::mvt {
             // absolute height it fades out - shared by every part of one building.
             FloatFunctionProperty buildingVerticalGradient = FloatFunctionProperty(0.65f);
             FloatFunctionProperty buildingVerticalGradientHeight = FloatFunctionProperty(20.0f);
+            // Contact shadow on the GROUND around a footprint, on the mapbox names. 0 radius = off,
+            // which is the default: nothing changes until a style asks for it.
+            FloatFunctionProperty buildingAoGroundRadius = FloatFunctionProperty(0.0f);      // metres
+            FloatFunctionProperty buildingAoGroundAttenuation = FloatFunctionProperty(0.69f); // falloff curve
+            FloatFunctionProperty buildingAoIntensity = FloatFunctionProperty(0.5f);
             FloatFunctionProperty terrainLighting = FloatFunctionProperty(0.0f);   // 0/1: light the terrain with the sun
             FloatFunctionProperty shadowStrength = FloatFunctionProperty(0.0f);    // 0 = no shadows
             FloatFunctionProperty shadowBias = FloatFunctionProperty(0.25f);       // meters
