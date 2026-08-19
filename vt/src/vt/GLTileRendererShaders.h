@@ -1925,11 +1925,17 @@ namespace massif::vt {
         attribute vec4 aVertexAttribs;
         uniform mat4 uMVPMatrix;
         uniform float uHeightScale;
+        uniform vec4 uColorTable[16];
         varying lowp float vGroundDist;
+        varying lowp float vGroundBlend;
 
         void main(void) {
             vec3 pos = applyTerrain(aVertexPosition) + aVertexNormal * (aVertexHeight * uHeightScale);
             vGroundDist = aVertexAttribs[3] * (1.0 / 127.0);
+            // The tile's fade, which reaches here as the style colour's alpha. An extrusion fades
+            // in by GROWING, and without this its contact shadow arrives at full strength on a
+            // building that is not there yet - a footprint painted on the ground as a tile appears.
+            vGroundBlend = uColorTable[0].a;
             gl_Position = applyDepthBias(uMVPMatrix * vec4(pos, 1.0));
         }
     )GLSL";
@@ -1937,12 +1943,20 @@ namespace massif::vt {
     static const std::string polygon3DGroundFsh = R"GLSL(
         uniform mediump vec2 uGroundAOParams; // x = intensity, y = attenuation
         varying lowp float vGroundDist;
+        varying lowp float vGroundBlend;
 
         void main(void) {
             // 1 at the far edge of the skirt (no change), 1 - intensity against the wall. The
             // attenuation is mapbox's ground-attenuation: it bends the falloff without moving
             // either end of it.
-            mediump float f = mix(1.0 - uGroundAOParams.x, 1.0, pow(vGroundDist, uGroundAOParams.y));
+            //
+            // Smoothstepped, because pow() alone reaches 1 with a slope of 0.69 and the eye reads
+            // that derivative step as a CREASE where the skirt ends - a visible outline around
+            // every building, which is the opposite of what a contact shadow is for. This lands at
+            // both ends with zero slope, so the band fades into the ground and is flattest right
+            // against the wall, where the occlusion really is most complete.
+            mediump float t = pow(vGroundDist, uGroundAOParams.y);
+            mediump float f = mix(1.0 - uGroundAOParams.x * vGroundBlend, 1.0, t * t * (3.0 - 2.0 * t));
             glFragColor = vec4(f, f, f, 1.0);
         }
     )GLSL";
@@ -1977,7 +1991,10 @@ namespace massif::vt {
 
         void main(void) {
             int styleIndex = int(aVertexAttribs[0]);
-            float sideVertex = aVertexAttribs[1];
+            // 0 on the roof, 1 on a wall, and BETWEEN on the bevel band that rounds the edge
+            // between them (see TileLayerBuilder edge radius). It blends the two normals, which is
+            // where the softness comes from - the band itself is one quad, not a subdivided fillet.
+            float sideVertex = aVertexAttribs[1] * (1.0 / 127.0);
             // The facade gradient, baked per vertex by the tesselator (appendWallQuad): 0 at the
             // foot of the building, 1 once past the gradient's reach.
             float wallT = aVertexAttribs[3] * (1.0 / 127.0);
@@ -1986,7 +2003,7 @@ namespace massif::vt {
             pos = vec3(uTransformMatrix * vec4(pos, 1.0));
         #endif
             pos = applyTerrain(pos) + aVertexNormal * (aVertexHeight * uHeightScale);
-            vec3 normal = normalize(sideVertex > 0.0 ? aVertexBinormal : aVertexNormal);
+            vec3 normal = normalize(mix(aVertexNormal, aVertexBinormal, sideVertex));
             applyShadowPos(pos, normal);
         #ifdef TERRAIN_SHADOW
             vShadowNormal = normal;
@@ -1994,7 +2011,7 @@ namespace massif::vt {
             vec4 color = uColorTable[styleIndex];
             vTilePos = (uTileMatrix * vec3(aVertexUV * uUVScale, 1.0)).xy;
         #ifdef LIGHTING_VSH
-            vColor = applyLighting3D(color, normal, wallT, sideVertex > 0.0);
+            vColor = applyLighting3D(color, normal, wallT, sideVertex);
         #else
             vColor = color;
         #endif
@@ -2024,7 +2041,7 @@ namespace massif::vt {
                 discard;
             }
         #ifdef LIGHTING_FSH
-            glFragColor = applyFog(applyLighting3D(vColor, normalize(vNormal), vWallT, vSideVertex > 0.0));
+            glFragColor = applyFog(applyLighting3D(vColor, normalize(vNormal), vWallT, vSideVertex));
         #else
             glFragColor = applyFog(vColor);
         #endif

@@ -74,6 +74,8 @@ namespace massif::vt {
         void setPolygon3DGradientHeight(float height) { _polygon3DGradientHeight = height; }
         // Metres the contact shadow on the ground reaches out from a footprint. 0 = no skirt.
         void setPolygon3DGroundRadius(float radius) { _polygon3DGroundRadius = radius; }
+        // Metres of bevel between a wall and the roof, rounding the edge. 0 = a hard 90 degrees.
+        void setPolygon3DEdgeRadius(float radius) { _polygon3DEdgeRadius = radius; }
         void setPolygonClipBox(const cglib::bbox2<float>& clipBox);
 
         void addBackground(const std::shared_ptr<TileBackground>& background);
@@ -121,6 +123,12 @@ namespace massif::vt {
         bool tesselateGlyph(const cglib::vec2<float>& point, std::int8_t styleIndex, const cglib::vec2<float>& pen, const cglib::vec2<float>& size, const GlyphMap::Glyph* glyph);
         bool tesselatePolygon(const std::vector<std::vector<cglib::vec2<float>>>& pointsList, std::int8_t styleIndex, const PolygonStyle& style);
         bool tesselatePolygon3D(const std::vector<std::vector<cglib::vec2<float>>>& pointsList, float minHeight, float maxHeight, std::int8_t styleIndex, const Polygon3DStyle& style);
+        // The footprint pulled inward, for the roof ring an edge radius leaves behind. Returns the
+        // inset ACTUALLY used in tile-local units - clamped to what the narrowest edge can give up,
+        // and 0 when the ring cannot take any, in which case the extrusion keeps its hard edge.
+        float insetRings(const std::vector<std::vector<cglib::vec2<float>>>& pointsList, float radius, std::vector<std::vector<cglib::vec2<float>>>& insetList) const;
+        // The band bridging the top of a wall to the inset roof ring.
+        void appendBevelQuad(const cglib::vec2<float>& p0, const cglib::vec2<float>& p1, const cglib::vec2<float>& i0p, const cglib::vec2<float>& i1p, const cglib::vec2<float>& binormal, float wallTop, float roofHeight, std::int8_t styleIndex);
         // One wall quad of an extrusion, over the height range [lo, hi].
         void appendWallQuad(const cglib::vec2<float>& p0, const cglib::vec2<float>& p1, const cglib::vec2<float>& binormal, float lo, float hi, std::int8_t styleIndex);
         // The contact shadow on the ground around one footprint ring: a skirt reaching
@@ -175,6 +183,7 @@ namespace massif::vt {
         // another plane entirely.
         std::unordered_set<std::uint64_t> _polygon3DRoofs;
         float _polygon3DGroundRadius = 0.0f;   // metres the contact shadow reaches; 0 = off
+        float _polygon3DEdgeRadius = 0.0f;     // metres of bevel at the roof edge; 0 = hard edge
         // The skirt's own stream (see appendGroundSkirt), packed once by buildTileLayer.
         VertexArray<cglib::vec2<float>> _groundCoords;
         VertexArray<float> _groundHeights;

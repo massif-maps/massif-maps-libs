@@ -56,6 +56,12 @@ namespace massif::mvt {
             FloatFunctionProperty buildingAoGroundRadius = FloatFunctionProperty(0.0f);      // metres
             FloatFunctionProperty buildingAoGroundAttenuation = FloatFunctionProperty(0.69f); // falloff curve
             FloatFunctionProperty buildingAoIntensity = FloatFunctionProperty(0.5f);
+            // Bevel between a wall and the roof, rounding the hard 90 degrees. 0 = off.
+            FloatFunctionProperty buildingEdgeRadius = FloatFunctionProperty(0.0f); // metres
+            // Roofs multiplied by this. A roof faces the sky and is physically the BRIGHTEST face,
+            // but darkening it is what makes a block read as 3D rather than as a lit slab - it is
+            // how mapbox's buildings look, and it is a styling choice, not a lighting one.
+            FloatFunctionProperty buildingRoofShade = FloatFunctionProperty(1.0f);
             FloatFunctionProperty terrainLighting = FloatFunctionProperty(0.0f);   // 0/1: light the terrain with the sun
             FloatFunctionProperty shadowStrength = FloatFunctionProperty(0.0f);    // 0 = no shadows
             FloatFunctionProperty shadowBias = FloatFunctionProperty(0.25f);       // meters

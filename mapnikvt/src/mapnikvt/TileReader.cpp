@@ -90,6 +90,7 @@ namespace massif::mvt {
                 tileViewState.zoom = static_cast<float>(tileId.zoom);
                 tileLayerBuilder.setPolygon3DGradientHeight((_map->getSettings().buildingVerticalGradientHeight.getFunction(exprContext))(tileViewState));
                 tileLayerBuilder.setPolygon3DGroundRadius((_map->getSettings().buildingAoGroundRadius.getFunction(exprContext))(tileViewState));
+                tileLayerBuilder.setPolygon3DEdgeRadius((_map->getSettings().buildingEdgeRadius.getFunction(exprContext))(tileViewState));
                 tileLayerBuilder.setOpacityFunc(vt::FloatFunction(style->getOpacity()));
                 tileLayerBuilder.setCompOp(style->getCompOp());
                 processLayer(layer, style, rules, exprContext, selectionStateKey, tileLayerBuilder);
