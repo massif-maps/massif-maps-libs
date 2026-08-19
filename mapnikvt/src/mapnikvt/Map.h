@@ -47,6 +47,8 @@ namespace massif::mvt {
             // alone, without moving the sun that lights the ground.
             FloatFunctionProperty buildingLightIntensity = FloatFunctionProperty(1.0f);
             FloatFunctionProperty buildingAmbient = FloatFunctionProperty(0.35f);
+            // How dark the foot of a wall goes, measured along the wall. 0 = flat facade.
+            FloatFunctionProperty buildingVerticalGradient = FloatFunctionProperty(0.65f);
             FloatFunctionProperty terrainLighting = FloatFunctionProperty(0.0f);   // 0/1: light the terrain with the sun
             FloatFunctionProperty shadowStrength = FloatFunctionProperty(0.0f);    // 0 = no shadows
             FloatFunctionProperty shadowBias = FloatFunctionProperty(0.25f);       // meters

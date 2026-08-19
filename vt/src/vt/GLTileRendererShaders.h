@@ -1936,6 +1936,7 @@ namespace massif::vt {
         #ifdef LIGHTING_FSH
         varying highp_opt float vHeight;
         varying lowp float vSideVertex;
+        varying lowp float vWallT;
         varying mediump vec3 vNormal;
         #endif
         #ifdef TERRAIN_SHADOW
@@ -1947,6 +1948,9 @@ namespace massif::vt {
         void main(void) {
             int styleIndex = int(aVertexAttribs[0]);
             float sideVertex = aVertexAttribs[1];
+            // 0 on the base ring, 1 on the top ring, so it interpolates linearly UP the wall
+            // whatever the building's base height is (see TileLayerBuilder::tesselatePolygon3D).
+            float wallT = aVertexAttribs[2];
             float height = aVertexHeight * uAbsHeightScale;
             vec3 pos = aVertexPosition;
         #ifdef TRANSFORM
@@ -1961,7 +1965,7 @@ namespace massif::vt {
             vec4 color = uColorTable[styleIndex];
             vTilePos = (uTileMatrix * vec3(aVertexUV * uUVScale, 1.0)).xy;
         #ifdef LIGHTING_VSH
-            vColor = applyLighting3D(color, normal, height, sideVertex > 0.0);
+            vColor = applyLighting3D(color, normal, height, wallT, sideVertex > 0.0);
         #else
             vColor = color;
         #endif
@@ -1969,6 +1973,7 @@ namespace massif::vt {
             vNormal = normal;
             vHeight = height;
             vSideVertex = sideVertex;
+            vWallT = wallT;
         #endif
             gl_Position = applyDepthBias(uMVPMatrix * vec4(pos, 1.0));
         }
@@ -1983,6 +1988,7 @@ namespace massif::vt {
         #ifdef LIGHTING_FSH
         varying highp_opt float vHeight;
         varying lowp float vSideVertex;
+        varying lowp float vWallT;
         varying mediump vec3 vNormal;
         #endif
 
@@ -1991,7 +1997,7 @@ namespace massif::vt {
                 discard;
             }
         #ifdef LIGHTING_FSH
-            glFragColor = applyFog(applyLighting3D(vColor, normalize(vNormal), vHeight, vSideVertex > 0.0));
+            glFragColor = applyFog(applyLighting3D(vColor, normalize(vNormal), vHeight, vWallT, vSideVertex > 0.0));
         #else
             glFragColor = applyFog(vColor);
         #endif
