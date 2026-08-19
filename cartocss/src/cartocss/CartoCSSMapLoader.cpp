@@ -305,6 +305,7 @@ namespace massif::css {
             { "building-ao-intensity", &mvt::Map::Settings::buildingAoIntensity },
             { "building-edge-radius", &mvt::Map::Settings::buildingEdgeRadius },
             { "building-roof-shade", &mvt::Map::Settings::buildingRoofShade },
+            { "building-rounded-roof", &mvt::Map::Settings::buildingRoundedRoof },
             { "terrain-lighting", &mvt::Map::Settings::terrainLighting },
             { "shadow-strength", &mvt::Map::Settings::shadowStrength },
             { "shadow-bias", &mvt::Map::Settings::shadowBias },

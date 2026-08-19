@@ -62,6 +62,8 @@ namespace massif::mvt {
             // but darkening it is what makes a block read as 3D rather than as a lit slab - it is
             // how mapbox's buildings look, and it is a styling choice, not a lighting one.
             FloatFunctionProperty buildingRoofShade = FloatFunctionProperty(1.0f);
+            // 0 makes the bevel a flat facet with its own tone instead of a rolled edge.
+            FloatFunctionProperty buildingRoundedRoof = FloatFunctionProperty(1.0f);
             FloatFunctionProperty terrainLighting = FloatFunctionProperty(0.0f);   // 0/1: light the terrain with the sun
             FloatFunctionProperty shadowStrength = FloatFunctionProperty(0.0f);    // 0 = no shadows
             FloatFunctionProperty shadowBias = FloatFunctionProperty(0.25f);       // meters

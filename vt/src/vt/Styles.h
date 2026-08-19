@@ -173,11 +173,20 @@ namespace massif::vt {
         explicit PolygonStyle(CompOp compOp, ColorFunction colorFunc, std::shared_ptr<const BitmapPattern> pattern, const std::optional<Transform>& transform) : compOp(compOp), colorFunc(std::move(colorFunc)), pattern(std::move(pattern)), transform(transform) { }
     };
 
+    // How an extrusion is capped. FLAT is one polygon at the top, as every extrusion has always
+    // been; the rest raise a roof on it from the OSM roof:shape tag.
+    enum class RoofShape {
+        FLAT, PYRAMIDAL, GABLED
+    };
+
     struct Polygon3DStyle final {
         ColorFunction colorFunc;
         std::optional<Transform> transform;
+        RoofShape roofShape = RoofShape::FLAT;
+        float roofHeight = 0.0f; // metres above the wall top; 0 leaves the roof flat whatever the shape
 
         explicit Polygon3DStyle(ColorFunction colorFunc, const std::optional<Transform>& transform) : colorFunc(std::move(colorFunc)), transform(transform) { }
+        explicit Polygon3DStyle(ColorFunction colorFunc, const std::optional<Transform>& transform, RoofShape roofShape, float roofHeight) : colorFunc(std::move(colorFunc)), transform(transform), roofShape(roofShape), roofHeight(roofHeight) { }
     };
 
     struct PointLabelStyle final {

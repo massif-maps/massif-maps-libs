@@ -1256,14 +1256,16 @@ namespace massif::vt {
         return true;
     }
 
-    float TileLayerBuilder::insetRings(const std::vector<std::vector<cglib::vec2<float>>>& pointsList, float radius, std::vector<std::vector<cglib::vec2<float>>>& insetList) const {
+    float TileLayerBuilder::insetRings(const std::vector<std::vector<cglib::vec2<float>>>& pointsList, float radius, std::vector<std::vector<cglib::vec2<float>>>& insetList, std::vector<std::vector<float>>& cutList) const {
         insetList = pointsList;
+        cutList.assign(pointsList.size(), std::vector<float>());
         bool any = false;
         for (std::size_t ring = 0; ring < pointsList.size(); ring++) {
             const std::vector<cglib::vec2<float>>& points = pointsList[ring];
             if (points.size() < 3) {
                 return 0.0f;
             }
+            cutList[ring].assign(points.size(), 0.0f);
             // Which way is IN, from the ring's winding, exactly as the ground skirt does.
             float area = 0.0f;
             for (std::size_t i = 0, j = points.size() - 1; i < points.size(); j = i++) {
@@ -1272,52 +1274,40 @@ namespace massif::vt {
             float sign = area < 0.0f ? -1.0f : 1.0f;
 
             for (std::size_t i = 0; i < points.size(); i++) {
-                // The nearest neighbours that are not this same point, so a ring that repeats its
-                // first point at the end - or doubles a vertex - still gives the direction the
-                // corner actually turns through. Rejecting on a degenerate edge left EVERY building
-                // sharp, since a closed ring always has one.
-                std::size_t prev = i;
-                for (std::size_t k = 0; k < points.size(); k++) {
-                    prev = (prev + points.size() - 1) % points.size();
-                    if (points[prev] != points[i]) {
-                        break;
-                    }
-                }
-                std::size_t next = i;
-                for (std::size_t k = 0; k < points.size(); k++) {
-                    next = (next + 1) % points.size();
-                    if (points[next] != points[i]) {
-                        break;
-                    }
-                }
-                if (points[prev] == points[i] || points[next] == points[i]) {
-                    return 0.0f; // the whole ring is one point
-                }
+                std::size_t prev = (i + points.size() - 1) % points.size();
+                std::size_t next = (i + 1) % points.size();
                 cglib::vec2<float> ePrev = points[i] - points[prev];
                 cglib::vec2<float> eNext = points[next] - points[i];
-                // PER VERTEX, from its own two edges. A single 1 m jog in an OSM footprint must not
-                // cost the whole building its bevel: clamping globally left most roofs sharp while
-                // a few clean rectangles got the full radius, which read as the feature not working.
-                cglib::vec2<float> tPrev = cglib::unit(ePrev);
-                cglib::vec2<float> tNext = cglib::unit(eNext);
+                float lenPrev = cglib::length(ePrev);
+                float lenNext = cglib::length(eNext);
+                if (!(lenPrev > 0.0f) || !(lenNext > 0.0f)) {
+                    return 0.0f; // a ring that touches itself
+                }
+                cglib::vec2<float> tPrev = ePrev * (1.0f / lenPrev);
+                cglib::vec2<float> tNext = eNext * (1.0f / lenNext);
                 cglib::vec2<float> nPrev = cglib::vec2<float>(tPrev(1), -tPrev(0)) * sign;
                 cglib::vec2<float> nNext = cglib::vec2<float>(tNext(1), -tNext(0)) * sign;
-                // Miter: where the two offset edges meet. At a sharp corner it runs away, so what
-                // is capped is the DISPLACEMENT, not the radius that feeds it - the miter can be
-                // 5x, and 5 x half an edge moves the vertex two and a half edges, straight across
-                // the footprint. The ring then self-intersects and the tesselator answers with
-                // inverted triangles: black wedges along the roof edge.
-                cglib::vec2<float> sum = nPrev + nNext;
-                float denom = 1.0f + cglib::dot_product(nPrev, nNext);
-                cglib::vec2<float> offset = sum * (radius / std::max(0.2f, denom));
-                float maxOffset = 0.5f * std::min(cglib::length(ePrev), cglib::length(eNext));
-                float offsetLen = cglib::length(offset);
-                if (offsetLen > maxOffset) {
-                    offset = offset * (maxOffset / offsetLen);
-                    offsetLen = maxOffset;
+
+                // The miter is 1/cos(halfAngle) - NOT 2/(1 + dot), which is that value squared and
+                // over-insets every corner (2x instead of 1.41x at a right angle, far worse when
+                // sharp). Capped at 4, past which the corner is simply cut.
+                float cosHalfAngle = std::sqrt(std::max(0.0f, 0.5f * (1.0f + cglib::dot_product(nPrev, nNext))));
+                float sinHalfAngle = std::sqrt(std::max(0.0f, 1.0f - cosHalfAngle * cosHalfAngle));
+                cglib::vec2<float> bisector = nPrev + nNext;
+                float bisectorLen = cglib::length(bisector);
+                if (!(bisectorLen > 0.0f) || !(cosHalfAngle > 0.0f)) {
+                    return 0.0f; // the two edges double back on each other
                 }
-                insetList[ring][i] = points[i] - offset;
-                any = any || offsetLen > 0.0f;
+                bisector = bisector * (1.0f / bisectorLen);
+                insetList[ring][i] = points[i] - bisector * (radius * std::min(4.0f, 1.0f / cosHalfAngle));
+
+                // How far the TOP of the wall is pulled back along each edge at this corner. The
+                // bevel's bottom stops there and a triangle spans the gap up to the inset roof
+                // vertex - which is what rounds the corner, and what the bevel needs in order to
+                // close at all: without it the bottom edges meet at a point while the top edges
+                // meet at the inset, and the two cannot join.
+                cutList[ring][i] = std::min(std::min(lenPrev / 3.0f, lenNext / 3.0f), radius * sinHalfAngle / cosHalfAngle);
+                any = true;
             }
         }
         return any ? radius : 0.0f;
@@ -1331,9 +1321,13 @@ namespace massif::vt {
         std::int8_t tLo = packT(wallTop);
         std::int8_t tHi = packT(roofHeight);
         // 127 at the wall's normal, 0 at the roof's: the vertex stage blends the two and that
-        // interpolation IS the rounding.
-        const cglib::vec4<std::int8_t> low0(styleIndex, 127, 0, tLo);
-        const cglib::vec4<std::int8_t> high0(styleIndex, 0, 0, tHi);
+        // interpolation IS the rounding. Held at 64 across the whole band instead, the bevel
+        // becomes a flat facet - one tone belonging to neither wall nor roof, which reads as a rim
+        // around every roof and is what makes shapes separable looking straight down.
+        std::int8_t sideLo = _polygon3DRoundedRoof ? static_cast<std::int8_t>(127) : static_cast<std::int8_t>(64);
+        std::int8_t sideHi = _polygon3DRoundedRoof ? static_cast<std::int8_t>(0) : static_cast<std::int8_t>(64);
+        const cglib::vec4<std::int8_t> low0(styleIndex, sideLo, 0, tLo);
+        const cglib::vec4<std::int8_t> high0(styleIndex, sideHi, 0, tHi);
 
         std::size_t i0 = _coords.size();
         _coords.append(p0, p1, i1p, i0p);
@@ -1343,6 +1337,58 @@ namespace massif::vt {
         _attribs.append(low0, low0, high0, high0);
         _indices.append(i0 + 0, i0 + 1, i0 + 2);
         _indices.append(i0 + 0, i0 + 2, i0 + 3);
+    }
+
+    void TileLayerBuilder::appendCornerQuad(const cglib::vec2<float>& a, const cglib::vec2<float>& b, const cglib::vec2<float>& binormalA, const cglib::vec2<float>& binormalB, float lo, float hi, std::int8_t styleIndex) {
+        auto packT = [this](float h) -> std::int8_t {
+            float t = _polygon3DGradientHeight > 0.0f ? h / _polygon3DGradientHeight : 1.0f;
+            return static_cast<std::int8_t>(std::max(0, std::min(127, static_cast<int>(std::lround(t * 127.0f)))));
+        };
+        std::int8_t tLo = packT(lo);
+        std::int8_t tHi = packT(hi);
+        const cglib::vec4<std::int8_t> aLo(styleIndex, 127, 0, tLo), aHi(styleIndex, 127, 1, tHi);
+        const cglib::vec4<std::int8_t> bLo(styleIndex, 127, 0, tLo), bHi(styleIndex, 127, 1, tHi);
+
+        // Same winding as a wall quad, whose p0 is the edge's END point - here the corner runs
+        // a -> b, so b takes p0's place. Each end keeps its OWN edge normal, and the interpolation
+        // between them across this narrow band is what turns the corner smoothly.
+        std::size_t i0 = _coords.size();
+        _coords.append(b, a, a);
+        _texCoords.append(b, a, a);
+        _binormals.append(binormalB, binormalA, binormalA);
+        _heights.append(lo, lo, hi);
+        _attribs.append(bLo, aLo, aHi);
+        _indices.append(i0 + 0, i0 + 1, i0 + 2);
+
+        std::size_t i1 = _coords.size();
+        _coords.append(a, b, b);
+        _texCoords.append(a, b, b);
+        _binormals.append(binormalA, binormalB, binormalB);
+        _heights.append(hi, hi, lo);
+        _attribs.append(aHi, bHi, bLo);
+        _indices.append(i1 + 0, i1 + 1, i1 + 2);
+    }
+
+    void TileLayerBuilder::appendBevelCorner(const cglib::vec2<float>& a, const cglib::vec2<float>& b, const cglib::vec2<float>& apex, const cglib::vec2<float>& binormal, float wallTop, float roofHeight, std::int8_t styleIndex) {
+        auto packT = [this](float h) -> std::int8_t {
+            float t = _polygon3DGradientHeight > 0.0f ? h / _polygon3DGradientHeight : 1.0f;
+            return static_cast<std::int8_t>(std::max(0, std::min(127, static_cast<int>(std::lround(t * 127.0f)))));
+        };
+        std::int8_t sideLo = _polygon3DRoundedRoof ? static_cast<std::int8_t>(127) : static_cast<std::int8_t>(64);
+        std::int8_t sideHi = _polygon3DRoundedRoof ? static_cast<std::int8_t>(0) : static_cast<std::int8_t>(64);
+        const cglib::vec4<std::int8_t> low0(styleIndex, sideLo, 0, packT(wallTop));
+        const cglib::vec4<std::int8_t> high0(styleIndex, sideHi, 0, packT(roofHeight));
+
+        // a -> apex -> b, not a -> b -> apex: the shared edges have to run opposite to the way the
+        // two bevel quads beside them traverse the same edge, or the wedge is back-face culled and
+        // the corner is a hole.
+        std::size_t i0 = _coords.size();
+        _coords.append(a, apex, b);
+        _texCoords.append(a, apex, b);
+        _binormals.append(binormal, binormal, binormal);
+        _heights.append(wallTop, roofHeight, wallTop);
+        _attribs.append(low0, high0, low0);
+        _indices.append(i0 + 0, i0 + 1, i0 + 2);
     }
 
     void TileLayerBuilder::appendGroundSkirt(const std::vector<cglib::vec2<float>>& points, float height, std::int8_t styleIndex) {
@@ -1422,6 +1468,87 @@ namespace massif::vt {
         }
     }
 
+    bool TileLayerBuilder::appendRoof(const std::vector<std::vector<cglib::vec2<float>>>& pointsList, float baseHeight, float roofHeight, RoofShape shape, std::int8_t styleIndex) {
+        if (shape == RoofShape::FLAT || !(roofHeight > 0.0f) || pointsList.empty() || pointsList[0].size() < 3) {
+            return false;
+        }
+        const std::vector<cglib::vec2<float>>& points = pointsList[0];
+        // Only the outer ring carries a shaped roof. A footprint with a courtyard has no single
+        // apex or ridge, and OSM tags one anyway - flat is the honest answer there.
+        if (pointsList.size() > 1) {
+            return false;
+        }
+
+        // Area centroid, not the average of the vertices: a footprint digitised with more points
+        // along one side would drag a vertex average towards it and lean the apex.
+        float area = 0.0f;
+        cglib::vec2<float> centroid(0, 0);
+        for (std::size_t i = 0, j = points.size() - 1; i < points.size(); j = i++) {
+            float cross = points[j](0) * points[i](1) - points[i](0) * points[j](1);
+            area += cross;
+            centroid = centroid + (points[j] + points[i]) * cross;
+        }
+        if (!(std::abs(area) > 0.0f)) {
+            return false;
+        }
+        centroid = centroid * (1.0f / (3.0f * area));
+
+        // The apex line. A pyramid collapses it to the centroid; a gable stretches it along the
+        // footprint's longest axis, which is the ridge an OSM 'gabled' roof means without carrying
+        // a direction. Taken from the longest EDGE rather than a full oriented bounding box: a
+        // building long enough to read as gabled has its ridge parallel to its longest wall.
+        cglib::vec2<float> ridge(0, 0);
+        if (shape == RoofShape::GABLED) {
+            float longest = 0.0f;
+            for (std::size_t i = 0, j = points.size() - 1; i < points.size(); j = i++) {
+                cglib::vec2<float> edge = points[i] - points[j];
+                float len = cglib::length(edge);
+                if (len > longest) {
+                    longest = len;
+                    ridge = edge * (1.0f / len);
+                }
+            }
+            // Half the footprint's extent along the ridge, so the two ends sit inside it.
+            float minT = 0.0f, maxT = 0.0f;
+            for (std::size_t i = 0; i < points.size(); i++) {
+                float t = cglib::dot_product(points[i] - centroid, ridge);
+                minT = std::min(minT, t);
+                maxT = std::max(maxT, t);
+            }
+            ridge = ridge * (0.5f * (maxT - minT) * 0.5f);
+        }
+
+        float apexHeight = baseHeight + roofHeight;
+        for (std::size_t i = 0, j = points.size() - 1; i < points.size(); j = i++) {
+            if (points[i] == points[j]) {
+                continue;
+            }
+            // Which end of the ridge this edge faces. For a pyramid both are the centroid, so the
+            // fan degenerates to the apex and the two triangles below become one.
+            cglib::vec2<float> apex0 = centroid + ridge * (cglib::dot_product(points[j] - centroid, ridge) < 0.0f ? -1.0f : 1.0f);
+            cglib::vec2<float> apex1 = centroid + ridge * (cglib::dot_product(points[i] - centroid, ridge) < 0.0f ? -1.0f : 1.0f);
+
+            cglib::vec2<float> tangent(cglib::unit(points[i] - points[j]));
+            cglib::vec2<float> binormal = cglib::vec2<float>(tangent(1), -tangent(0));
+
+            std::size_t i0 = _coords.size();
+            _coords.append(points[j], points[i], apex1, apex0);
+            _texCoords.append(points[j], points[i], apex1, apex0);
+            _binormals.append(binormal, binormal, binormal, binormal);
+            _heights.append(baseHeight, baseHeight, apexHeight, apexHeight);
+            // A roof slope is neither wall nor flat top: 64 leans its normal half way between the
+            // two, which is what a pitched surface catches of the sun.
+            const cglib::vec4<std::int8_t> eave(styleIndex, 64, 0, 127);
+            const cglib::vec4<std::int8_t> peak(styleIndex, 0, 0, 127);
+            _attribs.append(eave, eave, peak, peak);
+            _indices.append(i0 + 0, i0 + 1, i0 + 2);
+            if (apex0 != apex1) {
+                _indices.append(i0 + 0, i0 + 2, i0 + 3);
+            }
+        }
+        return true;
+    }
+
     std::uint64_t TileLayerBuilder::roofKey(const std::vector<std::vector<cglib::vec2<float>>>& pointsList, float height) {
         // Summed, so the ring's start vertex and its winding do not matter - the same building
         // arriving from two source layers is rarely digitised identically.
@@ -1479,8 +1606,26 @@ namespace massif::vt {
         _indices.append(i1 + 0, i1 + 1, i1 + 2);
     }
 
-    bool TileLayerBuilder::tesselatePolygon3D(const std::vector<std::vector<cglib::vec2<float>>>& pointsList, float minHeight, float maxHeight, std::int8_t styleIndex, const Polygon3DStyle& style) {
+    bool TileLayerBuilder::tesselatePolygon3D(const std::vector<std::vector<cglib::vec2<float>>>& rawPointsList, float minHeight, float maxHeight, std::int8_t styleIndex, const Polygon3DStyle& style) {
         _tesselator.clear();
+        // Drop repeated points, including the one an MVT ring closes with. A zero-length edge only
+        // ever produced a zero-area wall quad, but the bevel spans corner to corner and turns one
+        // into a NaN tangent - a vertex that quantises to garbage and streaks across the tile.
+        std::vector<std::vector<cglib::vec2<float>>> pointsList;
+        pointsList.reserve(rawPointsList.size());
+        for (const std::vector<cglib::vec2<float>>& raw : rawPointsList) {
+            std::vector<cglib::vec2<float>> points;
+            points.reserve(raw.size());
+            for (const cglib::vec2<float>& p : raw) {
+                if (points.empty() || points.back() != p) {
+                    points.push_back(p);
+                }
+            }
+            while (points.size() > 1 && points.back() == points.front()) {
+                points.pop_back();
+            }
+            pointsList.push_back(std::move(points));
+        }
         // Edge radius: the wall stops short of the roof and a bevel band bridges the two, with the
         // roof ring inset by the same amount. What makes it read as ROUNDED is that the band's
         // normals interpolate from the wall's to the roof's - one quad per edge, not a fillet.
@@ -1489,12 +1634,16 @@ namespace massif::vt {
         float edgeRadius = 0.0f;
         float wallTop = maxHeight;
         std::vector<std::vector<cglib::vec2<float>>> roofList = pointsList;
-        if (_polygon3DEdgeRadius > 0.0f && maxHeight - minHeight > 2.0f * _polygon3DEdgeRadius && !pointsList.empty() && !pointsList[0].empty()) {
+        std::vector<std::vector<float>> cutList;
+        // A shaped roof puts its eaves on the ORIGINAL footprint, so an inset top ring would leave
+        // the two disagreeing along every edge. The roof is the cap in that case; the bevel is not.
+        bool shapedRoof = style.roofShape != RoofShape::FLAT && style.roofHeight > 0.0f;
+        if (!shapedRoof && _polygon3DEdgeRadius > 0.0f && maxHeight - minHeight > 2.0f * _polygon3DEdgeRadius && !pointsList.empty() && !pointsList[0].empty()) {
             // The horizontal inset is TILE-LOCAL and the vertical drop is in the style's metres, so
             // the clamp the ring imposes has to come back through the same conversion or the bevel
             // is taller than it is wide.
             float localPerMeter = _transformer->calculateHeight(pointsList[0][0], 1.0f);
-            float inset = insetRings(pointsList, _polygon3DEdgeRadius * localPerMeter, roofList);
+            float inset = insetRings(pointsList, _polygon3DEdgeRadius * localPerMeter, roofList, cutList);
             if (inset > 0.0f && localPerMeter > 0.0f) {
                 edgeRadius = inset / localPerMeter;
                 wallTop = maxHeight - edgeRadius;
@@ -1504,6 +1653,12 @@ namespace massif::vt {
         if (!_tesselator.tesselate(roofList)) {
             return false;
         }
+
+        // A duplicated footprint puts two roofs on one plane, which z-fights exactly as the walls
+        // do. Decided BEFORE the walls, because the bevel belongs to the roof: gated on the wall
+        // instead, a feature whose wall was deduped away still drew its inset roof and left an
+        // unclosed ring around it - a slit right where the bevel should be.
+        bool drawRoof = _polygon3DRoofs.insert(roofKey(pointsList, maxHeight)).second;
 
         if (minHeight != maxHeight) {
             for (std::size_t ring = 0; ring < pointsList.size(); ring++) {
@@ -1517,42 +1672,71 @@ namespace massif::vt {
                         cglib::vec2<float> tangent(cglib::unit(points[i] - points[j]));
                         cglib::vec2<float> binormal = cglib::vec2<float>(tangent(1), -tangent(0));
 
+                        // An extra ring where the gradient knees, or the per-vertex lighting draws a
+                        // straight line from the wall's foot to its roof and the gradient's reach
+                        // means nothing (see setPolygon3DGradientHeight).
+                        auto emitBand = [this](float lo, float hi, const std::function<void(float, float)>& append) {
+                            if (hi <= lo) {
+                                return;
+                            }
+                            float knee = _polygon3DGradientHeight;
+                            if (knee > lo && knee < hi) {
+                                append(lo, knee);
+                                lo = knee;
+                            }
+                            append(lo, hi);
+                        };
+                        // The WALL is cut back at both corners too, not just the bevel band above
+                        // it - that is what the corner chamfer fills. Cutting only the bevel left
+                        // it hanging over a wall wider than itself, and left the wall's own corner
+                        // sticking out past the chamfer as a sliver.
+                        std::size_t kNext = (i + 1) % points.size();
+                        cglib::vec2<float> dir = cglib::unit(points[i] - points[j]);
+                        cglib::vec2<float> wallP1 = points[j];
+                        cglib::vec2<float> wallP0 = points[i];
+                        if (edgeRadius > 0.0f) {
+                            wallP1 = points[j] + dir * cutList[ring][j];
+                            wallP0 = points[i] - dir * cutList[ring][i];
+                        }
                         // Only the part of this wall no other feature has already walled. A
                         // building and its building:part share footprint edges, and the two
                         // coincident walls z-fight into a stipple that reads as shadow acne.
                         auto emit = [&](float lo, float hi) {
-                            if (hi <= lo) {
-                                return;
-                            }
-                            // An extra ring where the gradient knees, or the per-vertex lighting
-                            // draws a straight line from the wall's foot to its roof and the
-                            // gradient's reach means nothing (see setPolygon3DGradientHeight).
-                            float knee = _polygon3DGradientHeight;
-                            if (knee > lo && knee < hi) {
-                                appendWallQuad(points[i], points[j], binormal, lo, knee, styleIndex);
-                                lo = knee;
-                            }
-                            appendWallQuad(points[i], points[j], binormal, lo, hi, styleIndex);
+                            emitBand(lo, hi, [&](float l, float h) {
+                                appendWallQuad(wallP0, wallP1, binormal, l, h, styleIndex);
+                            });
                         };
                         auto it = _polygon3DWalls.find(wallEdgeKey(points[i], points[j]));
-                        bool walled = false;
                         if (it == _polygon3DWalls.end()) {
                             _polygon3DWalls.emplace(wallEdgeKey(points[i], points[j]), std::make_pair(minHeight, maxHeight));
                             emit(minHeight, wallTop);
-                            walled = true;
                         } else {
                             // Up to two quads: a wall taller at both ends than what is there
                             // sticks out below AND above it.
                             emit(minHeight, std::min(wallTop, it->second.first));
                             emit(std::max(minHeight, it->second.second), wallTop);
-                            walled = it->second.second < maxHeight;
                             it->second.first = std::min(it->second.first, minHeight);
                             it->second.second = std::max(it->second.second, maxHeight);
                         }
-                        // The bevel belongs to whoever owns the TOP of this edge: a wall suppressed
-                        // by the dedupe must not round an edge it did not draw.
-                        if (edgeRadius > 0.0f && walled) {
-                            appendBevelQuad(points[i], points[j], inset[i], inset[j], binormal, wallTop, maxHeight, styleIndex);
+                        // The bevel closes this feature's own roof, so it follows the ROOF's
+                        // dedupe, not the wall's (see drawRoof).
+                        if (edgeRadius > 0.0f && drawRoof) {
+                            // The bevel band sits exactly on the wall below it - same two ends.
+                            appendBevelQuad(wallP0, wallP1, inset[i], inset[j], binormal, wallTop, maxHeight, styleIndex);
+                            // The corner at points[i], between this edge and the next. Pulling both
+                            // walls back leaves a gap there that takes TWO pieces to close: a
+                            // vertical band over the whole wall height, and a triangle up to the
+                            // inset roof vertex. Only the triangle was emitted before, so every
+                            // corner had a full-height slit straight through the building.
+                            if (cutList[ring][i] > 0.0f) {
+                                cglib::vec2<float> dirNext = cglib::unit(points[kNext] - points[i]);
+                                cglib::vec2<float> binormalNext(dirNext(1), -dirNext(0));
+                                cglib::vec2<float> b = points[i] + dirNext * cutList[ring][i];
+                                emitBand(minHeight, wallTop, [&](float lo, float hi) {
+                                    appendCornerQuad(wallP0, b, binormal, binormalNext, lo, hi, styleIndex);
+                                });
+                                appendBevelCorner(wallP0, b, inset[i], binormal, wallTop, maxHeight, styleIndex);
+                            }
                         }
                     }
 
@@ -1561,15 +1745,19 @@ namespace massif::vt {
             }
         }
 
-        // A duplicated footprint puts two roofs on one plane, which z-fights exactly as the walls
-        // did. The walls above are already suppressed for it; without this the roof survives.
-        if (!_polygon3DRoofs.insert(roofKey(pointsList, maxHeight)).second) {
+        if (!drawRoof) {
             return true;
         }
 
         // The contact shadow, at the foot of the building rather than at its roof.
         for (const std::vector<cglib::vec2<float>>& points : pointsList) {
             appendGroundSkirt(points, minHeight, styleIndex);
+        }
+
+        // A shaped roof replaces the flat cap entirely - its slopes already close the top. The
+        // bevel above stops at the wall, so an edge radius and a pitched roof do not fight.
+        if (appendRoof(pointsList, maxHeight, style.roofHeight, style.roofShape, styleIndex)) {
+            return true;
         }
 
         std::size_t offset = _coords.size();

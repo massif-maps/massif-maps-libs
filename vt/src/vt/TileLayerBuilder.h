@@ -76,6 +76,11 @@ namespace massif::vt {
         void setPolygon3DGroundRadius(float radius) { _polygon3DGroundRadius = radius; }
         // Metres of bevel between a wall and the roof, rounding the edge. 0 = a hard 90 degrees.
         void setPolygon3DEdgeRadius(float radius) { _polygon3DEdgeRadius = radius; }
+        // True blends the bevel's normal from wall to roof, so the edge reads as ROLLED. False
+        // holds it halfway across the band, making it a facet with a tone of its own - a rim
+        // tracing every roof, which is what separates one building from the next looking straight
+        // down. mapbox's fill-extrusion-rounded-roof.
+        void setPolygon3DRoundedRoof(bool rounded) { _polygon3DRoundedRoof = rounded; }
         void setPolygonClipBox(const cglib::bbox2<float>& clipBox);
 
         void addBackground(const std::shared_ptr<TileBackground>& background);
@@ -126,7 +131,14 @@ namespace massif::vt {
         // The footprint pulled inward, for the roof ring an edge radius leaves behind. Returns the
         // inset ACTUALLY used in tile-local units - clamped to what the narrowest edge can give up,
         // and 0 when the ring cannot take any, in which case the extrusion keeps its hard edge.
-        float insetRings(const std::vector<std::vector<cglib::vec2<float>>>& pointsList, float radius, std::vector<std::vector<cglib::vec2<float>>>& insetList) const;
+        float insetRings(const std::vector<std::vector<cglib::vec2<float>>>& pointsList, float radius, std::vector<std::vector<cglib::vec2<float>>>& insetList, std::vector<std::vector<float>>& cutList) const;
+        // The wedge between two edges' bevels at a corner, spanning the two pulled-back wall tops
+        // up to the inset roof vertex. This is what ROUNDS a corner, and what lets the bevel close
+        // there at all.
+        void appendBevelCorner(const cglib::vec2<float>& a, const cglib::vec2<float>& b, const cglib::vec2<float>& apex, const cglib::vec2<float>& binormal, float wallTop, float roofHeight, std::int8_t styleIndex);
+        // The full-height vertical band closing the gap between two walls pulled back from a shared
+        // corner. Each end carries its own edge normal, so the shading turns the corner smoothly.
+        void appendCornerQuad(const cglib::vec2<float>& a, const cglib::vec2<float>& b, const cglib::vec2<float>& binormalA, const cglib::vec2<float>& binormalB, float lo, float hi, std::int8_t styleIndex);
         // The band bridging the top of a wall to the inset roof ring.
         void appendBevelQuad(const cglib::vec2<float>& p0, const cglib::vec2<float>& p1, const cglib::vec2<float>& i0p, const cglib::vec2<float>& i1p, const cglib::vec2<float>& binormal, float wallTop, float roofHeight, std::int8_t styleIndex);
         // One wall quad of an extrusion, over the height range [lo, hi].
@@ -137,6 +149,9 @@ namespace massif::vt {
         // vertex stream, keyed by _builderParameters.type, and this is a different geometry.
         void appendGroundSkirt(const std::vector<cglib::vec2<float>>& points, float height, std::int8_t styleIndex);
 
+        // A shaped roof on top of the walls, from the OSM roof:shape tag. Returns false when the
+        // footprint cannot carry one, in which case the caller tesselates a flat roof as before.
+        bool appendRoof(const std::vector<std::vector<cglib::vec2<float>>>& pointsList, float baseHeight, float roofHeight, RoofShape shape, std::int8_t styleIndex);
         // A footprint plus the height its roof sits at. Order- and winding-independent (the parts
         // are summed), so the same building digitised twice from a different start vertex matches.
         static std::uint64_t roofKey(const std::vector<std::vector<cglib::vec2<float>>>& pointsList, float height);
@@ -184,6 +199,7 @@ namespace massif::vt {
         std::unordered_set<std::uint64_t> _polygon3DRoofs;
         float _polygon3DGroundRadius = 0.0f;   // metres the contact shadow reaches; 0 = off
         float _polygon3DEdgeRadius = 0.0f;     // metres of bevel at the roof edge; 0 = hard edge
+        bool _polygon3DRoundedRoof = true;     // false = the bevel is a flat facet with its own tone
         // The skirt's own stream (see appendGroundSkirt), packed once by buildTileLayer.
         VertexArray<cglib::vec2<float>> _groundCoords;
         VertexArray<float> _groundHeights;
