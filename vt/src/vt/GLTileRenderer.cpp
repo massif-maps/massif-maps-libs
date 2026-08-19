@@ -3018,6 +3018,12 @@ namespace massif::vt {
             // The contact shadows go down FIRST, multiplied into the ground, so an extrusion drawn
             // after them covers its own skirt where the two meet. Depth is read but not written:
             // the skirt lies on the surface and must not become an occluder for the walls.
+            //
+            // Multiplied straight in, with no MIN pass to resolve overlaps: the skirts are deduped
+            // per EDGE at decode time instead (TileLayerBuilder::appendGroundSkirt), which costs
+            // nothing per frame. Resolving it here through a second framebuffer halved the frame
+            // rate on an Adreno - and at a quarter resolution too, so the expense is the tiler
+            // resolving and reloading the main attachments, not the mask's own pixels.
             if (_groundAOIntensity > 0.0f) {
                 glEnable(GL_BLEND);
                 glBlendFunc(GL_ZERO, GL_SRC_COLOR);

@@ -1946,17 +1946,13 @@ namespace massif::vt {
         varying lowp float vGroundBlend;
 
         void main(void) {
-            // 1 at the far edge of the skirt (no change), 1 - intensity against the wall. The
-            // attenuation is mapbox's ground-attenuation: it bends the falloff without moving
-            // either end of it.
-            //
-            // Smoothstepped, because pow() alone reaches 1 with a slope of 0.69 and the eye reads
-            // that derivative step as a CREASE where the skirt ends - a visible outline around
-            // every building, which is the opposite of what a contact shadow is for. This lands at
-            // both ends with zero slope, so the band fades into the ground and is flattest right
-            // against the wall, where the occlusion really is most complete.
-            mediump float t = pow(vGroundDist, uGroundAOParams.y);
-            mediump float f = mix(1.0 - uGroundAOParams.x * vGroundBlend, 1.0, t * t * (3.0 - 2.0 * t));
+            // The bands and the corner fans tile the offset region exactly, so the distance to the
+            // footprint is simply this one interpolated value (TileLayerBuilder::appendSkirtBand).
+            mediump float dist = min(1.0, vGroundDist);
+            // mapbox's ground-attenuation, applied as they apply it: it bends the falloff without
+            // moving either end. Below 1 (their default is 0.69) it reaches further from the wall.
+            mediump float d = 1.0 - pow(1.0 - dist, uGroundAOParams.y);
+            mediump float f = 1.0 - uGroundAOParams.x * vGroundBlend * (1.0 - d);
             glFragColor = vec4(f, f, f, 1.0);
         }
     )GLSL";

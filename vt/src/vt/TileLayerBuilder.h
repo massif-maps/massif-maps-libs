@@ -143,6 +143,10 @@ namespace massif::vt {
         void appendBevelQuad(const cglib::vec2<float>& p0, const cglib::vec2<float>& p1, const cglib::vec2<float>& i0p, const cglib::vec2<float>& i1p, const cglib::vec2<float>& binormal, float wallTop, float roofHeight, std::int8_t styleIndex);
         // One wall quad of an extrusion, over the height range [lo, hi].
         void appendWallQuad(const cglib::vec2<float>& p0, const cglib::vec2<float>& p1, const cglib::vec2<float>& binormal, float lo, float hi, std::int8_t styleIndex);
+        // One band of the ground skirt: the segment p0-p1 and the same pair pushed out by offset.
+        void appendSkirtBand(const cglib::vec2<float>& p0, const cglib::vec2<float>& p1, const cglib::vec2<float>& offset, float height, std::int8_t styleIndex);
+        // The wedge a convex corner leaves between two bands, as an arc of even steps.
+        void appendSkirtFan(const cglib::vec2<float>& center, const cglib::vec2<float>& from, const cglib::vec2<float>& to, int segments, float height, std::int8_t styleIndex);
         // The contact shadow on the ground around one footprint ring: a skirt reaching
         // _polygon3DGroundRadius outward, plus a triangle filling the wedge that offsetting leaves
         // at every convex corner. Accumulated apart from the walls because the builder has ONE
@@ -197,6 +201,10 @@ namespace massif::vt {
         // z-fights. A building:part normally differs in height from its parent, putting its roof on
         // another plane entirely.
         std::unordered_set<std::uint64_t> _polygon3DRoofs;
+        // Footprint edges a contact shadow has already been laid along, keyed as the walls are.
+        // A building and its building:part share edges, and two skirts over the same ground
+        // multiply into each other.
+        std::unordered_set<std::uint64_t> _polygon3DSkirts;
         float _polygon3DGroundRadius = 0.0f;   // metres the contact shadow reaches; 0 = off
         float _polygon3DEdgeRadius = 0.0f;     // metres of bevel at the roof edge; 0 = hard edge
         bool _polygon3DRoundedRoof = true;     // false = the bevel is a flat facet with its own tone

@@ -1414,64 +1414,97 @@ namespace massif::vt {
         // a 3 m skirt reaches three tile widths and multiplies the whole map to black.
         // calculateHeight is that conversion - it is 2^zoom / circumference / cos(latitude), which
         // is what a metre is worth in tile-local units horizontally as well as vertically.
-        float radius = _transformer->calculateHeight(points[0], _polygon3DGroundRadius);
+        // mapbox divides the AO ground radius by 3.5 before using it (fill_extrusion_ground_effect
+        // vertex: ao_radius = u_ao.y / 3.5), so the style's metres mean what they mean there.
+        float radius = _transformer->calculateHeight(points[0], _polygon3DGroundRadius / 3.5f);
         if (!(radius > 0.0f)) {
             return;
         }
 
-        // Offset every VERTEX by its miter, giving a proper offset ring, rather than offsetting each
-        // edge by its own normal and filling the gap left at each corner with a triangle. That
-        // triangle interpolated its darkening from one wall vertex while the quads beside it
-        // interpolated from an edge, so the shading disagreed along both shared edges: one radial
-        // streak per vertex, spaced exactly as the vertices are.
-        std::vector<cglib::vec2<float>> outer(points.size());
-        for (std::size_t i = 0; i < points.size(); i++) {
-            std::size_t prev = i;
-            for (std::size_t k = 0; k < points.size(); k++) {
-                prev = (prev + points.size() - 1) % points.size();
-                if (points[prev] != points[i]) {
-                    break;
-                }
-            }
-            std::size_t next = i;
-            for (std::size_t k = 0; k < points.size(); k++) {
-                next = (next + 1) % points.size();
-                if (points[next] != points[i]) {
-                    break;
-                }
-            }
-            if (points[prev] == points[i] || points[next] == points[i]) {
-                return; // the whole ring is one point
-            }
-            cglib::vec2<float> tPrev = cglib::unit(points[i] - points[prev]);
-            cglib::vec2<float> tNext = cglib::unit(points[next] - points[i]);
-            cglib::vec2<float> nPrev = cglib::vec2<float>(tPrev(1), -tPrev(0)) * sign;
-            cglib::vec2<float> nNext = cglib::vec2<float>(tNext(1), -tNext(0)) * sign;
-            cglib::vec2<float> sum = nPrev + nNext;
-            float denom = 1.0f + cglib::dot_product(nPrev, nNext);
-            // The miter runs away at a sharp corner, so cap the DISPLACEMENT rather than the radius
-            // feeding it - the same trap the roof inset fell into.
-            cglib::vec2<float> offset = sum * (radius / std::max(0.2f, denom));
-            float offsetLen = cglib::length(offset);
-            if (offsetLen > 3.0f * radius) {
-                offset = offset * (3.0f * radius / offsetLen);
-            }
-            outer[i] = points[i] + offset;
-        }
-
-        // 0 against the wall, 1 at the far edge: the shader fades the darkening over it.
-        const cglib::vec4<std::int8_t> atWall(styleIndex, 0, 0, 0);
-        const cglib::vec4<std::int8_t> atEdge(styleIndex, 0, 0, 127);
+        // ONE QUAD PER EDGE plus a FAN at each convex corner, which tiles the offset region
+        // exactly - no miter, and no overlap. The miter was the whole problem: it folds through
+        // itself at a sharp corner (the radial streaks, the black wedges, the visible outline),
+        // and any scheme that overlaps instead - mapbox extends each quad past its ends and
+        // resolves the overlap with MIN blending - compounds to black under a multiply blend.
+        //
+        // The fan doubles as the round falloff around a corner, since every one of its arc
+        // vertices sits exactly one radius from the corner. Distance is therefore a single
+        // interpolated value in both pieces: 0 against the wall, 1 at the outer edge.
+        // One skirt per footprint EDGE, whoever claims it first. A building and its building:part
+        // clear the roof dedupe separately (their heights differ), so without this they each lay a
+        // skirt over the same ground and the multiply blend stacks them - six deep in a dense
+        // block, which took an intensity of 0.35 to black. Resolving that per frame instead, with
+        // a MIN pass into a second framebuffer the way mapbox does, cost half the frame rate on an
+        // Adreno; deciding it once per tile costs nothing.
+        std::vector<bool> skirted(points.size(), false);
         for (std::size_t i = 0, j = points.size() - 1; i < points.size(); j = i++) {
             if (points[i] == points[j]) {
                 continue;
             }
+            if (!_polygon3DSkirts.insert(wallEdgeKey(points[i], points[j])).second) {
+                continue;
+            }
+            skirted[i] = true;
+            cglib::vec2<float> t = cglib::unit(points[i] - points[j]);
+            cglib::vec2<float> n(t(1) * sign, -t(0) * sign);
+            appendSkirtBand(points[j], points[i], n * radius, height, styleIndex);
+        }
+
+        for (std::size_t i = 0; i < points.size(); i++) {
+            // The wedge only belongs to a corner whose BOTH bands were laid.
+            if (!skirted[i] || !skirted[(i + 1) % points.size()]) {
+                continue;
+            }
+            std::size_t prev = (i + points.size() - 1) % points.size();
+            std::size_t next = (i + 1) % points.size();
+            cglib::vec2<float> tPrev = points[i] - points[prev];
+            cglib::vec2<float> tNext = points[next] - points[i];
+            if (!(cglib::length(tPrev) > 0.0f) || !(cglib::length(tNext) > 0.0f)) {
+                continue;
+            }
+            tPrev = cglib::unit(tPrev);
+            tNext = cglib::unit(tNext);
+            // A concave corner's two bands already overlap; only a convex one leaves a wedge.
+            if ((tPrev(0) * tNext(1) - tPrev(1) * tNext(0)) * sign > 0.0f) {
+                continue;
+            }
+            cglib::vec2<float> nPrev(tPrev(1) * sign, -tPrev(0) * sign);
+            cglib::vec2<float> nNext(tNext(1) * sign, -tNext(0) * sign);
+            float angle = std::acos(std::max(-1.0f, std::min(1.0f, cglib::dot_product(nPrev, nNext))));
+            int segments = std::max(1, static_cast<int>(std::ceil(angle / 0.5f)));
+            appendSkirtFan(points[i], nPrev * radius, nNext * radius, segments, height, styleIndex);
+        }
+    }
+
+    void TileLayerBuilder::appendSkirtBand(const cglib::vec2<float>& p0, const cglib::vec2<float>& p1, const cglib::vec2<float>& offset, float height, std::int8_t styleIndex) {
+        const cglib::vec4<std::int8_t> atWall(styleIndex, 0, 0, 0);
+        const cglib::vec4<std::int8_t> atEdge(styleIndex, 0, 0, 127);
+        std::size_t i0 = _groundCoords.size();
+        _groundCoords.append(p0, p1, p1 + offset, p0 + offset);
+        _groundHeights.append(height, height, height, height);
+        _groundAttribs.append(atWall, atWall, atEdge, atEdge);
+        _groundIndices.append(i0 + 0, i0 + 1, i0 + 2);
+        _groundIndices.append(i0 + 0, i0 + 2, i0 + 3);
+    }
+
+    void TileLayerBuilder::appendSkirtFan(const cglib::vec2<float>& center, const cglib::vec2<float>& from, const cglib::vec2<float>& to, int segments, float height, std::int8_t styleIndex) {
+        const cglib::vec4<std::int8_t> atWall(styleIndex, 0, 0, 0);
+        const cglib::vec4<std::int8_t> atEdge(styleIndex, 0, 0, 127);
+        // Rotating the offset by even steps, not lerping it: a lerped chord cuts inside the arc and
+        // the corner loses its falloff exactly where the fan is widest.
+        float angle = std::atan2(from(0) * to(1) - from(1) * to(0), cglib::dot_product(from, to));
+        for (int k = 0; k < segments; k++) {
+            float a0 = angle * (static_cast<float>(k) / segments);
+            float a1 = angle * (static_cast<float>(k + 1) / segments);
+            auto rotate = [&from](float a) {
+                return cglib::vec2<float>(from(0) * std::cos(a) - from(1) * std::sin(a),
+                                          from(0) * std::sin(a) + from(1) * std::cos(a));
+            };
             std::size_t i0 = _groundCoords.size();
-            _groundCoords.append(points[j], points[i], outer[i], outer[j]);
-            _groundHeights.append(height, height, height, height);
-            _groundAttribs.append(atWall, atWall, atEdge, atEdge);
+            _groundCoords.append(center, center + rotate(a0), center + rotate(a1));
+            _groundHeights.append(height, height, height);
+            _groundAttribs.append(atWall, atEdge, atEdge);
             _groundIndices.append(i0 + 0, i0 + 1, i0 + 2);
-            _groundIndices.append(i0 + 0, i0 + 2, i0 + 3);
         }
     }
 
