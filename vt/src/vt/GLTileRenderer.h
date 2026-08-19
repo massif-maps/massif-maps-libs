@@ -483,7 +483,6 @@ namespace massif::vt {
         // had. Kept so no style has to be retouched.
         static constexpr float HALO_PIXELS_PER_UNIT = 0.589f;
         static constexpr float STROKE_UV_SCALE = 2.857f; // stroked line UV scale factor
-        static constexpr float POLYGON3D_HEIGHT_SCALE = 10018754.17f; // scaling factor for zoom 0 heights
         static constexpr float TERRAIN_LAYER_DEPTH_DELTA = 1.0f / 524288.0f; // 2^-19: NDC depth separation per draped layer bias unit (GPU terrain draping mode)
         // The FLOOR of a proxy tile's depth, tangram's `1` in
         //     setProxyDepth(m_proxyCounter > 0 ? std::max(maxVisS - tileId.s, 1) : 0)

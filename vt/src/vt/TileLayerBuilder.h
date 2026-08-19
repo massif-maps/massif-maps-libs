@@ -19,6 +19,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <unordered_map>
 #include <variant>
 #include <vector>
 #include <list>
@@ -64,6 +65,12 @@ namespace massif::vt {
         void setCompOp(std::optional<CompOp> compOp);
         void setOpacityFunc(FloatFunction opacityFunc);
         void setClipBox(const cglib::bbox2<float>& clipBox);
+        // Height in metres at which an extrusion wall gets an extra ring. The 3D lighting is
+        // evaluated PER VERTEX, so the facade gradient is a straight line between a wall's base
+        // and its roof unless there is a vertex where the gradient's own curve knees - which is
+        // what makes 'building-vertical-gradient-height' mean anything on a wall taller than it.
+        // 0 = no split.
+        void setPolygon3DGradientHeight(float height) { _polygon3DGradientHeight = height; }
         void setPolygonClipBox(const cglib::bbox2<float>& clipBox);
 
         void addBackground(const std::shared_ptr<TileBackground>& background);
@@ -109,6 +116,11 @@ namespace massif::vt {
         bool tesselateGlyph(const cglib::vec2<float>& point, std::int8_t styleIndex, const cglib::vec2<float>& pen, const cglib::vec2<float>& size, const GlyphMap::Glyph* glyph);
         bool tesselatePolygon(const std::vector<std::vector<cglib::vec2<float>>>& pointsList, std::int8_t styleIndex, const PolygonStyle& style);
         bool tesselatePolygon3D(const std::vector<std::vector<cglib::vec2<float>>>& pointsList, float minHeight, float maxHeight, std::int8_t styleIndex, const Polygon3DStyle& style);
+        // One wall quad of an extrusion, over the height range [lo, hi].
+        void appendWallQuad(const cglib::vec2<float>& p0, const cglib::vec2<float>& p1, const cglib::vec2<float>& binormal, float lo, float hi, std::int8_t styleIndex);
+        // An undirected footprint edge, quantised to a fine tile grid so two features that share
+        // a wall land on the same key.
+        static std::uint64_t wallEdgeKey(const cglib::vec2<float>& p0, const cglib::vec2<float>& p1);
         bool tesselateLine(const std::vector<cglib::vec2<float>>& points, std::int8_t styleIndex, const StrokeMap::Stroke* stroke, const LineStyle& style);
         bool tesselateLineEndPoint(const cglib::vec2<float>& p0, float u0, float v0, float v1, std::size_t i0, std::size_t i1, const cglib::vec2<float>& tangent, const cglib::vec2<float>& binormal, std::int8_t styleIndex, const LineStyle& style);
         static float lineEndArrowInradius(const LineStyle& style);
@@ -138,6 +150,11 @@ namespace massif::vt {
         VertexArray<cglib::vec2<float>> _binormals;
         VertexArray<float> _heights;
         VertexArray<cglib::vec4<std::int8_t>> _attribs;
+        // Height range already walled on each footprint edge of this layer. An OSM building and its
+        // building:part share edges, and two coincident walls z-fight into a stipple that reads as
+        // shadow acne; the second one is emitted only where the first left a gap.
+        std::unordered_map<std::uint64_t, std::pair<float, float>> _polygon3DWalls;
+        float _polygon3DGradientHeight = 0.0f;
         VertexArray<std::size_t> _indices;
         VertexArray<std::uint16_t> _geoPosIndexes;
         VertexArray<long long> _ids;

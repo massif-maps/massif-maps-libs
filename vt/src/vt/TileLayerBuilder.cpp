@@ -1184,6 +1184,48 @@ namespace massif::vt {
         return true;
     }
 
+    std::uint64_t TileLayerBuilder::wallEdgeKey(const cglib::vec2<float>& p0, const cglib::vec2<float>& p1) {
+        // 1/32768 of a tile - 7 cm at zoom 14, finer than any tiler's grid, so two features that
+        // share a wall in the source share a key here. The clip box reaches slightly outside the
+        // tile, hence the offset that keeps the quantised value unsigned.
+        auto quantize = [](float v) -> std::uint64_t {
+            return static_cast<std::uint64_t>(std::max(0, std::min(65535, static_cast<int>(std::lround(v * 32768.0f)) + 128)));
+        };
+        std::uint64_t a = (quantize(p0(0)) << 16) | quantize(p0(1));
+        std::uint64_t b = (quantize(p1(0)) << 16) | quantize(p1(1));
+        // Undirected: the two features walk their shared edge in opposite directions.
+        return a < b ? (a << 32) | b : (b << 32) | a;
+    }
+
+    void TileLayerBuilder::appendWallQuad(const cglib::vec2<float>& p0, const cglib::vec2<float>& p1, const cglib::vec2<float>& binormal, float lo, float hi, std::int8_t styleIndex) {
+        // The facade gradient, evaluated HERE rather than in the shader: this height and the reach
+        // are both style values in the same units, while the shader's height carries a packing and
+        // a tile scale (see uAbsHeightScale) that no constant in metres can be compared against.
+        // Absolute, so every part of a building shares one ramp instead of restarting per wall.
+        auto packT = [this](float h) -> std::int8_t {
+            float t = _polygon3DGradientHeight > 0.0f ? h / _polygon3DGradientHeight : 1.0f;
+            return static_cast<std::int8_t>(std::max(0, std::min(127, static_cast<int>(std::lround(t * 127.0f)))));
+        };
+        std::int8_t tLo = packT(lo);
+        std::int8_t tHi = packT(hi);
+
+        std::size_t i0 = _coords.size();
+        _coords.append(p0, p1, p1);
+        _texCoords.append(p0, p1, p1);
+        _binormals.append(binormal, binormal, binormal);
+        _heights.append(lo, lo, hi);
+        _attribs.append(cglib::vec4<std::int8_t>(styleIndex, 1, 0, tLo), cglib::vec4<std::int8_t>(styleIndex, 1, 0, tLo), cglib::vec4<std::int8_t>(styleIndex, 1, 1, tHi));
+        _indices.append(i0 + 0, i0 + 1, i0 + 2);
+
+        std::size_t i1 = _coords.size();
+        _coords.append(p1, p0, p0);
+        _texCoords.append(p1, p0, p0);
+        _binormals.append(binormal, binormal, binormal);
+        _heights.append(hi, hi, lo);
+        _attribs.append(cglib::vec4<std::int8_t>(styleIndex, 1, 1, tHi), cglib::vec4<std::int8_t>(styleIndex, 1, 1, tHi), cglib::vec4<std::int8_t>(styleIndex, 1, 0, tLo));
+        _indices.append(i1 + 0, i1 + 1, i1 + 2);
+    }
+
     bool TileLayerBuilder::tesselatePolygon3D(const std::vector<std::vector<cglib::vec2<float>>>& pointsList, float minHeight, float maxHeight, std::int8_t styleIndex, const Polygon3DStyle& style) {
         _tesselator.clear();
         if (!_tesselator.tesselate(pointsList)) {
@@ -1200,21 +1242,35 @@ namespace massif::vt {
                         cglib::vec2<float> tangent(cglib::unit(points[i] - points[j]));
                         cglib::vec2<float> binormal = cglib::vec2<float>(tangent(1), -tangent(0));
 
-                        std::size_t i0 = _coords.size();
-                        _coords.append(points[i], points[j], points[j]);
-                        _texCoords.append(points[i], points[j], points[j]);
-                        _binormals.append(binormal, binormal, binormal);
-                        _heights.append(minHeight, minHeight, maxHeight);
-                        _attribs.append(cglib::vec4<std::int8_t>(styleIndex, 1, 0, 0), cglib::vec4<std::int8_t>(styleIndex, 1, 0, 0), cglib::vec4<std::int8_t>(styleIndex, 1, 1, 0));
-                        _indices.append(i0 + 0, i0 + 1, i0 + 2);
-
-                        std::size_t i1 = _coords.size();
-                        _coords.append(points[j], points[i], points[i]);
-                        _texCoords.append(points[j], points[i], points[i]);
-                        _binormals.append(binormal, binormal, binormal);
-                        _heights.append(maxHeight, maxHeight, minHeight);
-                        _attribs.append(cglib::vec4<std::int8_t>(styleIndex, 1, 1, 0), cglib::vec4<std::int8_t>(styleIndex, 1, 1, 0), cglib::vec4<std::int8_t>(styleIndex, 1, 0, 0));
-                        _indices.append(i1 + 0, i1 + 1, i1 + 2);
+                        // Only the part of this wall no other feature has already walled. A
+                        // building and its building:part share footprint edges, and the two
+                        // coincident walls z-fight into a stipple that reads as shadow acne.
+                        auto emit = [&](float lo, float hi) {
+                            if (hi <= lo) {
+                                return;
+                            }
+                            // An extra ring where the gradient knees, or the per-vertex lighting
+                            // draws a straight line from the wall's foot to its roof and the
+                            // gradient's reach means nothing (see setPolygon3DGradientHeight).
+                            float knee = _polygon3DGradientHeight;
+                            if (knee > lo && knee < hi) {
+                                appendWallQuad(points[i], points[j], binormal, lo, knee, styleIndex);
+                                lo = knee;
+                            }
+                            appendWallQuad(points[i], points[j], binormal, lo, hi, styleIndex);
+                        };
+                        auto it = _polygon3DWalls.find(wallEdgeKey(points[i], points[j]));
+                        if (it == _polygon3DWalls.end()) {
+                            _polygon3DWalls.emplace(wallEdgeKey(points[i], points[j]), std::make_pair(minHeight, maxHeight));
+                            emit(minHeight, maxHeight);
+                        } else {
+                            // Up to two quads: a wall taller at both ends than what is there
+                            // sticks out below AND above it.
+                            emit(minHeight, std::min(maxHeight, it->second.first));
+                            emit(std::max(minHeight, it->second.second), maxHeight);
+                            it->second.first = std::min(it->second.first, minHeight);
+                            it->second.second = std::max(it->second.second, maxHeight);
+                        }
                     }
 
                     j = i;
@@ -1252,7 +1308,7 @@ namespace massif::vt {
 
         _binormals.fill(cglib::vec2<float>(0, 0), _coords.size() - offset);
         _heights.fill(maxHeight, _coords.size() - offset);
-        _attribs.fill(cglib::vec4<std::int8_t>(styleIndex, 0, 1, 0), _coords.size() - offset);
+        _attribs.fill(cglib::vec4<std::int8_t>(styleIndex, 0, 1, 127), _coords.size() - offset); // roof: never darkened
 
         return true;
     }

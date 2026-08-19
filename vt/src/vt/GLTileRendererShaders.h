@@ -31,7 +31,6 @@ namespace massif::vt {
         U_TILEUNITOFFSET,
         U_UVSCALE,
         U_HEIGHTSCALE,
-        U_ABSHEIGHTSCALE,
         U_COLORTABLE,
         U_WIDTHTABLE,
         U_OFFSETTABLE,
@@ -155,7 +154,6 @@ namespace massif::vt {
         { "uTileUnitOffset",   U_TILEUNITOFFSET },
         { "uUVScale",          U_UVSCALE },
         { "uHeightScale",      U_HEIGHTSCALE },
-        { "uAbsHeightScale",   U_ABSHEIGHTSCALE },
         { "uColorTable",       U_COLORTABLE },
         { "uWidthTable",       U_WIDTHTABLE },
         { "uOffsetTable",      U_OFFSETTABLE },
@@ -1929,14 +1927,12 @@ namespace massif::vt {
         uniform mat3 uTileMatrix;
         uniform float uUVScale;
         uniform float uHeightScale;
-        uniform float uAbsHeightScale;
         uniform vec4 uColorTable[16];
         varying highp_opt vec2 vTilePos;
         varying lowp vec4 vColor;
         #ifdef LIGHTING_FSH
-        varying highp_opt float vHeight;
-        varying lowp float vSideVertex;
         varying lowp float vWallT;
+        varying lowp float vSideVertex;
         varying mediump vec3 vNormal;
         #endif
         #ifdef TERRAIN_SHADOW
@@ -1948,10 +1944,9 @@ namespace massif::vt {
         void main(void) {
             int styleIndex = int(aVertexAttribs[0]);
             float sideVertex = aVertexAttribs[1];
-            // 0 on the base ring, 1 on the top ring, so it interpolates linearly UP the wall
-            // whatever the building's base height is (see TileLayerBuilder::tesselatePolygon3D).
-            float wallT = aVertexAttribs[2];
-            float height = aVertexHeight * uAbsHeightScale;
+            // The facade gradient, baked per vertex by the tesselator (appendWallQuad): 0 at the
+            // foot of the building, 1 once past the gradient's reach.
+            float wallT = aVertexAttribs[3] * (1.0 / 127.0);
             vec3 pos = aVertexPosition;
         #ifdef TRANSFORM
             pos = vec3(uTransformMatrix * vec4(pos, 1.0));
@@ -1965,15 +1960,14 @@ namespace massif::vt {
             vec4 color = uColorTable[styleIndex];
             vTilePos = (uTileMatrix * vec3(aVertexUV * uUVScale, 1.0)).xy;
         #ifdef LIGHTING_VSH
-            vColor = applyLighting3D(color, normal, height, wallT, sideVertex > 0.0);
+            vColor = applyLighting3D(color, normal, wallT, sideVertex > 0.0);
         #else
             vColor = color;
         #endif
         #ifdef LIGHTING_FSH
             vNormal = normal;
-            vHeight = height;
-            vSideVertex = sideVertex;
             vWallT = wallT;
+            vSideVertex = sideVertex;
         #endif
             gl_Position = applyDepthBias(uMVPMatrix * vec4(pos, 1.0));
         }
@@ -1986,9 +1980,8 @@ namespace massif::vt {
         varying mediump vec3 vShadowNormal;
         #endif
         #ifdef LIGHTING_FSH
-        varying highp_opt float vHeight;
-        varying lowp float vSideVertex;
         varying lowp float vWallT;
+        varying lowp float vSideVertex;
         varying mediump vec3 vNormal;
         #endif
 
@@ -1997,7 +1990,7 @@ namespace massif::vt {
                 discard;
             }
         #ifdef LIGHTING_FSH
-            glFragColor = applyFog(applyLighting3D(vColor, normalize(vNormal), vHeight, vWallT, vSideVertex > 0.0));
+            glFragColor = applyFog(applyLighting3D(vColor, normalize(vNormal), vWallT, vSideVertex > 0.0));
         #else
             glFragColor = applyFog(vColor);
         #endif

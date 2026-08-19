@@ -299,6 +299,7 @@ namespace massif::css {
             { "building-light-intensity", &mvt::Map::Settings::buildingLightIntensity },
             { "building-ambient", &mvt::Map::Settings::buildingAmbient },
             { "building-vertical-gradient", &mvt::Map::Settings::buildingVerticalGradient },
+            { "building-vertical-gradient-height", &mvt::Map::Settings::buildingVerticalGradientHeight },
             { "terrain-lighting", &mvt::Map::Settings::terrainLighting },
             { "shadow-strength", &mvt::Map::Settings::shadowStrength },
             { "shadow-bias", &mvt::Map::Settings::shadowBias },
