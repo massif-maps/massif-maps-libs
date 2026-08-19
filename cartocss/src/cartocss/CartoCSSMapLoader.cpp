@@ -321,6 +321,7 @@ namespace massif::css {
         }
         const std::pair<const char*, mvt::ColorFunctionProperty mvt::Map::Settings::*> colorProperties[] = {
             { "sun-color", &mvt::Map::Settings::sunColor },
+            { "ambient-color", &mvt::Map::Settings::ambientColor },
             { "fog-color", &mvt::Map::Settings::fogColor },
             { "fog-high-color", &mvt::Map::Settings::fogHighColor },
             { "fog-space-color", &mvt::Map::Settings::fogSpaceColor }

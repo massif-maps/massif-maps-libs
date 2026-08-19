@@ -61,6 +61,7 @@ namespace massif::vt {
         U_DRAPETEXTURE,
         U_SUNDIR,
         U_SUNCOLOR,
+        U_AMBIENTCOLOR,
         U_LIGHTPARAMS,
         U_TERRAINSLOPESCALE,
         U_SHADOWMATRIX,
@@ -184,6 +185,7 @@ namespace massif::vt {
         { "uDrapeTexture",      U_DRAPETEXTURE },
         { "uSunDir",            U_SUNDIR },
         { "uSunColor",          U_SUNCOLOR },
+        { "uAmbientColor",      U_AMBIENTCOLOR },
         { "uLightParams",       U_LIGHTPARAMS },
         { "uTerrainSlopeScale", U_TERRAINSLOPESCALE },
         { "uShadowMatrix",      U_SHADOWMATRIX },
@@ -831,13 +833,14 @@ namespace massif::vt {
         // draped around it was lit - GEOMETRY_LIGHT is what closes that.
         #if defined(TERRAIN) && defined(GEOMETRY_LIGHT) && !defined(TERRAIN_LIGHT)
         uniform lowp vec4 uSunColor;        // rgb = colour, a = unused
+        uniform lowp vec4 uAmbientColor;    // rgb = colour, a = unused
         uniform mediump vec2 uLightParams;  // x = sun intensity, y = ambient intensity
         lowp vec4 applyTerrainShading(lowp vec4 color) {
             mediump float ndl = terrainNdl();
             // The same normalised Lambert the draped surface uses (backgroundFsh): ambient is the
             // floor, the sun fills the remaining headroom. The colour is premultiplied, so scaling
             // rgb alone is a valid tint and the clamp keeps rgb <= a.
-            mediump vec3 lit = vec3(uLightParams.y) + uSunColor.rgb * ((1.0 - uLightParams.y) * ndl * uLightParams.x);
+            mediump vec3 lit = uAmbientColor.rgb * uLightParams.y + uSunColor.rgb * ((1.0 - uLightParams.y) * ndl * uLightParams.x);
         #if defined(TERRAIN_SHADOW) && defined(SHADOW_MASK_IN)
             lit *= shadowFactorScreen();
         #elif defined(TERRAIN_SHADOW)
@@ -954,6 +957,7 @@ namespace massif::vt {
         uniform highp vec4 uElevationTexelSize;
         uniform mediump vec3 uSunDir;         // east, north, up - the same frame the tile mesh lives in
         uniform lowp vec4 uSunColor;          // rgb = colour, a = unused
+        uniform lowp vec4 uAmbientColor;      // rgb = colour, a = unused
         uniform mediump vec2 uLightParams;    // x = sun intensity, y = ambient intensity
         uniform highp vec2 uTerrainSlopeScale; // metres of height -> world units, per elevation-uv unit
         varying highp vec2 vElevUV;
@@ -1031,7 +1035,7 @@ namespace massif::vt {
             // Normalised Lambert: ambient is the floor, the sun fills the REMAINING headroom, so
             // a surface facing the sun lands at 1 instead of ambient+1. Adding them blows the
             // ground out to white at a high sun, and a clipped highlight cannot show a shadow.
-            mediump vec3 lit = vec3(uLightParams.y) + uSunColor.rgb * ((1.0 - uLightParams.y) * ndl * uLightParams.x);
+            mediump vec3 lit = uAmbientColor.rgb * uLightParams.y + uSunColor.rgb * ((1.0 - uLightParams.y) * ndl * uLightParams.x);
         #ifdef TERRAIN_SHADOW
             // The shadow multiplies the FINAL colour, exactly as it does on the 3D extrusions.
             // Folding it into N.L instead made it vanish at ambient 1 (where N.L has no weight
@@ -1109,7 +1113,7 @@ namespace massif::vt {
             // Normalised Lambert: ambient is the floor, the sun fills the REMAINING headroom, so
             // a surface facing the sun lands at 1 instead of ambient+1. Adding them blows the
             // ground out to white at a high sun, and a clipped highlight cannot show a shadow.
-            mediump vec3 lit = vec3(uLightParams.y) + uSunColor.rgb * ((1.0 - uLightParams.y) * ndl * uLightParams.x);
+            mediump vec3 lit = uAmbientColor.rgb * uLightParams.y + uSunColor.rgb * ((1.0 - uLightParams.y) * ndl * uLightParams.x);
         #ifdef TERRAIN_SHADOW
             // The shadow multiplies the FINAL colour, exactly as it does on the 3D extrusions.
             // Folding it into N.L instead made it vanish at ambient 1 (where N.L has no weight
@@ -1372,6 +1376,7 @@ namespace massif::vt {
         // declaration of the same name is a link error.
         uniform mediump vec3 uSunDir;          // east, north, up - the frame the tile mesh lives in
         uniform lowp vec4 uSunColor;           // rgb = colour, a = unused
+        uniform lowp vec4 uAmbientColor;       // rgb = colour, a = unused
         uniform mediump vec2 uLightParams;     // x = sun intensity, y = ambient intensity
         uniform highp vec2 uTerrainSlopeScale; // metres of height -> world units, per elevation-uv unit
 
@@ -1403,7 +1408,7 @@ namespace massif::vt {
             // Same normalised Lambert and the same final-colour shadow multiply as the terrain
             // surface itself (backgroundFsh), so ground and paint agree about what a shadow is.
             mediump float ndl = max(0.0, dot(terrainSurfaceNormal(), uSunDir));
-            mediump vec3 lit = vec3(uLightParams.y) + uSunColor.rgb * ((1.0 - uLightParams.y) * ndl * uLightParams.x);
+            mediump vec3 lit = uAmbientColor.rgb * uLightParams.y + uSunColor.rgb * ((1.0 - uLightParams.y) * ndl * uLightParams.x);
         #ifdef TERRAIN_SHADOW
             lit *= shadowFactorSlope(ndl);
         #endif

@@ -41,10 +41,10 @@ namespace massif::mvt {
             ColorFunctionProperty sunColor = ColorFunctionProperty("#ffffff");
             FloatFunctionProperty sunIntensity = FloatFunctionProperty(1.0f);
             FloatFunctionProperty ambientIntensity = FloatFunctionProperty(0.35f);
-            // Building (3D extrusion) lighting. Unset means the extrusions follow the terrain sun
-            // when terrain lighting is on, and the legacy view-direction shading when it is off -
-            // which is why walls change darkness as terrain lighting is toggled. Setting either of
-            // these puts the extrusions on the normalised-Lambert model whatever the terrain does.
+            ColorFunctionProperty ambientColor = ColorFunctionProperty("#ffffff"); // the sky's tint in shadow
+            // Building (3D extrusion) lighting. Unset means the extrusions follow the sun, on the
+            // same normalised-Lambert model the terrain surface uses; these two tune the walls
+            // alone, without moving the sun that lights the ground.
             FloatFunctionProperty buildingLightIntensity = FloatFunctionProperty(1.0f);
             FloatFunctionProperty buildingAmbient = FloatFunctionProperty(0.35f);
             FloatFunctionProperty terrainLighting = FloatFunctionProperty(0.0f);   // 0/1: light the terrain with the sun

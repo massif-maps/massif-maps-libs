@@ -110,6 +110,7 @@ namespace massif::vt {
             bool enabled = false;
             cglib::vec3<float> sunDir = cglib::vec3<float>(0, 0, 1);
             cglib::vec3<float> sunColor = cglib::vec3<float>(1, 1, 1);
+            cglib::vec3<float> ambientColor = cglib::vec3<float>(1, 1, 1);
             float sunIntensity = 1.0f;
             float ambientIntensity = 0.35f;
         };
