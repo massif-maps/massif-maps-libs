@@ -135,7 +135,7 @@ namespace massif::vt {
         // The wedge between two edges' bevels at a corner, spanning the two pulled-back wall tops
         // up to the inset roof vertex. This is what ROUNDS a corner, and what lets the bevel close
         // there at all.
-        void appendBevelCorner(const cglib::vec2<float>& a, const cglib::vec2<float>& b, const cglib::vec2<float>& apex, const cglib::vec2<float>& binormal, float wallTop, float roofHeight, std::int8_t styleIndex);
+        void appendBevelCorner(const cglib::vec2<float>& a, const cglib::vec2<float>& b, const cglib::vec2<float>& apex, const cglib::vec2<float>& binormalA, const cglib::vec2<float>& binormalB, float wallTop, float roofHeight, std::int8_t styleIndex);
         // The full-height vertical band closing the gap between two walls pulled back from a shared
         // corner. Each end carries its own edge normal, so the shading turns the corner smoothly.
         void appendCornerQuad(const cglib::vec2<float>& a, const cglib::vec2<float>& b, const cglib::vec2<float>& binormalA, const cglib::vec2<float>& binormalB, float lo, float hi, std::int8_t styleIndex);

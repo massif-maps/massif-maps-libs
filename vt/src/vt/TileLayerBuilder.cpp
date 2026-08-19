@@ -1369,7 +1369,7 @@ namespace massif::vt {
         _indices.append(i1 + 0, i1 + 1, i1 + 2);
     }
 
-    void TileLayerBuilder::appendBevelCorner(const cglib::vec2<float>& a, const cglib::vec2<float>& b, const cglib::vec2<float>& apex, const cglib::vec2<float>& binormal, float wallTop, float roofHeight, std::int8_t styleIndex) {
+    void TileLayerBuilder::appendBevelCorner(const cglib::vec2<float>& a, const cglib::vec2<float>& b, const cglib::vec2<float>& apex, const cglib::vec2<float>& binormalA, const cglib::vec2<float>& binormalB, float wallTop, float roofHeight, std::int8_t styleIndex) {
         auto packT = [this](float h) -> std::int8_t {
             float t = _polygon3DGradientHeight > 0.0f ? h / _polygon3DGradientHeight : 1.0f;
             return static_cast<std::int8_t>(std::max(0, std::min(127, static_cast<int>(std::lround(t * 127.0f)))));
@@ -1382,10 +1382,17 @@ namespace massif::vt {
         // a -> apex -> b, not a -> b -> apex: the shared edges have to run opposite to the way the
         // two bevel quads beside them traverse the same edge, or the wedge is back-face culled and
         // the corner is a hole.
+        // Each end keeps its OWN edge normal, and the apex the average of the two - the wedge is
+        // the join between two bevel bands, so giving it one band's normal left the corner matching
+        // that side and stepping against the other.
+        cglib::vec2<float> binormalApex = binormalA + binormalB;
+        float apexLen = cglib::length(binormalApex);
+        binormalApex = apexLen > 0.0f ? binormalApex * (1.0f / apexLen) : binormalA;
+
         std::size_t i0 = _coords.size();
         _coords.append(a, apex, b);
         _texCoords.append(a, apex, b);
-        _binormals.append(binormal, binormal, binormal);
+        _binormals.append(binormalA, binormalApex, binormalB);
         _heights.append(wallTop, roofHeight, wallTop);
         _attribs.append(low0, high0, low0);
         _indices.append(i0 + 0, i0 + 1, i0 + 2);
@@ -1735,7 +1742,7 @@ namespace massif::vt {
                                 emitBand(minHeight, wallTop, [&](float lo, float hi) {
                                     appendCornerQuad(wallP0, b, binormal, binormalNext, lo, hi, styleIndex);
                                 });
-                                appendBevelCorner(wallP0, b, inset[i], binormal, wallTop, maxHeight, styleIndex);
+                                appendBevelCorner(wallP0, b, inset[i], binormal, binormalNext, wallTop, maxHeight, styleIndex);
                             }
                         }
                     }
