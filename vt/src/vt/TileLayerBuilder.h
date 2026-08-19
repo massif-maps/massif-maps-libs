@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <memory>
 #include <unordered_map>
+#include <unordered_set>
 #include <variant>
 #include <vector>
 #include <list>
@@ -118,6 +119,9 @@ namespace massif::vt {
         bool tesselatePolygon3D(const std::vector<std::vector<cglib::vec2<float>>>& pointsList, float minHeight, float maxHeight, std::int8_t styleIndex, const Polygon3DStyle& style);
         // One wall quad of an extrusion, over the height range [lo, hi].
         void appendWallQuad(const cglib::vec2<float>& p0, const cglib::vec2<float>& p1, const cglib::vec2<float>& binormal, float lo, float hi, std::int8_t styleIndex);
+        // A footprint plus the height its roof sits at. Order- and winding-independent (the parts
+        // are summed), so the same building digitised twice from a different start vertex matches.
+        static std::uint64_t roofKey(const std::vector<std::vector<cglib::vec2<float>>>& pointsList, float height);
         // An undirected footprint edge, quantised to a fine tile grid so two features that share
         // a wall land on the same key.
         static std::uint64_t wallEdgeKey(const cglib::vec2<float>& p0, const cglib::vec2<float>& p1);
@@ -155,6 +159,11 @@ namespace massif::vt {
         // shadow acne; the second one is emitted only where the first left a gap.
         std::unordered_map<std::uint64_t, std::pair<float, float>> _polygon3DWalls;
         float _polygon3DGradientHeight = 0.0f;
+        // Roofs already emitted this layer. Walls are deduped per edge above; a roof is a polygon,
+        // so it is matched whole - which catches a duplicated footprint, the case that actually
+        // z-fights. A building:part normally differs in height from its parent, putting its roof on
+        // another plane entirely.
+        std::unordered_set<std::uint64_t> _polygon3DRoofs;
         VertexArray<std::size_t> _indices;
         VertexArray<std::uint16_t> _geoPosIndexes;
         VertexArray<long long> _ids;

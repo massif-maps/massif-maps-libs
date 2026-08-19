@@ -1184,6 +1184,21 @@ namespace massif::vt {
         return true;
     }
 
+    std::uint64_t TileLayerBuilder::roofKey(const std::vector<std::vector<cglib::vec2<float>>>& pointsList, float height) {
+        // Summed, so the ring's start vertex and its winding do not matter - the same building
+        // arriving from two source layers is rarely digitised identically.
+        std::uint64_t sum = 0;
+        std::uint64_t count = 0;
+        for (const std::vector<cglib::vec2<float>>& points : pointsList) {
+            for (const cglib::vec2<float>& p : points) {
+                sum += (static_cast<std::uint64_t>(static_cast<int>(std::lround(p(0) * 32768.0f)) + 128) << 20)
+                     ^ static_cast<std::uint64_t>(static_cast<int>(std::lround(p(1) * 32768.0f)) + 128);
+                count++;
+            }
+        }
+        return (sum * 1099511628211ULL) ^ (count << 40) ^ static_cast<std::uint64_t>(std::lround(height * 1024.0f));
+    }
+
     std::uint64_t TileLayerBuilder::wallEdgeKey(const cglib::vec2<float>& p0, const cglib::vec2<float>& p1) {
         // 1/32768 of a tile - 7 cm at zoom 14, finer than any tiler's grid, so two features that
         // share a wall in the source share a key here. The clip box reaches slightly outside the
@@ -1276,6 +1291,12 @@ namespace massif::vt {
                     j = i;
                 }
             }
+        }
+
+        // A duplicated footprint puts two roofs on one plane, which z-fights exactly as the walls
+        // did. The walls above are already suppressed for it; without this the roof survives.
+        if (!_polygon3DRoofs.insert(roofKey(pointsList, maxHeight)).second) {
+            return true;
         }
 
         std::size_t offset = _coords.size();
