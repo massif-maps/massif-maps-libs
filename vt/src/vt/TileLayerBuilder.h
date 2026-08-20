@@ -74,6 +74,8 @@ namespace massif::vt {
         void setPolygon3DGradientHeight(float height) { _polygon3DGradientHeight = height; }
         // Metres the contact shadow on the ground reaches out from a footprint. 0 = no skirt.
         void setPolygon3DGroundRadius(float radius) { _polygon3DGroundRadius = radius; }
+        // Metres between subdivisions along a wall of the contact shadow. 0 = the terrain grid cell.
+        void setPolygon3DGroundStep(float step) { _polygon3DGroundStep = step; }
         // Metres of bevel between a wall and the roof, rounding the edge. 0 = a hard 90 degrees.
         void setPolygon3DEdgeRadius(float radius) { _polygon3DEdgeRadius = radius; }
         // True blends the bevel's normal from wall to roof, so the edge reads as ROLLED. False
@@ -195,6 +197,7 @@ namespace massif::vt {
         // another plane entirely.
         std::unordered_set<std::uint64_t> _polygon3DRoofs;
         float _polygon3DGroundRadius = 0.0f;   // metres the contact shadow reaches; 0 = off
+        float _polygon3DGroundStep = 0.0f;     // metres between subdivisions; 0 = the terrain grid cell
         float _polygon3DEdgeRadius = 0.0f;     // metres of bevel at the roof edge; 0 = hard edge
         bool _polygon3DRoundedRoof = true;     // false = the bevel is a flat facet with its own tone
         // The skirt's own stream (see appendGroundSkirt), packed once by buildTileLayer.

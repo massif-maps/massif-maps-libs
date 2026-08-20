@@ -301,6 +301,7 @@ namespace massif::css {
             { "building-vertical-gradient", &mvt::Map::Settings::buildingVerticalGradient },
             { "building-vertical-gradient-height", &mvt::Map::Settings::buildingVerticalGradientHeight },
             { "building-ao-ground-radius", &mvt::Map::Settings::buildingAoGroundRadius },
+            { "building-ao-ground-step", &mvt::Map::Settings::buildingAoGroundStep },
             { "building-ao-ground-attenuation", &mvt::Map::Settings::buildingAoGroundAttenuation },
             { "building-ao-intensity", &mvt::Map::Settings::buildingAoIntensity },
             { "building-edge-radius", &mvt::Map::Settings::buildingEdgeRadius },

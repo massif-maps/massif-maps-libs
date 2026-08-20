@@ -55,6 +55,9 @@ namespace massif::mvt {
             // which is the default: nothing changes until a style asks for it.
             FloatFunctionProperty buildingAoGroundRadius = FloatFunctionProperty(0.0f);      // metres
             FloatFunctionProperty buildingAoGroundAttenuation = FloatFunctionProperty(0.69f); // falloff curve
+            // Metres between subdivisions ALONG a wall. 0 = the terrain grid's own cell, which is
+            // what the shadow has to follow; raise it to see the chord artifact, lower it to kill it.
+            FloatFunctionProperty buildingAoGroundStep = FloatFunctionProperty(0.0f);         // metres, 0 = auto
             FloatFunctionProperty buildingAoIntensity = FloatFunctionProperty(0.5f);
             // Bevel between a wall and the roof, rounding the hard 90 degrees. 0 = off.
             FloatFunctionProperty buildingEdgeRadius = FloatFunctionProperty(0.0f); // metres

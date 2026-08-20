@@ -1338,7 +1338,7 @@ namespace massif::vt {
 
     // Tile-local length of one contact-shadow quad along a wall. 1/32 of a tile is the regular
     // terrain grid's own cell, which is the resolution the surface actually bends at.
-    static constexpr float GROUND_SKIRT_STEP = 1.0f / 32.0f;
+    static constexpr float GROUND_SKIRT_STEP = 1.0f / 64.0f;
 
     void TileLayerBuilder::appendGroundSkirt(const std::vector<cglib::vec2<float>>& points, float height, std::int8_t styleIndex) {
         if (points.size() < 3 || _polygon3DGroundRadius <= 0.0f) {
@@ -1383,7 +1383,8 @@ namespace massif::vt {
             // a 50 m wall cuts into a slope at one end and floats at the other. Across the wall the
             // span is only 2 * radius, so that direction needs no split.
             float span = len + 2.0f * radius;
-            int steps = std::max(1, std::min(64, static_cast<int>(std::ceil(span / GROUND_SKIRT_STEP))));
+            float step = (_polygon3DGroundStep > 0.0f ? _transformer->calculateHeight(points[0], _polygon3DGroundStep) : GROUND_SKIRT_STEP);
+            int steps = std::max(1, std::min(128, static_cast<int>(std::ceil(span / std::max(1.0e-6f, step)))));
             cglib::vec4<std::int8_t> attribs(styleIndex, 0, 0, 0);
             for (int k = 0; k < steps; k++) {
                 // Distance along the segment's own frame, from -radius (the near cap) onward.
