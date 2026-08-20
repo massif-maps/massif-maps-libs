@@ -1915,23 +1915,36 @@ namespace massif::vt {
         }
     )GLSL";
 
-    // The contact shadow an extrusion casts on the ground it stands on: a flat skirt around the
-    // footprint, MULTIPLIED over whatever the ground already drew. It carries no colour of its
-    // own - only how far each vertex is from the wall.
+    // The contact shadow an extrusion casts on the ground it stands on: one quad per footprint
+    // edge, covering that edge's bounding capsule. It carries no colour of its own - only the
+    // fragment's own distance to the segment.
+    //
+    // Drawn ONLY into the offscreen mask (GLTileRenderer::renderGroundAOMask), under MIN blending,
+    // so that a corner, a building:part and a neighbour meeting on one pixel take the darkest of
+    // the three. The frame gets the resolved mask multiplied in once, as one screen quad - per-quad
+    // compositing would multiply again at every overlap and undo exactly what MIN just resolved.
     static const std::string polygon3DGroundVsh = R"GLSL(
         attribute vec3 aVertexPosition;
         attribute vec3 aVertexNormal;
+        attribute vec3 aVertexBinormal;
+        attribute vec2 aVertexUV;
         attribute float aVertexHeight;
-        attribute vec4 aVertexAttribs;
         uniform mat4 uMVPMatrix;
+        uniform mat3 uTileMatrix;
+        uniform float uUVScale;
         uniform float uHeightScale;
+        uniform float uBinormalScale;
         uniform vec4 uColorTable[16];
-        varying lowp float vGroundDist;
+        varying highp_opt vec2 vTilePos;
+        varying mediump vec3 vSegment;
         varying lowp float vGroundBlend;
 
         void main(void) {
             vec3 pos = applyTerrain(aVertexPosition) + aVertexNormal * (aVertexHeight * uHeightScale);
-            vGroundDist = aVertexAttribs[3] * (1.0 / 127.0);
+            vTilePos = (uTileMatrix * vec3(aVertexUV * uUVScale, 1.0)).xy;
+            // (along, across, length) in the segment's own frame, in units of the shadow radius.
+            // Affine in the vertex, so interpolating it over the quad is exact.
+            vSegment = aVertexBinormal * uBinormalScale;
             // The tile's fade, which reaches here as the style colour's alpha. An extrusion fades
             // in by GROWING, and without this its contact shadow arrives at full strength on a
             // building that is not there yet - a footprint painted on the ground as a tile appears.
@@ -1942,13 +1955,23 @@ namespace massif::vt {
 
     static const std::string polygon3DGroundFsh = R"GLSL(
         uniform mediump vec2 uGroundAOParams; // x = intensity, y = attenuation
-        varying lowp float vGroundDist;
+        varying highp_opt vec2 vTilePos;
+        varying mediump vec3 vSegment;
         varying lowp float vGroundBlend;
 
         void main(void) {
-            // The bands and the corner fans tile the offset region exactly, so the distance to the
-            // footprint is simply this one interpolated value (TileLayerBuilder::appendSkirtBand).
-            mediump float dist = min(1.0, vGroundDist);
+            // This tile's ground only. Under overzoom one source tile's capsules are handed to
+            // every target tile derived from it, and each of those draws displaces them with ITS
+            // OWN elevation texture - so without this the same footprint casts a second shadow at
+            // a neighbouring tile's height, floating beside the right one.
+            if (min(vTilePos.x, vTilePos.y) < -0.01 || max(vTilePos.x, vTilePos.y) > 1.01) {
+                discard;
+            }
+            // Distance to the footprint SEGMENT, per fragment - not a value interpolated between
+            // vertices. The caps are what rounds every corner, and what joins one edge's shadow to
+            // the next; a per-vertex distance is linear inside a triangle and facets there.
+            mediump float t = clamp(vSegment.x, 0.0, vSegment.z);
+            mediump float dist = min(1.0, length(vec2(vSegment.x - t, vSegment.y)));
             // mapbox's ground-attenuation, applied as they apply it: it bends the falloff without
             // moving either end. Below 1 (their default is 0.69) it reaches further from the wall.
             mediump float d = 1.0 - pow(1.0 - dist, uGroundAOParams.y);
@@ -1995,17 +2018,41 @@ namespace massif::vt {
             // foot of the building, 1 once past the gradient's reach.
             float wallT = aVertexAttribs[3] * (1.0 / 127.0);
             vec3 pos = aVertexPosition;
+            // Anything ABOVE the ground is measured from ONE elevation - the footprint's centroid,
+            // which the tesselator put in the texcoord slot - so the roof stays level instead of
+            // shearing down the slope. The ground ring itself keeps the terrain under each vertex,
+            // so the wall still meets the slope everywhere and the walls simply grow taller
+            // downhill. mapbox's fill-extrusion base-alignment terrain + height-alignment flat.
+            // Anchoring the base to the centroid too (maplibre's rigid prism) buries a building
+            // whole wherever the hillside rises more than its own height.
+            vec3 anchor = vec3(aVertexUV, aVertexPosition.z);
         #ifdef TRANSFORM
             pos = vec3(uTransformMatrix * vec4(pos, 1.0));
+            anchor = vec3(uTransformMatrix * vec4(anchor, 1.0));
         #endif
-            pos = applyTerrain(pos) + aVertexNormal * (aVertexHeight * uHeightScale);
+            float groundZ = applyTerrain(pos).z;
+            float anchorZ = applyTerrain(anchor).z;
+            pos = vec3(pos.xy, aVertexHeight > 0.0 ? anchorZ : groundZ) + aVertexNormal * (aVertexHeight * uHeightScale);
+            // A flat roof anchored at one point is swallowed wherever the hill rises past it, and
+            // the building simply vanishes into the slope. Ride on the ground there instead: the
+            // roof stays level everywhere it can, and only bends where it would otherwise be gone.
+            if (aVertexHeight > 0.0) {
+                pos.z = max(pos.z, groundZ);
+            }
             vec3 normal = normalize(mix(aVertexNormal, aVertexBinormal, sideVertex));
             applyShadowPos(pos, normal);
         #ifdef TERRAIN_SHADOW
             vShadowNormal = normal;
         #endif
             vec4 color = uColorTable[styleIndex];
-            vTilePos = (uTileMatrix * vec3(aVertexUV * uUVScale, 1.0)).xy;
+            // The overzoom clip, per VERTEX. Not on the centroid: a building can reach into a tile
+            // while its centroid sits in another, and a centroid test then drops it from every tile
+            // that holds it - walls missing until a zoom-out retiles them. The position works here
+            // because an extrusion's texcoords carry the centroid at the COORD scale (see
+            // packGeometry), so uUVScale converts either of them. Y is flipped back out of the
+            // transformer's frame - uTileMatrix works in tile space.
+            vec2 vertexTile = aVertexPosition.xy * uUVScale;
+            vTilePos = (uTileMatrix * vec3(vertexTile.x, 1.0 - vertexTile.y, 1.0)).xy;
         #ifdef LIGHTING_VSH
             // Unshadowed: the shadow is a per-fragment term, so a per-vertex lighting still takes
             // it as a plain multiply in the fragment shader (and loses its ambient doing so).

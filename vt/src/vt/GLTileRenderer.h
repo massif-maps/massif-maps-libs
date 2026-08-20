@@ -180,6 +180,16 @@ namespace massif::vt {
         // The contact shadow extrusions cast on the ground (POLYGON3DGROUND): how dark it goes
         // against the wall, and the falloff curve out to the skirt's edge.
         void setGroundAO(float intensity, float attenuation);
+        // 0 below the minimum zoom, ramping to 1 one level above it.
+        static float groundAOZoomFade(float zoom);
+        // Whether the contact shadows would draw anything at all this frame (intensity and zoom).
+        bool isGroundAOActive() const;
+        // Draws every visible contact-shadow quad into the bound framebuffer under MIN blending,
+        // resolving their overlaps into one mask. Returns the number of geometries drawn.
+        int renderGroundAOMask();
+        // The same capsules resolved in ONE DRAPE TILE's frame, into the bound target. Baked into
+        // the ground, the shadow follows the terrain exactly. Changes no GL state - see the body.
+        int bakeGroundAOMask(const TileId& targetTileId);
         // Turns this renderer into a paint baker (see TerrainPaint): it draws the DEM-derived
         // paint for every draped tile and nothing else. Only effective under a cross-layer drape
         // target, which is where the layer order is resolved.
@@ -611,6 +621,8 @@ namespace massif::vt {
         // does not land inside the gesture.
         void warmTerrainRasterShader();
         bool hasDrapeableContent(const RenderTileLayer& renderLayer) const;
+        // Contact shadows this layer would bake into the drape (see calculateDrapeFingerprint).
+        bool hasGroundAOContent(const RenderTileLayer& renderLayer) const;
         // Element opacity a draped layer is baked with: the style's layer opacity, or 1 when the
         // layer has a comp-op (which the bake can not reproduce).
         float calculateDrapeOpacity(const RenderTileLayer& renderLayer) const;
@@ -735,8 +747,11 @@ namespace massif::vt {
         static constexpr int TILE_BORDER_SEGMENTS = 16; // per edge, so the line follows the terrain
         bool _debugSurfacePrefill = false;
         TerrainLighting _terrainLighting;
+        // Below this zoom a contact shadow is a sub-pixel rim; groundAOZoomFade ramps it over one level.
+        static constexpr float GROUND_AO_MIN_ZOOM = 16.0f;
         float _groundAOIntensity = 0.0f;
         float _groundAOAttenuation = 0.69f;
+        bool _groundAOMaskPass = false; // set only while the mask is being drawn
         TerrainPaint _terrainPaint;
         bool _terrainPaintOnGround = false;      // the paint replaces the ground fill (see setTerrainPaintOnGround)
         int _terrainDemTaps = 16;                // texture fetches per terrain vertex (see setTerrainDemTaps)

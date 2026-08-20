@@ -711,11 +711,133 @@ namespace massif::vt {
         return count > 0 ? signature / count : 0.0f;
     }
 
+    float GLTileRenderer::groundAOZoomFade(float zoom) {
+        // A contact shadow is a couple of metres wide, so below zoom 17 it is a sub-pixel rim on a
+        // view holding the most buildings - all cost, nothing visible. Faded rather than switched,
+        // or a whole city's shadows appear between one frame and the next.
+        return std::max(0.0f, std::min(1.0f, zoom - GROUND_AO_MIN_ZOOM));
+    }
+
     void GLTileRenderer::setGroundAO(float intensity, float attenuation) {
         std::lock_guard<std::mutex> lock(_mutex);
 
         _groundAOIntensity = intensity;
         _groundAOAttenuation = attenuation;
+    }
+
+    bool GLTileRenderer::isGroundAOActive() const {
+        std::lock_guard<std::mutex> lock(_mutex);
+
+        return _groundAOIntensity * groundAOZoomFade(_viewState.zoom) > 0.0f;
+    }
+
+    int GLTileRenderer::renderGroundAOMask() {
+        std::lock_guard<std::mutex> lock(_mutex);
+
+        resetProgramState(); // another renderer may have bound its own program since the last draw
+
+        if (!_visibleRenderTiles || !(_groundAOIntensity * groundAOZoomFade(_viewState.zoom) > 0.0f)) {
+            return 0;
+        }
+
+        // MIN, into a mask cleared to white. Where two capsules meet - a corner, a building and its
+        // building:part, two neighbours - the pixel takes the darkest of them rather than their
+        // product. Resolving it here is the whole reason the pass exists: multiplied straight into
+        // the frame, every one of those overlaps compounds towards black.
+        glDisable(GL_CULL_FACE); // a capsule quad's winding follows its edge; both sides count
+
+        // Seed the mask's own depth with the terrain cover, as the 3D overlay does. Without it the
+        // capsule of a building hidden behind a ridge still reached the mask, and the screen
+        // multiply then laid that shadow on the slope IN FRONT of it - a second copy of the
+        // building's contact shadow, sliding against the ground as the camera pans.
+        bool terrainOccluders = _terrainMode && static_cast<bool>(_terrainTextureProvider);
+        glEnable(GL_DEPTH_TEST);
+        glDepthFunc(GL_LESS);
+        glDepthMask(GL_TRUE);
+        glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+        if (terrainOccluders) {
+            _terrainDrawDepthBias = _terrainDepthBias;
+            _terrainDrawDepthClipUnits = 0.0f;
+            if (_terrainSharedGround) {
+                for (const TileId& tileId : _terrainGroundTiles) {
+                    renderTileSurfaceFill(tileId, Color());
+                }
+            } else {
+                for (const RenderTile& renderTile : *_visibleRenderTiles) {
+                    if (renderTile.visible) {
+                        renderTileSurfaceFill(renderTile.targetTileId, Color());
+                    }
+                }
+            }
+        }
+        // Same clearance an extrusion gets, or a capsule lying ON the surface is rejected by it.
+        if (terrainOccluders) {
+            _terrainDrawDepthBias = _terrainDepthBias + TERRAIN_EXTRUSION_DEPTH_DELTAS * TERRAIN_LAYER_DEPTH_DELTA;
+            _terrainDrawDepthClipUnits = (_terrainRegularGrid ? 2.0f : 12.0f);
+        }
+        // ...and the EXTRUSIONS, which in a city are the occluder that actually matters: at any
+        // tilt most of a building's base rim is hidden behind the building in front of it, and a
+        // depth-less mask laid that rim on the front building's wall - the shadow "in the air".
+        for (const RenderTile& renderTile : *_visibleRenderTiles) {
+            if (!renderTile.visible) {
+                continue;
+            }
+            for (auto it = renderTile.renderLayers.begin(); it != renderTile.renderLayers.end(); it++) {
+                if (_rendererLayerIndexRange && (it->first < _rendererLayerIndexRange->first || it->first >= _rendererLayerIndexRange->second)) {
+                    continue;
+                }
+                const RenderTileLayer& renderLayer = it->second;
+                for (const std::shared_ptr<TileGeometry>& geometry : renderLayer.layer->getGeometries()) {
+                    if (geometry->getType() == TileGeometry::Type::POLYGON3D) {
+                        renderTileGeometry(renderLayer.sourceTileId, renderLayer.targetTileId, renderLayer.blend, 1.0f, renderLayer.tileSize, geometry);
+                    }
+                }
+            }
+        }
+        glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+
+        // LEQUAL: a capsule meets its own wall exactly at the base line, and GL_LESS eats the rim
+        // right where it is darkest.
+        glDepthFunc(GL_LEQUAL);
+        glDepthMask(GL_FALSE);
+
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_ONE, GL_ONE);
+        glBlendEquation(GL_MIN);
+
+        _groundAOMaskPass = true;
+        int draws = 0;
+        for (const RenderTile& renderTile : *_visibleRenderTiles) {
+            if (!renderTile.visible) {
+                continue;
+            }
+            for (auto it = renderTile.renderLayers.begin(); it != renderTile.renderLayers.end(); it++) {
+                if (_rendererLayerIndexRange && (it->first < _rendererLayerIndexRange->first || it->first >= _rendererLayerIndexRange->second)) {
+                    continue;
+                }
+                const RenderTileLayer& renderLayer = it->second;
+                for (const std::shared_ptr<TileGeometry>& geometry : renderLayer.layer->getGeometries()) {
+                    if (geometry->getType() == TileGeometry::Type::POLYGON3DGROUND) {
+                        renderTileGeometry(renderLayer.sourceTileId, renderLayer.targetTileId, renderLayer.blend, 1.0f, renderLayer.tileSize, geometry);
+                        draws++;
+                    }
+                }
+            }
+        }
+        _groundAOMaskPass = false;
+
+        if (terrainOccluders) {
+            _terrainDrawDepthBias = _terrainDepthBias;
+            _terrainDrawDepthClipUnits = 0.0f;
+        }
+        glDepthFunc(GL_LESS);
+        glBlendEquation(GL_FUNC_ADD);
+        glDisable(GL_BLEND);
+        glEnable(GL_CULL_FACE);
+        glEnable(GL_DEPTH_TEST);
+        glDepthMask(GL_TRUE);
+        checkGLError();
+        return draws;
     }
 
     void GLTileRenderer::setTerrainDepthWrite(bool enabled) {
@@ -3015,31 +3137,6 @@ namespace massif::vt {
             }
             Pass3DState pass = begin3DPass(renderLayers, renderTiles, allowInline);
 
-            // The contact shadows go down FIRST, multiplied into the ground, so an extrusion drawn
-            // after them covers its own skirt where the two meet. Depth is read but not written:
-            // the skirt lies on the surface and must not become an occluder for the walls.
-            //
-            // Multiplied straight in, with no MIN pass to resolve overlaps: the skirts are deduped
-            // per EDGE at decode time instead (TileLayerBuilder::appendGroundSkirt), which costs
-            // nothing per frame. Resolving it here through a second framebuffer halved the frame
-            // rate on an Adreno - and at a quarter resolution too, so the expense is the tiler
-            // resolving and reloading the main attachments, not the mask's own pixels.
-            if (_groundAOIntensity > 0.0f) {
-                glEnable(GL_BLEND);
-                glBlendFunc(GL_ZERO, GL_SRC_COLOR);
-                glBlendEquation(GL_FUNC_ADD);
-                glDepthMask(GL_FALSE);
-                for (const RenderTileLayer* renderLayer : renderLayers) {
-                    for (const std::shared_ptr<TileGeometry>& geometry : renderLayer->layer->getGeometries()) {
-                        if (geometry->getType() == TileGeometry::Type::POLYGON3DGROUND) {
-                            renderTileGeometry(renderLayer->sourceTileId, renderLayer->targetTileId, renderLayer->blend, pass.geometryOpacity, renderLayer->tileSize, geometry);
-                        }
-                    }
-                }
-                glDepthMask(GL_TRUE);
-                glDisable(GL_BLEND);
-            }
-
             // Render tile layers for this layer
             for (const RenderTileLayer* renderLayer : renderLayers) {
                 for (const std::shared_ptr<TileGeometry>& geometry : renderLayer->layer->getGeometries()) {
@@ -4076,6 +4173,49 @@ namespace massif::vt {
         return bakedPrimitives;
     }
 
+    int GLTileRenderer::bakeGroundAOMask(const TileId& targetTileId) {
+        std::lock_guard<std::mutex> lock(_mutex);
+
+        resetProgramState(); // another renderer may have bound its own program since the last draw
+
+        if (!_visibleRenderTiles || !(_groundAOIntensity * groundAOZoomFade(_viewState.zoom) > 0.0f)) {
+            return 0;
+        }
+        // STATE-NEUTRAL on purpose: this runs inside the drape bake, which has already established
+        // its own (culling off above all - the bake matrix does not flip y, so a stray glEnable
+        // there empties every tile baked afterwards). The caller owns blend, cull, depth and the
+        // framebuffer; this only picks the frame and the pass.
+        int baked = 0;
+        cglib::mat4x4<float> drapeOrtho;
+        const cglib::mat4x4<float>* previousOverride = _drapeMVPOverride;
+        _drapeMVPOverride = &drapeOrtho;
+        _groundAOMaskPass = true;
+
+        for (const RenderTile& renderTile : *_visibleRenderTiles) {
+            if (!renderTile.visible || !tileCovers(renderTile.targetTileId, targetTileId)) {
+                continue;
+            }
+            for (auto it = renderTile.renderLayers.begin(); it != renderTile.renderLayers.end(); it++) {
+                const RenderTileLayer& renderLayer = it->second;
+                if (!tileCovers(renderLayer.targetTileId, targetTileId)) {
+                    continue;
+                }
+                drapeOrtho = calculateDrapeMVPMatrix(renderLayer.sourceTileId, targetTileId);
+                for (const std::shared_ptr<TileGeometry>& geometry : renderLayer.layer->getGeometries()) {
+                    if (geometry->getType() == TileGeometry::Type::POLYGON3DGROUND) {
+                        renderTileGeometry(renderLayer.sourceTileId, renderLayer.targetTileId, renderLayer.blend, 1.0f, renderLayer.tileSize, geometry);
+                        baked++;
+                    }
+                }
+            }
+        }
+
+        _groundAOMaskPass = false;
+        _drapeMVPOverride = previousOverride;
+        checkGLError();
+        return baked;
+    }
+
     int GLTileRenderer::renderDrapedSurface(const TileId& targetTileId, GLuint drapeTexture, float uvOffsetX, float uvOffsetY, float uvScale) {
         std::lock_guard<std::mutex> lock(_mutex);
 
@@ -4509,7 +4649,13 @@ namespace massif::vt {
         };
         for (auto it = renderTile.renderLayers.begin(); it != renderTile.renderLayers.end(); it++) {
             const RenderTileLayer& renderLayer = it->second;
-            if (!hasDrapeableContent(renderLayer)) {
+            // The contact shadows count too: they are baked INTO the drape, but the extrusions
+            // that carry them are not drapeable content, so a layer holding only buildings used to
+            // contribute nothing here. Its tiles then decoded without ever changing the
+            // fingerprint, no re-bake was asked for, and whichever drape textures had been baked
+            // before the buildings arrived kept no shadow at all - for as long as they stayed
+            // cached. That is the AO missing from a tile here and there with no pattern to it.
+            if (!hasDrapeableContent(renderLayer) && !hasGroundAOContent(renderLayer)) {
                 continue;
             }
             anyContent = true;
@@ -4544,6 +4690,18 @@ namespace massif::vt {
             return 1.0f;
         }
         return (renderLayer.layer->getOpacityFunc())(_viewState);
+    }
+
+    bool GLTileRenderer::hasGroundAOContent(const RenderTileLayer& renderLayer) const {
+        if (!renderLayer.layer) {
+            return false;
+        }
+        for (const std::shared_ptr<TileGeometry>& geometry : renderLayer.layer->getGeometries()) {
+            if (geometry->getType() == TileGeometry::Type::POLYGON3DGROUND) {
+                return true;
+            }
+        }
+        return false;
     }
 
     bool GLTileRenderer::hasDrapeableContent(const RenderTileLayer& renderLayer) const {
@@ -5146,10 +5304,10 @@ namespace massif::vt {
             // Flat on the ground, so it takes the terrain displacement and the same clearance a
             // draped line does - it must sit ON the surface, not inside it. No lighting: it is a
             // multiplier over ground that is already lit.
-            if (_shadowCasterViewProj) {
-                return; // a contact shadow casts nothing
+            if (_shadowCasterViewProj || !_groundAOMaskPass) {
+                return; // casts nothing, and is only ever drawn into its own mask
             }
-            shaderProgramPtr = &buildShaderProgram("polygon3dground", polygon3DGroundVsh, polygon3DGroundFsh, LightingMode::NONE, RasterFilterMode::NONE, terrainFlag | fogFlag());
+            shaderProgramPtr = &buildShaderProgram("polygon3dground", polygon3DGroundVsh, polygon3DGroundFsh, LightingMode::NONE, RasterFilterMode::NONE, terrainFlag);
             break;
         case TileGeometry::Type::POLYGON3D:
             if (_shadowCasterViewProj) {
@@ -5280,7 +5438,12 @@ namespace massif::vt {
             }
         } else if (geometry->getType() == TileGeometry::Type::POLYGON3DGROUND) {
             glUniform1f(shaderProgram.uniforms[U_HEIGHTSCALE], blend / vertexGeomLayoutParams.heightScale * vertexGeomLayoutParams.coordScale);
-            glUniform2f(shaderProgram.uniforms[U_GROUNDAOPARAMS], _groundAOIntensity, _groundAOAttenuation);
+            glUniform1f(shaderProgram.uniforms[U_BINORMALSCALE], 1.0f / vertexGeomLayoutParams.binormalScale);
+            glUniform2f(shaderProgram.uniforms[U_GROUNDAOPARAMS], _groundAOIntensity * groundAOZoomFade(_viewState.zoom), _groundAOAttenuation);
+            // Same tile clip the walls get - see polygon3DGroundFsh for why it is not optional.
+            glUniform1f(shaderProgram.uniforms[U_UVSCALE], 1.0f / vertexGeomLayoutParams.texCoordScale);
+            cglib::mat3x3<float> groundTileMatrix = cglib::mat3x3<float>::convert(cglib::inverse(calculateTileMatrix2D(targetTileId)) * calculateTileMatrix2D(sourceTileId));
+            glUniformMatrix3fv(shaderProgram.uniforms[U_TILEMATRIX], 1, GL_FALSE, groundTileMatrix.data());
         } else if (geometry->getType() == TileGeometry::Type::POLYGON3D) {
             glUniform1f(shaderProgram.uniforms[U_UVSCALE], 1.0f / vertexGeomLayoutParams.texCoordScale);
             glUniform1f(shaderProgram.uniforms[U_HEIGHTSCALE], blend / vertexGeomLayoutParams.heightScale * vertexGeomLayoutParams.coordScale);

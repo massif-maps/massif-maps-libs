@@ -131,26 +131,17 @@ namespace massif::vt {
         // The footprint pulled inward, for the roof ring an edge radius leaves behind. Returns the
         // inset ACTUALLY used in tile-local units - clamped to what the narrowest edge can give up,
         // and 0 when the ring cannot take any, in which case the extrusion keeps its hard edge.
-        float insetRings(const std::vector<std::vector<cglib::vec2<float>>>& pointsList, float radius, std::vector<std::vector<cglib::vec2<float>>>& insetList, std::vector<std::vector<float>>& cutList) const;
-        // The wedge between two edges' bevels at a corner, spanning the two pulled-back wall tops
-        // up to the inset roof vertex. This is what ROUNDS a corner, and what lets the bevel close
-        // there at all.
-        void appendBevelCorner(const cglib::vec2<float>& a, const cglib::vec2<float>& b, const cglib::vec2<float>& apex, const cglib::vec2<float>& binormalA, const cglib::vec2<float>& binormalB, float wallTop, float roofHeight, std::int8_t styleIndex);
-        // The full-height vertical band closing the gap between two walls pulled back from a shared
-        // corner. Each end carries its own edge normal, so the shading turns the corner smoothly.
-        void appendCornerQuad(const cglib::vec2<float>& a, const cglib::vec2<float>& b, const cglib::vec2<float>& binormalA, const cglib::vec2<float>& binormalB, float lo, float hi, std::int8_t styleIndex);
-        // The band bridging the top of a wall to the inset roof ring.
+        float insetRings(const std::vector<std::vector<cglib::vec2<float>>>& pointsList, float radius, std::vector<std::vector<cglib::vec2<float>>>& insetList) const;
+        // The band bridging the top of a wall to the inset roof ring. Mitred at the corners: two
+        // adjacent bands share the edge from the footprint corner to its inset roof vertex.
         void appendBevelQuad(const cglib::vec2<float>& p0, const cglib::vec2<float>& p1, const cglib::vec2<float>& i0p, const cglib::vec2<float>& i1p, const cglib::vec2<float>& binormal, float wallTop, float roofHeight, std::int8_t styleIndex);
         // One wall quad of an extrusion, over the height range [lo, hi].
         void appendWallQuad(const cglib::vec2<float>& p0, const cglib::vec2<float>& p1, const cglib::vec2<float>& binormal, float lo, float hi, std::int8_t styleIndex);
-        // One band of the ground skirt: the segment p0-p1 and the same pair pushed out by offset.
-        void appendSkirtBand(const cglib::vec2<float>& p0, const cglib::vec2<float>& p1, const cglib::vec2<float>& offset, float height, std::int8_t styleIndex);
-        // The wedge a convex corner leaves between two bands, as an arc of even steps.
-        void appendSkirtFan(const cglib::vec2<float>& center, const cglib::vec2<float>& from, const cglib::vec2<float>& to, int segments, float height, std::int8_t styleIndex);
-        // The contact shadow on the ground around one footprint ring: a skirt reaching
-        // _polygon3DGroundRadius outward, plus a triangle filling the wedge that offsetting leaves
-        // at every convex corner. Accumulated apart from the walls because the builder has ONE
-        // vertex stream, keyed by _builderParameters.type, and this is a different geometry.
+        // The contact shadow on the ground around one footprint ring: one quad per edge, covering
+        // that edge's bounding capsule. The fragment measures its own distance to the segment, so
+        // corners are round and the overlaps are resolved by MIN blending rather than avoided here.
+        // Accumulated apart from the walls because the builder has ONE vertex stream, keyed by
+        // _builderParameters.type, and this is a different geometry.
         void appendGroundSkirt(const std::vector<cglib::vec2<float>>& points, float height, std::int8_t styleIndex);
 
         // A shaped roof on top of the walls, from the OSM roof:shape tag. Returns false when the
@@ -195,21 +186,24 @@ namespace massif::vt {
         // building:part share edges, and two coincident walls z-fight into a stipple that reads as
         // shadow acne; the second one is emitted only where the first left a gap.
         std::unordered_map<std::uint64_t, std::pair<float, float>> _polygon3DWalls;
+        // The current extrusion's footprint centroid, carried by every one of its vertices.
+        cglib::vec2<float> _polygon3DCentroid = cglib::vec2<float>(0, 0);
         float _polygon3DGradientHeight = 0.0f;
         // Roofs already emitted this layer. Walls are deduped per edge above; a roof is a polygon,
         // so it is matched whole - which catches a duplicated footprint, the case that actually
         // z-fights. A building:part normally differs in height from its parent, putting its roof on
         // another plane entirely.
         std::unordered_set<std::uint64_t> _polygon3DRoofs;
-        // Footprint edges a contact shadow has already been laid along, keyed as the walls are.
-        // A building and its building:part share edges, and two skirts over the same ground
-        // multiply into each other.
-        std::unordered_set<std::uint64_t> _polygon3DSkirts;
         float _polygon3DGroundRadius = 0.0f;   // metres the contact shadow reaches; 0 = off
         float _polygon3DEdgeRadius = 0.0f;     // metres of bevel at the roof edge; 0 = hard edge
         bool _polygon3DRoundedRoof = true;     // false = the bevel is a flat facet with its own tone
         // The skirt's own stream (see appendGroundSkirt), packed once by buildTileLayer.
         VertexArray<cglib::vec2<float>> _groundCoords;
+        // (along, across, length) of the footprint segment this vertex belongs to, in units of the
+        // shadow radius. The fragment measures its own distance from it.
+        VertexArray<cglib::vec3<float>> _groundBinormals;
+        // Tile-local, so the ground shader can discard what belongs to a neighbouring tile.
+        VertexArray<cglib::vec2<float>> _groundTexCoords;
         VertexArray<float> _groundHeights;
         VertexArray<cglib::vec4<std::int8_t>> _groundAttribs;
         VertexArray<std::size_t> _groundIndices;
