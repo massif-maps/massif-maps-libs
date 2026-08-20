@@ -60,6 +60,9 @@ namespace massif::mvt {
             // what the shadow has to follow; raise it to see the chord artifact, lower it to kill it.
             FloatFunctionProperty buildingAoGroundStep = FloatFunctionProperty(0.0f);         // metres, 0 = auto
             FloatFunctionProperty buildingAoIntensity = FloatFunctionProperty(0.2f);
+            // The opacity a label keeps while its ANCHOR is hidden by 3D content (mapbox's
+            // text-occlusion-opacity). 1 = no occlusion, and the pass that answers it does not run.
+            FloatFunctionProperty textOcclusionOpacity = FloatFunctionProperty(1.0f);
             // Bevel between a wall and the roof, rounding the hard 90 degrees. 0 = off.
             FloatFunctionProperty buildingEdgeRadius = FloatFunctionProperty(0.0f); // metres
             // Roofs multiplied by this. A roof faces the sky and is physically the BRIGHTEST face,

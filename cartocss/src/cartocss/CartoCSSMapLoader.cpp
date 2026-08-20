@@ -304,6 +304,7 @@ namespace massif::css {
             { "building-ao-ground-step", &mvt::Map::Settings::buildingAoGroundStep },
             { "building-ao-ground-attenuation", &mvt::Map::Settings::buildingAoGroundAttenuation },
             { "building-ao-intensity", &mvt::Map::Settings::buildingAoIntensity },
+            { "text-occlusion-opacity", &mvt::Map::Settings::textOcclusionOpacity },
             { "building-edge-radius", &mvt::Map::Settings::buildingEdgeRadius },
             { "building-roof-shade", &mvt::Map::Settings::buildingRoofShade },
             { "building-rounded-roof", &mvt::Map::Settings::buildingRoundedRoof },

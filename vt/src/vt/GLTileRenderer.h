@@ -192,8 +192,10 @@ namespace massif::vt {
         // Per-label occlusion against a screen depth texture holding the 3D occluders, rendered
         // from the same camera (mapbox's model: the whole label fades, it is never clipped).
         // texture 0 turns it off. occluderSize is the square sampled around the anchor, in screen
-        // pixels; occludedOpacity is what an occluded label keeps.
-        void setLabelOcclusionDepth(unsigned int depthTexture, float occluderSize, float occludedOpacity);
+        // pixels. The buffer is the owner's, shared by every layer that samples it.
+        void setLabelOcclusionDepth(unsigned int depthTexture, float occluderSize);
+        // What an occluded label keeps, this layer's own (its style may set it). 1 = no occlusion.
+        void setLabelOcclusionOpacity(float occludedOpacity);
         // Draws every visible extrusion into the bound depth target from the camera. The ground is
         // NOT drawn: labels are already tested against the terrain on the CPU, per label
         // (TileRenderer::setLabelOcclusionTest). Returns the number of geometries drawn.
@@ -773,7 +775,7 @@ namespace massif::vt {
         static constexpr float LABEL_OCCLUSION_DEPTH_RAMP = 0.0033f;
         GLuint _labelOcclusionTexture = 0;    // 0 = labels are not occluded by 3D content
         float _labelOcclusionSize = 30.0f;    // screen pixels sampled around a label's anchor
-        float _labelOcclusionOpacity = 0.0f;  // what an occluded label keeps
+        float _labelOcclusionOpacity = 1.0f;  // what an occluded label keeps; 1 = no occlusion
         bool _groundAOBakePass = false; // ... and only while that mask is a DRAPE bake
         TerrainPaint _terrainPaint;
         bool _terrainPaintOnGround = false;      // the paint replaces the ground fill (see setTerrainPaintOnGround)

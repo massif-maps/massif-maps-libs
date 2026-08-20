@@ -4235,11 +4235,16 @@ namespace massif::vt {
         return bakedPrimitives;
     }
 
-    void GLTileRenderer::setLabelOcclusionDepth(GLuint depthTexture, float occluderSize, float occludedOpacity) {
+    void GLTileRenderer::setLabelOcclusionDepth(GLuint depthTexture, float occluderSize) {
         std::lock_guard<std::mutex> lock(_mutex);
 
         _labelOcclusionTexture = depthTexture;
         _labelOcclusionSize = occluderSize;
+    }
+
+    void GLTileRenderer::setLabelOcclusionOpacity(float occludedOpacity) {
+        std::lock_guard<std::mutex> lock(_mutex);
+
         _labelOcclusionOpacity = occludedOpacity;
     }
 
@@ -5777,7 +5782,7 @@ namespace massif::vt {
         bool useDerivatives = true;
 
         const CompiledBitmap& compiledBitmap = buildCompiledBitmap(bitmap, false);
-        unsigned int occlusionFlag = (_labelOcclusionTexture != 0 ? LABEL_OCCLUSION_FLAG : 0);
+        unsigned int occlusionFlag = (_labelOcclusionTexture != 0 && _labelOcclusionOpacity < 1.0f ? LABEL_OCCLUSION_FLAG : 0);
         const ShaderProgram& shaderProgram = buildShaderProgram("labels", labelVsh, labelFsh, LightingMode::GEOMETRY2D, RasterFilterMode::NONE, (useDerivatives ? DERIVATIVES_FLAG : 0) | occlusionFlag);
         useProgram(shaderProgram);
         if (occlusionFlag) {
