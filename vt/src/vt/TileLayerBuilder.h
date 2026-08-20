@@ -144,7 +144,7 @@ namespace massif::vt {
         // corners are round and the overlaps are resolved by MIN blending rather than avoided here.
         // Accumulated apart from the walls because the builder has ONE vertex stream, keyed by
         // _builderParameters.type, and this is a different geometry.
-        void appendGroundSkirt(const std::vector<cglib::vec2<float>>& points, float height, std::int8_t styleIndex);
+        void appendGroundSkirt(const std::vector<cglib::vec2<float>>& points, float height, bool hole, std::int8_t styleIndex);
 
         // A shaped roof on top of the walls, from the OSM roof:shape tag. Returns false when the
         // footprint cannot carry one, in which case the caller tesselates a flat roof as before.

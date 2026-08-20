@@ -184,6 +184,8 @@ namespace massif::vt {
         static float groundAOZoomFade(float zoom);
         // Whether the contact shadows would draw anything at all this frame (intensity and zoom).
         bool isGroundAOActive() const;
+        // The same, for the drape bake, which applies no zoom fade - see the body.
+        bool isGroundAOBakeable() const;
         // Draws every visible contact-shadow quad into the bound framebuffer under MIN blending,
         // resolving their overlaps into one mask. Returns the number of geometries drawn.
         int renderGroundAOMask();
@@ -623,6 +625,7 @@ namespace massif::vt {
         bool hasDrapeableContent(const RenderTileLayer& renderLayer) const;
         // Contact shadows this layer would bake into the drape (see calculateDrapeFingerprint).
         bool hasGroundAOContent(const RenderTileLayer& renderLayer) const;
+        bool hasGroundAOTiles(float zoomFade) const;
         // Element opacity a draped layer is baked with: the style's layer opacity, or 1 when the
         // layer has a comp-op (which the bake can not reproduce).
         float calculateDrapeOpacity(const RenderTileLayer& renderLayer) const;
@@ -752,6 +755,7 @@ namespace massif::vt {
         float _groundAOIntensity = 0.0f;
         float _groundAOAttenuation = 0.69f;
         bool _groundAOMaskPass = false; // set only while the mask is being drawn
+        bool _groundAOBakePass = false; // ... and only while that mask is a DRAPE bake
         TerrainPaint _terrainPaint;
         bool _terrainPaintOnGround = false;      // the paint replaces the ground fill (see setTerrainPaintOnGround)
         int _terrainDemTaps = 16;                // texture fetches per terrain vertex (see setTerrainDemTaps)

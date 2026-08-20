@@ -1971,17 +1971,19 @@ namespace massif::vt {
             // vertices. The caps are what rounds every corner, and what joins one edge's shadow to
             // the next; a per-vertex distance is linear inside a triangle and facets there.
             mediump float t = clamp(vSegment.x, 0.0, vSegment.z);
-            mediump float dist = min(1.0, length(vec2(vSegment.x - t, vSegment.y)));
-            // mapbox's ground-attenuation, applied as they apply it: it bends the falloff without
-            // moving either end. Below 1 (their default is 0.69) it reaches further from the wall.
-            mediump float d = 1.0 - pow(1.0 - dist, uGroundAOParams.y);
-            // ...then SMOOTHSTEPPED, so the band lands at both ends with zero slope. pow alone has
-            // an infinite derivative as it reaches the edge, and the eye reads that step as a
-            // crease - a drawn outline around every building, which is the opposite of what a
-            // contact shadow is for. It also makes it flattest against the wall, where the
-            // occlusion really is most complete.
-            d = smoothstep(0.0, 1.0, d);
-            mediump float f = 1.0 - uGroundAOParams.x * vGroundBlend * (1.0 - d);
+            // Under the building the ground is fully occluded, so the band holds there instead of
+            // falling off (positive across = the side the walls stand on). Alongside the edge only:
+            // past its ends that half-plane leaves the footprint, and the next edge's own quad
+            // covers what is left. This is also what hides the seam where a draped shadow meets a
+            // wall on a slope - the dark side is the side the displacement moves it towards.
+            mediump float across = (vSegment.y > 0.0 && vSegment.x == t) ? 0.0 : vSegment.y;
+            mediump float dist = min(1.0, length(vec2(vSegment.x - t, across)));
+            // Occlusion = (1 - d)^k: full against the wall, zero at the radius, and above 1 it
+            // reaches the radius with zero slope so there is no crease to read as an outline.
+            // k IS the style's ground-attenuation - the default 1.75 halves the shadow by a third
+            // of the way out (0.5 -> 0.3), which is the profile a contact shadow wants.
+            mediump float occlusion = pow(1.0 - dist, uGroundAOParams.y);
+            mediump float f = 1.0 - uGroundAOParams.x * vGroundBlend * occlusion;
             glFragColor = vec4(f, f, f, 1.0);
         }
     )GLSL";

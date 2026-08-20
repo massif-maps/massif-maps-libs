@@ -55,7 +55,7 @@ namespace massif::mvt {
             // an extrusion without one reads as pasted onto the map rather than standing on it.
             // 0 radius turns it off.
             FloatFunctionProperty buildingAoGroundRadius = FloatFunctionProperty(4.0f);      // metres
-            FloatFunctionProperty buildingAoGroundAttenuation = FloatFunctionProperty(0.69f); // falloff curve
+            FloatFunctionProperty buildingAoGroundAttenuation = FloatFunctionProperty(1.75f); // exponent of (1 - d)
             // Metres between subdivisions ALONG a wall. 0 = the terrain grid's own cell, which is
             // what the shadow has to follow; raise it to see the chord artifact, lower it to kill it.
             FloatFunctionProperty buildingAoGroundStep = FloatFunctionProperty(0.0f);         // metres, 0 = auto

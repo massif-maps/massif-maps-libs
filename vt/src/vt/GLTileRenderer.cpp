@@ -728,7 +728,21 @@ namespace massif::vt {
     bool GLTileRenderer::isGroundAOActive() const {
         std::lock_guard<std::mutex> lock(_mutex);
 
-        if (!_visibleRenderTiles || !(_groundAOIntensity * groundAOZoomFade(_viewState.zoom) > 0.0f)) {
+        return hasGroundAOTiles(groundAOZoomFade(_viewState.zoom));
+    }
+
+    bool GLTileRenderer::isGroundAOBakeable() const {
+        std::lock_guard<std::mutex> lock(_mutex);
+
+        // NO zoom fade, unlike the screen-space pass: a bake is cached and only redone when the
+        // tile's CONTENT changes, so anything the camera moves must stay out of it. Faded, the
+        // tiles baked while a launch animation was still below the fade's own zoom kept no shadow
+        // at all - for as long as they stayed cached, which is until a zoom rebuilds them.
+        return hasGroundAOTiles(1.0f);
+    }
+
+    bool GLTileRenderer::hasGroundAOTiles(float fade) const {
+        if (!_visibleRenderTiles || !(_groundAOIntensity * fade > 0.0f)) {
             return false;
         }
         // ...and something to actually draw. Binding the mask target and clearing it costs 1.4 ms
@@ -4194,7 +4208,7 @@ namespace massif::vt {
 
         resetProgramState(); // another renderer may have bound its own program since the last draw
 
-        if (!_visibleRenderTiles || !(_groundAOIntensity * groundAOZoomFade(_viewState.zoom) > 0.0f)) {
+        if (!_visibleRenderTiles || !(_groundAOIntensity > 0.0f)) {
             return 0;
         }
         // STATE-NEUTRAL on purpose: this runs inside the drape bake, which has already established
@@ -4206,6 +4220,7 @@ namespace massif::vt {
         const cglib::mat4x4<float>* previousOverride = _drapeMVPOverride;
         _drapeMVPOverride = &drapeOrtho;
         _groundAOMaskPass = true;
+        _groundAOBakePass = true;
 
         for (const RenderTile& renderTile : *_visibleRenderTiles) {
             if (!renderTile.visible || !tileCovers(renderTile.targetTileId, targetTileId)) {
@@ -4219,7 +4234,11 @@ namespace massif::vt {
                 drapeOrtho = calculateDrapeMVPMatrix(renderLayer.sourceTileId, targetTileId);
                 for (const std::shared_ptr<TileGeometry>& geometry : renderLayer.layer->getGeometries()) {
                     if (geometry->getType() == TileGeometry::Type::POLYGON3DGROUND) {
-                        renderTileGeometry(renderLayer.sourceTileId, renderLayer.targetTileId, renderLayer.blend, 1.0f, renderLayer.tileSize, geometry);
+                        // Blend 1, like every other bake: the tile's fade-in is a per-frame value
+                        // and this picture is cached. A tile baked in the frame its extrusions
+                        // arrived - which is exactly when the shadow first has anything to bake -
+                        // froze the shadow at the fade's starting strength, i.e. at nothing.
+                        renderTileGeometry(renderLayer.sourceTileId, renderLayer.targetTileId, 1.0f, 1.0f, renderLayer.tileSize, geometry);
                         baked++;
                     }
                 }
@@ -4227,6 +4246,7 @@ namespace massif::vt {
         }
 
         _groundAOMaskPass = false;
+        _groundAOBakePass = false;
         _drapeMVPOverride = previousOverride;
         checkGLError();
         return baked;
@@ -5455,7 +5475,7 @@ namespace massif::vt {
         } else if (geometry->getType() == TileGeometry::Type::POLYGON3DGROUND) {
             glUniform1f(shaderProgram.uniforms[U_HEIGHTSCALE], blend / vertexGeomLayoutParams.heightScale * vertexGeomLayoutParams.coordScale);
             glUniform1f(shaderProgram.uniforms[U_BINORMALSCALE], 1.0f / vertexGeomLayoutParams.binormalScale);
-            glUniform2f(shaderProgram.uniforms[U_GROUNDAOPARAMS], _groundAOIntensity * groundAOZoomFade(_viewState.zoom), _groundAOAttenuation);
+            glUniform2f(shaderProgram.uniforms[U_GROUNDAOPARAMS], _groundAOIntensity * (_groundAOBakePass ? 1.0f : groundAOZoomFade(_viewState.zoom)), _groundAOAttenuation);
             // Same tile clip the walls get - see polygon3DGroundFsh for why it is not optional.
             glUniform1f(shaderProgram.uniforms[U_UVSCALE], 1.0f / vertexGeomLayoutParams.texCoordScale);
             cglib::mat3x3<float> groundTileMatrix = cglib::mat3x3<float>::convert(cglib::inverse(calculateTileMatrix2D(targetTileId)) * calculateTileMatrix2D(sourceTileId));

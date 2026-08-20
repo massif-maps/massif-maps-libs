@@ -1340,7 +1340,7 @@ namespace massif::vt {
     // terrain grid's own cell, which is the resolution the surface actually bends at.
     static constexpr float GROUND_SKIRT_STEP = 1.0f / 64.0f;
 
-    void TileLayerBuilder::appendGroundSkirt(const std::vector<cglib::vec2<float>>& points, float height, std::int8_t styleIndex) {
+    void TileLayerBuilder::appendGroundSkirt(const std::vector<cglib::vec2<float>>& points, float height, bool hole, std::int8_t styleIndex) {
         if (points.size() < 3 || _polygon3DGroundRadius <= 0.0f) {
             return;
         }
@@ -1361,6 +1361,18 @@ namespace massif::vt {
             return;
         }
         float invRadius = 1.0f / radius;
+
+        // Which side of an edge the building stands on, so the fragment can hold the band at full
+        // strength there instead of letting it fall off under the walls. The left normal below
+        // points into a counter-clockwise ring - and OUT of a hole ring, where the material is the
+        // side the ring does not enclose. Which ring is a hole cannot be read from its winding
+        // here: the tile data does not guarantee holes wind the other way, and a courtyard whose
+        // winding matched its outer ring came out filled solid.
+        float area2 = 0.0f;
+        for (std::size_t i = 0, j = points.size() - 1; i < points.size(); j = i++) {
+            area2 += points[j](0) * points[i](1) - points[i](0) * points[j](1);
+        }
+        float inwardSign = (area2 > 0.0f ? 1.0f : -1.0f) * (hole ? -1.0f : 1.0f);
 
         // One quad per edge, covering that edge's bounding CAPSULE: the fragment measures its own
         // distance to the segment, so the caps round every corner and join one edge's shadow to the
@@ -1399,8 +1411,8 @@ namespace massif::vt {
                 _groundCoords.append(a - offset, b - offset, b + offset, a + offset);
                 _groundTexCoords.append(a - offset, b - offset, b + offset, a + offset);
                 // Affine in the vertex, so interpolating it over the quad is exact.
-                _groundBinormals.append(cglib::vec3<float>(alongA, -1.0f, segLen), cglib::vec3<float>(alongB, -1.0f, segLen),
-                                        cglib::vec3<float>(alongB, 1.0f, segLen), cglib::vec3<float>(alongA, 1.0f, segLen));
+                _groundBinormals.append(cglib::vec3<float>(alongA, -inwardSign, segLen), cglib::vec3<float>(alongB, -inwardSign, segLen),
+                                        cglib::vec3<float>(alongB, inwardSign, segLen), cglib::vec3<float>(alongA, inwardSign, segLen));
                 _groundHeights.append(height, height, height, height);
                 _groundAttribs.append(attribs, attribs, attribs, attribs);
                 _groundIndices.append(i0 + 0, i0 + 1, i0 + 2);
@@ -1690,8 +1702,8 @@ namespace massif::vt {
         // casting a full ring onto open ground with nothing above it, and a building:part starting
         // at 20 m - a bridge deck, a tunnel roof - does not touch the ground it was shadowing.
         if (minHeight <= 0.0f && maxHeight > minHeight) {
-            for (const std::vector<cglib::vec2<float>>& points : pointsList) {
-                appendGroundSkirt(points, 0.0f, styleIndex);
+            for (std::size_t ring = 0; ring < pointsList.size(); ring++) {
+                appendGroundSkirt(pointsList[ring], 0.0f, ring > 0, styleIndex);
             }
         }
 
