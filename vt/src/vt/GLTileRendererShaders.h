@@ -82,7 +82,9 @@ namespace massif::vt {
         U_LABELAXISY,
         U_PAINTSLOPESCALE,
         U_PAINTPARAMS,
-        U_GROUNDCOLOR
+        U_GROUNDCOLOR,
+        U_LABELOCCLUSIONTEX,
+        U_LABELOCCLUSIONPARAMS
     };
 
     enum : unsigned int {
@@ -129,7 +131,10 @@ namespace massif::vt {
         // Terrain sun on UNDRAPED 2D geometry. A separate flag from TERRAIN_LIGHT because that one
         // marks the surface shaders, which declare the same uniforms themselves - one name twice in
         // a stage is a link error.
-        GEOMETRY_LIGHT_FLAG = 4194304
+        GEOMETRY_LIGHT_FLAG = 4194304,
+        // A label asks a screen depth texture of the 3D occluders whether its ANCHOR is behind
+        // one, and fades the whole label out if it is (mapbox's model - see labelVsh).
+        LABEL_OCCLUSION_FLAG = 8388608
     };
 
     static const std::map<std::string, int> attribMap = {
@@ -206,7 +211,9 @@ namespace massif::vt {
         { "uLabelAxisY",        U_LABELAXISY },
         { "uPaintSlopeScale",   U_PAINTSLOPESCALE },
         { "uPaintParams",       U_PAINTPARAMS },
-        { "uGroundColor",       U_GROUNDCOLOR }
+        { "uGroundColor",       U_GROUNDCOLOR },
+        { "uLabelOcclusionTex",    U_LABELOCCLUSIONTEX },
+        { "uLabelOcclusionParams", U_LABELOCCLUSIONPARAMS }
     };
 
     static const std::map<unsigned int, std::string> flagDefineMap = {
@@ -226,6 +233,7 @@ namespace massif::vt {
         { SHADOW_CASCADES2_FLAG, "SHADOW_CASCADES_2" },
         { SHADOW_CASCADES3_FLAG, "SHADOW_CASCADES_3" },
         { SHADOW_CASCADES4_FLAG, "SHADOW_CASCADES_4" },
+        { LABEL_OCCLUSION_FLAG, "LABEL_OCCLUSION" },
         { SHADOW_MASK_OUT_FLAG, "SHADOW_MASK_OUT" },
         { SHADOW_MASK_IN_FLAG, "SHADOW_MASK_IN" },
         { SHADOW_SINGLE_TAP_FLAG, "SHADOW_SINGLE_TAP" },
@@ -1479,6 +1487,12 @@ namespace massif::vt {
         uniform vec3 uLabelAxisX;
         uniform vec3 uLabelAxisY;
         uniform mat4 uMVPMatrix;
+        #ifdef LABEL_OCCLUSION
+        uniform sampler2D uLabelOcclusionTex;
+        // x = half the occluder square, in uv; y = depth offset, NDC; z = the opacity an occluded
+        // label keeps; w = 1/(the ramp the comparison is softened over).
+        uniform vec4 uLabelOcclusionParams;
+        #endif
         uniform vec2 uUVScale;
         uniform float uSDFRamp;
         uniform vec4 uColorTable[16];
@@ -1513,6 +1527,29 @@ namespace massif::vt {
             vec3 offset = aVertexAttribs[3] > 0.5
                 ? uLabelAxisX * aVertexOffset.x + uLabelAxisY * aVertexOffset.y
                 : aVertexOffset;
+        #ifdef LABEL_OCCLUSION
+            // Is the ANCHOR behind a 3D occluder? Four taps around it, each a soft comparison,
+            // averaged - so a label goes out as it slides behind a building rather than popping,
+            // and one texel of a half-resolution buffer cannot decide it alone. Per LABEL, not per
+            // fragment: the glyph run is never cut in half by a wall crossing it.
+            highp vec4 anchorClip = uMVPMatrix * vec4(aVertexPosition, 1.0);
+            if (anchorClip.w > 0.0) {
+                highp vec2 anchorUV = anchorClip.xy / anchorClip.w * 0.5 + 0.5;
+                highp float anchorDepth = anchorClip.z / anchorClip.w * 0.5 + 0.5 + uLabelOcclusionParams.y;
+                highp vec2 d = vec2(uLabelOcclusionParams.x);
+                // The occluders arrive with their window depth PACKED into rgb (the shadow
+                // caster's encoding), so an empty texel - white - decodes past 1 and reads as
+                // nothing in front.
+                highp vec3 unpack = vec3(1.0, 1.0 / 255.0, 1.0 / 65025.0);
+                highp vec4 taps = vec4(
+                    dot(texture2D(uLabelOcclusionTex, anchorUV + vec2( d.x,  d.y)).rgb, unpack),
+                    dot(texture2D(uLabelOcclusionTex, anchorUV + vec2(-d.x,  d.y)).rgb, unpack),
+                    dot(texture2D(uLabelOcclusionTex, anchorUV + vec2( d.x, -d.y)).rgb, unpack),
+                    dot(texture2D(uLabelOcclusionTex, anchorUV + vec2(-d.x, -d.y)).rgb, unpack));
+                lowp float visible = dot(vec4(0.25), clamp((taps - vec4(anchorDepth)) * uLabelOcclusionParams.w, 0.0, 1.0));
+                vColor *= mix(uLabelOcclusionParams.z, 1.0, visible); // premultiplied, so one scalar is enough
+            }
+        #endif
             gl_Position = uMVPMatrix * vec4(aVertexPosition + offset, 1.0);
         }
     )GLSL";

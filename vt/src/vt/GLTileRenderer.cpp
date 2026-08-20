@@ -4235,6 +4235,42 @@ namespace massif::vt {
         return bakedPrimitives;
     }
 
+    void GLTileRenderer::setLabelOcclusionDepth(GLuint depthTexture, float occluderSize, float occludedOpacity) {
+        std::lock_guard<std::mutex> lock(_mutex);
+
+        _labelOcclusionTexture = depthTexture;
+        _labelOcclusionSize = occluderSize;
+        _labelOcclusionOpacity = occludedOpacity;
+    }
+
+    int GLTileRenderer::renderLabelOcclusionDepth() {
+        std::lock_guard<std::mutex> lock(_mutex);
+
+        resetProgramState(); // another renderer may have bound its own program since the last draw
+
+        if (!_visibleRenderTiles) {
+            return 0;
+        }
+        // The shadow CASTER path, pointed at the camera instead of the sun: the extrusions as they
+        // are drawn on screen - same shader, same terrain anchoring - with their window depth
+        // packed into the colour channels. A depth-texture target would say the same thing more
+        // directly, but sampling one from a vertex shader is not something every driver here does,
+        // and this path is already proven on all of them.
+        int drawn = 0;
+        cglib::mat4x4<double> cameraViewProj = _viewState.projectionMatrix * _viewState.cameraMatrix;
+        _shadowCasterViewProj = &cameraViewProj;
+        forEachVisibleExtrusion(nullptr, [this, &drawn](const RenderTileLayer& renderLayer, const std::shared_ptr<TileGeometry>& geometry) {
+            // The tile's own blend, as the shadow caster uses: an extrusion fades in by GROWING,
+            // so a full-height occluder hides labels behind a building that is not there yet.
+            renderTileGeometry(renderLayer.sourceTileId, renderLayer.targetTileId, renderLayer.blend, 1.0f, renderLayer.tileSize, geometry);
+            drawn++;
+            return true;
+        });
+        _shadowCasterViewProj = nullptr;
+        checkGLError();
+        return drawn;
+    }
+
     int GLTileRenderer::bakeGroundAOMask(const TileId& targetTileId) {
         std::lock_guard<std::mutex> lock(_mutex);
 
@@ -5741,8 +5777,22 @@ namespace massif::vt {
         bool useDerivatives = true;
 
         const CompiledBitmap& compiledBitmap = buildCompiledBitmap(bitmap, false);
-        const ShaderProgram& shaderProgram = buildShaderProgram("labels", labelVsh, labelFsh, LightingMode::GEOMETRY2D, RasterFilterMode::NONE, useDerivatives ? DERIVATIVES_FLAG : 0);
+        unsigned int occlusionFlag = (_labelOcclusionTexture != 0 ? LABEL_OCCLUSION_FLAG : 0);
+        const ShaderProgram& shaderProgram = buildShaderProgram("labels", labelVsh, labelFsh, LightingMode::GEOMETRY2D, RasterFilterMode::NONE, (useDerivatives ? DERIVATIVES_FLAG : 0) | occlusionFlag);
         useProgram(shaderProgram);
+        if (occlusionFlag) {
+            // Unit 1: unit 0 is the glyph atlas, bound per batch below.
+            glActiveTexture(GL_TEXTURE1);
+            glBindTexture(GL_TEXTURE_2D, _labelOcclusionTexture);
+            glActiveTexture(GL_TEXTURE0);
+            glUniform1i(shaderProgram.uniforms[U_LABELOCCLUSIONTEX], 1);
+            // The occluder square in uv, the depth offset that keeps a label standing ON the
+            // ground from reading as behind it, the opacity an occluded label keeps, and the
+            // sharpness of the comparison.
+            float halfSizeU = 0.5f * _labelOcclusionSize / std::max(1.0f, static_cast<float>(_screenWidth));
+            float halfSizeV = 0.5f * _labelOcclusionSize / std::max(1.0f, static_cast<float>(_screenHeight));
+            glUniform4f(shaderProgram.uniforms[U_LABELOCCLUSIONPARAMS], 0.5f * (halfSizeU + halfSizeV), LABEL_OCCLUSION_DEPTH_OFFSET, _labelOcclusionOpacity, 1.0f / LABEL_OCCLUSION_DEPTH_RAMP);
+        }
 
         cglib::mat4x4<float> mvpMatrix = cglib::mat4x4<float>::convert(_viewState.projectionMatrix * labelBatchParams.labelMatrix);
         glUniformMatrix4fv(shaderProgram.uniforms[U_MVPMATRIX], 1, GL_FALSE, mvpMatrix.data());

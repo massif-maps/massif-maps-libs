@@ -189,6 +189,16 @@ namespace massif::vt {
         // Draws every visible contact-shadow quad into the bound framebuffer under MIN blending,
         // resolving their overlaps into one mask. Returns the number of geometries drawn.
         int renderGroundAOMask();
+        // Per-label occlusion against a screen depth texture holding the 3D occluders, rendered
+        // from the same camera (mapbox's model: the whole label fades, it is never clipped).
+        // texture 0 turns it off. occluderSize is the square sampled around the anchor, in screen
+        // pixels; occludedOpacity is what an occluded label keeps.
+        void setLabelOcclusionDepth(unsigned int depthTexture, float occluderSize, float occludedOpacity);
+        // Draws every visible extrusion into the bound depth target from the camera. The ground is
+        // NOT drawn: labels are already tested against the terrain on the CPU, per label
+        // (TileRenderer::setLabelOcclusionTest). Returns the number of geometries drawn.
+        int renderLabelOcclusionDepth();
+
         // The same capsules resolved in ONE DRAPE TILE's frame, into the bound target. Baked into
         // the ground, the shadow follows the terrain exactly. Changes no GL state - see the body.
         int bakeGroundAOMask(const TileId& targetTileId);
@@ -755,6 +765,15 @@ namespace massif::vt {
         float _groundAOIntensity = 0.0f;
         float _groundAOAttenuation = 0.69f;
         bool _groundAOMaskPass = false; // set only while the mask is being drawn
+        // A label's anchor sits ON the ground, and the buffer it is compared against is half
+        // resolution and drawn from the same camera, so the two depths meet within rounding.
+        // The offset is mapbox's own (-0.0001 NDC, "to prevent coplanar symbol/geometry cases");
+        // the ramp is what turns the comparison into a fade instead of a switch.
+        static constexpr float LABEL_OCCLUSION_DEPTH_OFFSET = -0.0001f;
+        static constexpr float LABEL_OCCLUSION_DEPTH_RAMP = 0.0033f;
+        GLuint _labelOcclusionTexture = 0;    // 0 = labels are not occluded by 3D content
+        float _labelOcclusionSize = 30.0f;    // screen pixels sampled around a label's anchor
+        float _labelOcclusionOpacity = 0.0f;  // what an occluded label keeps
         bool _groundAOBakePass = false; // ... and only while that mask is a DRAPE bake
         TerrainPaint _terrainPaint;
         bool _terrainPaintOnGround = false;      // the paint replaces the ground fill (see setTerrainPaintOnGround)
