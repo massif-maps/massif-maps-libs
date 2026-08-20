@@ -2016,6 +2016,15 @@ namespace massif::vt {
         varying mediump vec3 vShadowNormal;
         #endif
 
+        // Ground height at a point of THIS extrusion's footprint frame, transform included.
+        float footprintGround(vec2 c) {
+            vec3 a = vec3(c, aVertexPosition.z);
+        #ifdef TRANSFORM
+            a = vec3(uTransformMatrix * vec4(a, 1.0));
+        #endif
+            return applyTerrain(a).z;
+        }
+
         void main(void) {
             int styleIndex = int(aVertexAttribs[0]);
             // 0 on the roof, 1 on a wall, and BETWEEN on the bevel band that rounds the edge
@@ -2039,14 +2048,22 @@ namespace massif::vt {
             anchor = vec3(uTransformMatrix * vec4(anchor, 1.0));
         #endif
             float groundZ = applyTerrain(pos).z;
-            float anchorZ = applyTerrain(anchor).z;
-            pos = vec3(pos.xy, aVertexHeight > 0.0 ? anchorZ : groundZ) + aVertexNormal * (aVertexHeight * uHeightScale);
-            // A flat roof anchored at one point is swallowed wherever the hill rises past it, and
-            // the building simply vanishes into the slope. Ride on the ground there instead: the
-            // roof stays level everywhere it can, and only bends where it would otherwise be gone.
+            float baseZ = groundZ;
             if (aVertexHeight > 0.0) {
-                pos.z = max(pos.z, groundZ);
+                // The HIGHEST ground the footprint stands on: the centroid and its reach in four
+                // directions, the reach being the tesselator's own footprint extent. The prism is
+                // RAISED to it, so the roof stays flat AND no part of the building is left under
+                // the hill. Anchoring at the centroid alone buried everything uphill of it;
+                // clamping the finished top to the ground instead collapsed those walls to nothing
+                // (whole faces missing); taking the ground per vertex bends the roof down the slope.
+                float reach = float(aVertexAttribs[2]) * (1.0 / 512.0) / uUVScale;
+                baseZ = applyTerrain(anchor).z;
+                baseZ = max(baseZ, footprintGround(aVertexUV + vec2(reach, 0.0)));
+                baseZ = max(baseZ, footprintGround(aVertexUV - vec2(reach, 0.0)));
+                baseZ = max(baseZ, footprintGround(aVertexUV + vec2(0.0, reach)));
+                baseZ = max(baseZ, footprintGround(aVertexUV - vec2(0.0, reach)));
             }
+            pos = vec3(pos.xy, baseZ) + aVertexNormal * (aVertexHeight * uHeightScale);
             vec3 normal = normalize(mix(aVertexNormal, aVertexBinormal, sideVertex));
             applyShadowPos(pos, normal);
         #ifdef TERRAIN_SHADOW

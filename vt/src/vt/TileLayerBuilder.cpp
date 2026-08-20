@@ -507,6 +507,12 @@ namespace massif::vt {
         return [style, transform, invTransTransform, styleIndex, this](long long id, const VerticesList& verticesList, float minHeight, float maxHeight) {
             std::size_t i0 = _coords.size();
             tesselatePolygon3D(verticesList, minHeight, maxHeight, static_cast<std::int8_t>(styleIndex), style);
+            // The footprint's reach, over every vertex this feature produced. Stamped here rather
+            // than at each append: the vertex stage needs it on all of them, and the tesselator has
+            // half a dozen paths that emit one.
+            for (std::size_t i = i0; i < _attribs.size(); i++) {
+                _attribs[i](2) = _polygon3DExtent;
+            }
             _ids.fill(id, _indices.size() - _ids.size());
             _groundIds.fill(id, _groundIndices.size() - _groundIds.size());
             _geoPosIndexes.fill(0, _indices.size() - _geoPosIndexes.size());
@@ -1517,7 +1523,7 @@ namespace massif::vt {
         return (sum * 1099511628211ULL) ^ (count << 40) ^ static_cast<std::uint64_t>(std::lround(height * 1024.0f));
     }
 
-    std::uint64_t TileLayerBuilder::wallEdgeKey(const cglib::vec2<float>& p0, const cglib::vec2<float>& p1) {
+    std::uint64_t TileLayerBuilder::wallEdgeKey(const cglib::vec2<float>& p0, const cglib::vec2<float>& p1) const {
         // 1/32768 of a tile - 7 cm at zoom 14, finer than any tiler's grid, so two features that
         // share a wall in the source share a key here. The clip box reaches slightly outside the
         // tile, hence the offset that keeps the quantised value unsigned.
@@ -1527,7 +1533,14 @@ namespace massif::vt {
         std::uint64_t a = (quantize(p0(0)) << 16) | quantize(p0(1));
         std::uint64_t b = (quantize(p1(0)) << 16) | quantize(p1(1));
         // Undirected: the two features walk their shared edge in opposite directions.
-        return a < b ? (a << 32) | b : (b << 32) | a;
+        std::uint64_t edge = (a < b ? (a << 32) | b : (b << 32) | a);
+        // ...and the ANCHOR that wall stands on. Two features sharing an edge only have coincident
+        // walls if they are lifted to the same height, and that is now per footprint (see
+        // tesselatePolygon3D). Suppressing the second wall regardless left a hole in the building
+        // wherever the two anchors differ - one wall missing where two wings meet.
+        std::uint64_t anchor = (quantize(_polygon3DCentroid(0)) << 16) | quantize(_polygon3DCentroid(1));
+        anchor = anchor * 2654435761ULL + static_cast<std::uint64_t>(static_cast<std::uint8_t>(_polygon3DExtent));
+        return edge ^ (anchor + 0x9e3779b97f4a7c15ULL + (edge << 6) + (edge >> 2));
     }
 
     void TileLayerBuilder::appendWallQuad(const cglib::vec2<float>& p0, const cglib::vec2<float>& p1, const cglib::vec2<float>& binormal, float lo, float hi, std::int8_t styleIndex) {
@@ -1594,6 +1607,15 @@ namespace massif::vt {
             // elevation at a mirrored position - which on a hillside is a different hill.
             cglib::vec3<float> anchor = _transformer->calculatePoint(centroid);
             _polygon3DCentroid = cglib::vec2<float>(anchor(0), anchor(1));
+            // ...and how far the footprint reaches from it, so the vertex stage can find the
+            // HIGHEST ground the building stands on and lift the whole prism above it. Anchored at
+            // the centroid alone, everything uphill of it is swallowed by the slope.
+            // In 1/512 of a tile, which is 1 m at zoom 16 and caps the reach at a quarter tile.
+            float extent = 0.0f;
+            for (const cglib::vec2<float>& p : pointsList[0]) {
+                extent = std::max(extent, cglib::length(p - centroid));
+            }
+            _polygon3DExtent = static_cast<std::int8_t>(std::min(127.0f, std::round(extent * 512.0f)));
         }
         // Edge radius: the wall stops short of the roof and a bevel band bridges the two, with the
         // roof ring inset by the same amount. What makes it read as ROUNDED is that the band's

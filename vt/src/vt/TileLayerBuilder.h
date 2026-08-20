@@ -154,7 +154,7 @@ namespace massif::vt {
         static std::uint64_t roofKey(const std::vector<std::vector<cglib::vec2<float>>>& pointsList, float height);
         // An undirected footprint edge, quantised to a fine tile grid so two features that share
         // a wall land on the same key.
-        static std::uint64_t wallEdgeKey(const cglib::vec2<float>& p0, const cglib::vec2<float>& p1);
+        std::uint64_t wallEdgeKey(const cglib::vec2<float>& p0, const cglib::vec2<float>& p1) const;
         bool tesselateLine(const std::vector<cglib::vec2<float>>& points, std::int8_t styleIndex, const StrokeMap::Stroke* stroke, const LineStyle& style);
         bool tesselateLineEndPoint(const cglib::vec2<float>& p0, float u0, float v0, float v1, std::size_t i0, std::size_t i1, const cglib::vec2<float>& tangent, const cglib::vec2<float>& binormal, std::int8_t styleIndex, const LineStyle& style);
         static float lineEndArrowInradius(const LineStyle& style);
@@ -190,6 +190,8 @@ namespace massif::vt {
         std::unordered_map<std::uint64_t, std::pair<float, float>> _polygon3DWalls;
         // The current extrusion's footprint centroid, carried by every one of its vertices.
         cglib::vec2<float> _polygon3DCentroid = cglib::vec2<float>(0, 0);
+        // ...and how far its footprint reaches from that centroid, in 1/512 of a tile.
+        std::int8_t _polygon3DExtent = 0;
         float _polygon3DGradientHeight = 0.0f;
         // Roofs already emitted this layer. Walls are deduped per edge above; a roof is a polygon,
         // so it is matched whole - which catches a duplicated footprint, the case that actually
