@@ -51,14 +51,15 @@ namespace massif::mvt {
             // absolute height it fades out - shared by every part of one building.
             FloatFunctionProperty buildingVerticalGradient = FloatFunctionProperty(0.65f);
             FloatFunctionProperty buildingVerticalGradientHeight = FloatFunctionProperty(20.0f);
-            // Contact shadow on the GROUND around a footprint, on the mapbox names. 0 radius = off,
-            // which is the default: nothing changes until a style asks for it.
-            FloatFunctionProperty buildingAoGroundRadius = FloatFunctionProperty(0.0f);      // metres
+            // Contact shadow on the GROUND around a footprint, on the mapbox names. ON by default:
+            // an extrusion without one reads as pasted onto the map rather than standing on it.
+            // 0 radius turns it off.
+            FloatFunctionProperty buildingAoGroundRadius = FloatFunctionProperty(4.0f);      // metres
             FloatFunctionProperty buildingAoGroundAttenuation = FloatFunctionProperty(0.69f); // falloff curve
             // Metres between subdivisions ALONG a wall. 0 = the terrain grid's own cell, which is
             // what the shadow has to follow; raise it to see the chord artifact, lower it to kill it.
             FloatFunctionProperty buildingAoGroundStep = FloatFunctionProperty(0.0f);         // metres, 0 = auto
-            FloatFunctionProperty buildingAoIntensity = FloatFunctionProperty(0.5f);
+            FloatFunctionProperty buildingAoIntensity = FloatFunctionProperty(0.2f);
             // Bevel between a wall and the roof, rounding the hard 90 degrees. 0 = off.
             FloatFunctionProperty buildingEdgeRadius = FloatFunctionProperty(0.0f); // metres
             // Roofs multiplied by this. A roof faces the sky and is physically the BRIGHTEST face,

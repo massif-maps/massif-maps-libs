@@ -1975,6 +1975,12 @@ namespace massif::vt {
             // mapbox's ground-attenuation, applied as they apply it: it bends the falloff without
             // moving either end. Below 1 (their default is 0.69) it reaches further from the wall.
             mediump float d = 1.0 - pow(1.0 - dist, uGroundAOParams.y);
+            // ...then SMOOTHSTEPPED, so the band lands at both ends with zero slope. pow alone has
+            // an infinite derivative as it reaches the edge, and the eye reads that step as a
+            // crease - a drawn outline around every building, which is the opposite of what a
+            // contact shadow is for. It also makes it flattest against the wall, where the
+            // occlusion really is most complete.
+            d = smoothstep(0.0, 1.0, d);
             mediump float f = 1.0 - uGroundAOParams.x * vGroundBlend * (1.0 - d);
             glFragColor = vec4(f, f, f, 1.0);
         }
