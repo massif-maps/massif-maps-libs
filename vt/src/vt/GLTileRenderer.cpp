@@ -2522,6 +2522,7 @@ namespace massif::vt {
         std::vector<std::shared_ptr<Label>> labels;
         labels.reserve(_labels.size() + 64);
         std::array<std::shared_ptr<PassLabels>, 2> passLabels;
+        bool styledOcclusion = false;
         for (int pass = 0; pass < 2; pass++) {
             passLabels[pass] = std::make_shared<PassLabels>();
             passLabels[pass]->reserve(_passLabels[pass] ? _passLabels[pass]->size() + 64 : 64);
@@ -2531,6 +2532,10 @@ namespace massif::vt {
             for (auto labelIt = labelMap.begin(); labelIt != labelMap.end(); labelIt++) {
                 const std::shared_ptr<Label>& label = labelIt->second;
                 int pass = ((label->getStyle()->orientation == LabelOrientation::BILLBOARD_3D || label->getStyle()->orientation == LabelOrientation::LINE_BILLBOARD_3D) ? 1 : 0);
+                // Whether any style layer asks to be occluded, which the owner needs BEFORE the
+                // layer passes to decide whether to render the occluder buffer at all. Noted here
+                // because this loop already touches every label once.
+                styledOcclusion = styledOcclusion || label->getStyle()->occlusionOpacity.value_or(1.0f) < 1.0f;
                 passLabels[pass]->push_back(label);
                 labels.push_back(label);
             }
@@ -2550,6 +2555,7 @@ namespace massif::vt {
         // Update built label lists and maps
         _labels = std::move(labels);
         _passLabels = std::move(passLabels);
+        _labelOcclusionStyled = styledOcclusion;
         VT_STAT_SET(labelsLive, static_cast<long long>(_labels.size()));
     }
 
@@ -3413,13 +3419,17 @@ namespace massif::vt {
                 // And so may the icon run - a font icon in its own colour next to the name.
                 bool hasIconColor = static_cast<bool>(labelStyle->iconColorFunc);
                 cglib::vec4<float> iconColor = hasIconColor ? cglib::vec4<float>(evaluateColorFunc(*labelStyle->iconColorFunc).rgba()) : color;
-                if (bitmap != labelBitmap || labelBatchParams.scale != labelStyle->scale || labelBatchParams.glyphRenderSize != labelStyle->glyphRenderSize || labelBatchParams.parameterCount + 2 + plateCount + (hasSecondaryColor ? 1 : 0) + (hasIconColor ? 1 : 0) > LabelBatchParameters::MAX_PARAMETERS) {
+                // The style layer's own occluded opacity, or this layer's default where it sets
+                // none - and a batch carries one, so a change ends it like a change of atlas does.
+                float labelOcclusionOpacity = labelStyle->occlusionOpacity.value_or(_labelOcclusionOpacity);
+                if (bitmap != labelBitmap || labelBatchParams.occlusionOpacity != labelOcclusionOpacity || labelBatchParams.scale != labelStyle->scale || labelBatchParams.glyphRenderSize != labelStyle->glyphRenderSize || labelBatchParams.parameterCount + 2 + plateCount + (hasSecondaryColor ? 1 : 0) + (hasIconColor ? 1 : 0) > LabelBatchParameters::MAX_PARAMETERS) {
                     renderLabelBatch(labelBatchParams, bitmap);
                     bitmap = labelBitmap;
                     labelBatchParams.labelCount = 0;
                     labelBatchParams.parameterCount = 0;
                     labelBatchParams.scale = labelStyle->scale;
                     labelBatchParams.glyphRenderSize = labelStyle->glyphRenderSize;
+                    labelBatchParams.occlusionOpacity = labelOcclusionOpacity;
                     labelBatchParams.labelMatrix = _viewState.cameraMatrix * cglib::translate4_matrix(_viewState.origin);
 
                     styleIndex = -1;
@@ -4240,6 +4250,12 @@ namespace massif::vt {
 
         _labelOcclusionTexture = depthTexture;
         _labelOcclusionSize = occluderSize;
+    }
+
+    bool GLTileRenderer::hasStyledLabelOcclusion() const {
+        std::lock_guard<std::mutex> lock(_mutex);
+
+        return _labelOcclusionStyled;
     }
 
     void GLTileRenderer::setLabelOcclusionOpacity(float occludedOpacity) {
@@ -5782,7 +5798,7 @@ namespace massif::vt {
         bool useDerivatives = true;
 
         const CompiledBitmap& compiledBitmap = buildCompiledBitmap(bitmap, false);
-        unsigned int occlusionFlag = (_labelOcclusionTexture != 0 && _labelOcclusionOpacity < 1.0f ? LABEL_OCCLUSION_FLAG : 0);
+        unsigned int occlusionFlag = (_labelOcclusionTexture != 0 && labelBatchParams.occlusionOpacity < 1.0f ? LABEL_OCCLUSION_FLAG : 0);
         const ShaderProgram& shaderProgram = buildShaderProgram("labels", labelVsh, labelFsh, LightingMode::GEOMETRY2D, RasterFilterMode::NONE, (useDerivatives ? DERIVATIVES_FLAG : 0) | occlusionFlag);
         useProgram(shaderProgram);
         if (occlusionFlag) {
@@ -5796,7 +5812,7 @@ namespace massif::vt {
             // sharpness of the comparison.
             float halfSizeU = 0.5f * _labelOcclusionSize / std::max(1.0f, static_cast<float>(_screenWidth));
             float halfSizeV = 0.5f * _labelOcclusionSize / std::max(1.0f, static_cast<float>(_screenHeight));
-            glUniform4f(shaderProgram.uniforms[U_LABELOCCLUSIONPARAMS], 0.5f * (halfSizeU + halfSizeV), LABEL_OCCLUSION_DEPTH_OFFSET, _labelOcclusionOpacity, 1.0f / LABEL_OCCLUSION_DEPTH_RAMP);
+            glUniform4f(shaderProgram.uniforms[U_LABELOCCLUSIONPARAMS], 0.5f * (halfSizeU + halfSizeV), LABEL_OCCLUSION_DEPTH_OFFSET, labelBatchParams.occlusionOpacity, 1.0f / LABEL_OCCLUSION_DEPTH_RAMP);
         }
 
         cglib::mat4x4<float> mvpMatrix = cglib::mat4x4<float>::convert(_viewState.projectionMatrix * labelBatchParams.labelMatrix);

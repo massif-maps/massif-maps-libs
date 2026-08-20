@@ -194,8 +194,11 @@ namespace massif::vt {
         // texture 0 turns it off. occluderSize is the square sampled around the anchor, in screen
         // pixels. The buffer is the owner's, shared by every layer that samples it.
         void setLabelOcclusionDepth(unsigned int depthTexture, float occluderSize);
-        // What an occluded label keeps, this layer's own (its style may set it). 1 = no occlusion.
+        // What an occluded label keeps, this layer's own default. A style LAYER may set its own
+        // (TileLabel::Style::occlusionOpacity), which wins for its labels. 1 = no occlusion.
         void setLabelOcclusionOpacity(float occludedOpacity);
+        // True when some style layer asks for occlusion even though the default does not.
+        bool hasStyledLabelOcclusion() const;
         // Draws every visible extrusion into the bound depth target from the camera. The ground is
         // NOT drawn: labels are already tested against the terrain on the CPU, per label
         // (TileRenderer::setLabelOcclusionTest). Returns the number of geometries drawn.
@@ -491,8 +494,13 @@ namespace massif::vt {
             std::array<cglib::vec4<float>, MAX_PARAMETERS> colorTable;
             std::array<float, MAX_PARAMETERS> widthTable;
             std::array<float, MAX_PARAMETERS> strokeWidthTable;
+            // What an occluded label keeps (see setLabelOcclusionOpacity). One value per BATCH
+            // rather than a per-style slot: it is a property of the style layer, so consecutive
+            // labels share it, and a slot would have to join the colour/size key every label is
+            // matched on.
+            float occlusionOpacity;
 
-            LabelBatchParameters() : labelCount(0), parameterCount(0), scale(0), glyphRenderSize(64), labelMatrix(cglib::mat4x4<double>::identity()), colorTable(), widthTable(), strokeWidthTable() { }
+            LabelBatchParameters() : labelCount(0), parameterCount(0), scale(0), glyphRenderSize(64), labelMatrix(cglib::mat4x4<double>::identity()), colorTable(), widthTable(), strokeWidthTable(), occlusionOpacity(1.0f) { }
         };
 
         // Frames between two sweeps of the compiled-resource maps for expired owners (see
@@ -776,6 +784,7 @@ namespace massif::vt {
         GLuint _labelOcclusionTexture = 0;    // 0 = labels are not occluded by 3D content
         float _labelOcclusionSize = 30.0f;    // screen pixels sampled around a label's anchor
         float _labelOcclusionOpacity = 1.0f;  // what an occluded label keeps; 1 = no occlusion
+        bool _labelOcclusionStyled = false;   // ... or some style layer sets its own
         bool _groundAOBakePass = false; // ... and only while that mask is a DRAPE bake
         TerrainPaint _terrainPaint;
         bool _terrainPaintOnGround = false;      // the paint replaces the ground fill (see setTerrainPaintOnGround)
