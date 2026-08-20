@@ -3159,22 +3159,54 @@ namespace massif::vt {
             }
         }
 
+        // The extrusions take part in the SAME dense style-layer numbering as the 2D content
+        // (see renderGeometry2D). Left out of it they drew at ordinal 0 - the ground's own level -
+        // while every 2D layer is pulled forward by its ordinal, so every road and every clipped
+        // text run won the depth test against buildings shorter than that pull. Registered here
+        // for the same reason the 2D pass registers its own: over every layer ever drawn, not the
+        // ones on screen.
+        for (auto it = renderLayerMap.begin(); it != renderLayerMap.end(); it++) {
+            _terrainStyleLayerIndices.insert(it->first);
+        }
+        _terrainStyleLayersDrawn = static_cast<int>(_terrainStyleLayerIndices.size());
+
+        // Tangram's proxy depth, as renderGeometry2D computes it.
+        int maxVisibleZoom = 0;
+        for (const RenderTile& renderTile : renderTiles) {
+            if (renderTile.visible) {
+                maxVisibleZoom = std::max(maxVisibleZoom, renderTile.targetTileId.zoom);
+            }
+        }
+        auto proxyDepth = [maxVisibleZoom](const RenderTileLayer* renderLayer) -> float {
+            if (renderLayer->active) {
+                return 0.0f;
+            }
+            return std::max(static_cast<float>(maxVisibleZoom - renderLayer->targetTileId.zoom), TERRAIN_PROXY_DEPTH_UNITS);
+        };
+
         // Render tile layers in correct order
         for (auto it = renderLayerMap.begin(); it != renderLayerMap.end(); it++) {
             const std::vector<const RenderTileLayer*>& renderLayers = it->second;
             if (renderLayers.empty()) {
                 continue;
             }
+            int layerOrdinal = _terrainLayerOrdinalBase + static_cast<int>(std::distance(_terrainStyleLayerIndices.begin(), _terrainStyleLayerIndices.find(it->first)));
             Pass3DState pass = begin3DPass(renderLayers, renderTiles, allowInline);
 
             // Render tile layers for this layer
             for (const RenderTileLayer* renderLayer : renderLayers) {
+                // Only under the shared ground, which is where the ordinal model applies at all;
+                // the other paths take their clearance from pushing the surface back instead.
+                if (_terrainSharedGround) {
+                    _terrainDrawLayerOffset = proxyDepth(renderLayer) - layerOrdinal;
+                }
                 for (const std::shared_ptr<TileGeometry>& geometry : renderLayer->layer->getGeometries()) {
                     if (geometry->getType() == TileGeometry::Type::POLYGON3D) {
                         // NOTE: geometry comp op is not supported for 3D polygons. Blending is disabled, setGLBlendState not needed
                         renderTileGeometry(renderLayer->sourceTileId, renderLayer->targetTileId, renderLayer->blend, pass.geometryOpacity, renderLayer->tileSize, geometry);
                     }
                 }
+                _terrainDrawLayerOffset = 0.0f;
             }
 
             end3DPass(pass);
