@@ -728,7 +728,23 @@ namespace massif::vt {
     bool GLTileRenderer::isGroundAOActive() const {
         std::lock_guard<std::mutex> lock(_mutex);
 
-        return _groundAOIntensity * groundAOZoomFade(_viewState.zoom) > 0.0f;
+        if (!_visibleRenderTiles || !(_groundAOIntensity * groundAOZoomFade(_viewState.zoom) > 0.0f)) {
+            return false;
+        }
+        // ...and something to actually draw. Binding the mask target and clearing it costs 1.4 ms
+        // on an Adreno 610 whether or not a capsule follows, which is what a style with an AO
+        // intensity but no ground radius - or a camera above the buildings - was paying for.
+        for (const RenderTile& renderTile : *_visibleRenderTiles) {
+            if (!renderTile.visible) {
+                continue;
+            }
+            for (auto it = renderTile.renderLayers.begin(); it != renderTile.renderLayers.end(); it++) {
+                if (hasGroundAOContent(it->second)) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     int GLTileRenderer::renderGroundAOMask() {
