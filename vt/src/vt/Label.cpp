@@ -1394,9 +1394,15 @@ namespace massif::vt {
         bool readable = true;
         cglib::vec2<float> prevDir(0, 0);
         float turnAngle = 0, minAngle = 0, maxAngle = 0;
+        // How far off the line the run sits, perpendicular to it. The CR pseudo-glyph's advance
+        // carries the block's vertical alignment and its dy (TextFormatter::layoutLines), so
+        // ignoring it laid every line label on its BASELINE rather than centred on the line - and
+        // the culler tests the box the point walk builds, which does apply it.
+        float penY = 0;
         for (const Font::Glyph& glyph : _glyphs) {
             if (glyph.codePoint == Font::CR_CODEPOINT) {
                 offset = penStart;
+                penY = glyph.advance(1);
                 prevDir = cglib::vec2<float>(0, 0);
                 turnAngle = 0;
                 continue;
@@ -1436,7 +1442,7 @@ namespace massif::vt {
             prevDir = xAxis;
 
             if (glyph.codePoint != Font::SPACE_CODEPOINT) {
-                cglib::vec2<float> base = pen + xAxis * glyph.offset(0) + yAxis * glyph.offset(1);
+                cglib::vec2<float> base = pen + xAxis * glyph.offset(0) + yAxis * (glyph.offset(1) + penY);
                 cglib::vec2<float> p0 = base;
                 cglib::vec2<float> p1 = base + xAxis * glyph.size(0);
                 cglib::vec2<float> p2 = base + xAxis * glyph.size(0) + yAxis * glyph.size(1);
