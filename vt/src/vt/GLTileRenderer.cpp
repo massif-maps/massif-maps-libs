@@ -2595,9 +2595,14 @@ namespace massif::vt {
             }
         }
         for (int pass = 0; pass < 2; pass++) {
+            // DRAW order, so the list runs bottom to top: what is drawn last is on top. The
+            // culler's order is the opposite - it places the most important label FIRST, to claim
+            // its slot (LabelCuller::process) - and this list used to copy it, which put the LEAST
+            // important of an overlapping pair on top. A road name covering the town name it
+            // crosses was that, and the layerIndex tie-break right below already ran this way.
             std::stable_sort(passLabels[pass]->begin(), passLabels[pass]->end(), [](const std::shared_ptr<Label>& label1, const std::shared_ptr<Label>& label2) {
                 if (label1->getPriority() != label2->getPriority()) {
-                    return label1->getPriority() > label2->getPriority();
+                    return label1->getPriority() < label2->getPriority();
                 }
                 if (label1->getLayerIndex() != label2->getLayerIndex()) {
                     return label1->getLayerIndex() < label2->getLayerIndex();
