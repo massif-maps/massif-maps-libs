@@ -167,17 +167,29 @@ namespace {
             return it->second;
         }
 
-        int size = std::max(4, radius * 2 + 2) + 2;
+        // The cell is drawn at SUPERSAMPLE texels per style pixel. At one texel per pixel a plate is
+        // upscaled by the display's pixel ratio before it reaches the screen, and linear filtering
+        // turned a 1 px border into a soft 3 px smear and rounded off the corner arcs. The margin
+        // stays ONE texel wide either way - appendPlate insets by exactly one.
+        const int SUPERSAMPLE = 4;
+        int shape = std::max(4, radius * 2 + 2) * SUPERSAMPLE;
+        int size = shape + 2;
         std::vector<std::uint32_t> data(static_cast<std::size_t>(size) * size);
-        float r = static_cast<float>(radius);
-        float b = static_cast<float>(borderWidth);
+        float r = static_cast<float>(radius * SUPERSAMPLE);
+        float b = static_cast<float>(borderWidth * SUPERSAMPLE);
         float hi = static_cast<float>(size - 2); // the shape spans [1, size - 2]
         for (int y = 0; y < size; y++) {
             for (int x = 0; x < size; x++) {
                 float fx = static_cast<float>(x), fy = static_cast<float>(y);
                 float alpha = roundedRectCoverage(fx, fy, 1.0f, 1.0f, hi, hi, r);
                 if (borderWidth > 0) {
-                    alpha = std::max(0.0f, alpha - roundedRectCoverage(fx, fy, 1.0f + b, 1.0f + b, hi - b, hi - b, std::max(0.0f, r - b)));
+                    // The ring reaches half a pixel FURTHER IN than the fill it frames. Ending it
+                    // exactly on the fill's edge left the two antialiased ramps to sum to less than
+                    // opaque, which read as a hole between plate and border; the overlap is hidden
+                    // under the fill.
+                    float overlap = SUPERSAMPLE * 0.5f;
+                    float inset = b + overlap;
+                    alpha = std::max(0.0f, alpha - roundedRectCoverage(fx, fy, 1.0f + inset, 1.0f + inset, hi - inset, hi - inset, std::max(0.0f, r - inset)));
                 }
                 std::uint32_t a = static_cast<std::uint32_t>(alpha * 255.0f + 0.5f);
                 data[static_cast<std::size_t>(y) * size + x] = (a << 24) | (a << 16) | (a << 8) | a; // premultiplied white
