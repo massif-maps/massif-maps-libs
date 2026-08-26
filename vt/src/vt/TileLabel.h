@@ -53,6 +53,9 @@ namespace massif::vt {
             // Own colour for the icon run (the glyphs before the text, see TextLabelStyle);
             // unset = the label's fill.
             std::optional<ColorFunction> iconColorFunc;
+            // The icon run's own halo (see TextLabelStyle) - unset draws none.
+            std::optional<ColorFunction> iconHaloColorFunc;
+            std::optional<FloatFunction> iconHaloRadiusFunc;
             // Added to the placement priority by the culler, per label and per pass - the one
             // place a style function may read view::distance (see TextLabelStyle::rankFunc).
             FloatFunction rankFunc;

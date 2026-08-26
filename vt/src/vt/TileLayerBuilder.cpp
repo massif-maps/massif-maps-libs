@@ -708,6 +708,8 @@ namespace massif::vt {
             TileLabel::Style::Plate iconPlate = resolvePlate(style.iconPlate);
             auto labelStyle = std::make_shared<TileLabel::Style>(style.orientation, style.colorFunc, style.sizeFunc, style.haloColorFunc, style.haloRadiusFunc, style.autoflip, scale, metrics.ascent, metrics.descent, transform, font->getGlyphMap(), glyphRenderSize, style.maxDistance, style.secondaryColorFunc, style.rankFunc, style.calloutScreenAnchor, style.calloutOffset, style.calloutStep, style.calloutMaxRows, style.calloutPersistPasses, style.calloutLineWidth, style.calloutLineAnchor, style.calloutBandAnchor, calloutLineGlyph, textPlate, iconPlate, resolveLineAlign(style.textLineAlign, cglib::vec2<float>(0, 0)), style.iconColorFunc);
             labelStyle->occlusionOpacity = style.occlusionOpacity; // not in the ctor: its signature is long enough
+            labelStyle->iconHaloColorFunc = style.iconHaloColorFunc;
+            labelStyle->iconHaloRadiusFunc = style.iconHaloRadiusFunc;
             _labelStyle = labelStyle;
         }
 
@@ -724,6 +726,9 @@ namespace massif::vt {
             if (baseGlyph) {
                 float imageScale = style.backgroundImage->scale / formatter.getFontSize();
                 iconGlyphs.emplace_back(0, Font::NULL_CODEPOINT, *baseGlyph, cglib::vec2<float>(baseGlyph->width, baseGlyph->height) * (style.backgroundScale * imageScale), style.backgroundOffset * imageScale, cglib::vec2<float>(baseGlyph->width, 0) * imageScale);
+                // Marks it as the icon run so it takes iconColorFunc. Left off, an SDF image was
+                // tinted with the TEXT fill: a white city dot drew near-black over its own name.
+                iconGlyphs.back().icon = true;
             }
         }
         iconGlyphs.insert(iconGlyphs.end(), style.iconGlyphs.begin(), style.iconGlyphs.end());

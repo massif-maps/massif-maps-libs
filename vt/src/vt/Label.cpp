@@ -729,7 +729,7 @@ namespace massif::vt {
         return cglib::dot_product(viewState.orientation[2], placement.normal) > MIN_BILLBOARD_VIEW_NORMAL_DOTPRODUCT;
     }
 
-    bool Label::calculateVertexData(float size, const ViewState& viewState, int styleIndex, int haloStyleIndex, VertexArray<cglib::vec3<float>>& vertices, VertexArray<cglib::vec3<float>>& offsets, VertexArray<cglib::vec3<float>>& normals, VertexArray<cglib::vec2<std::int16_t>>& texCoords, VertexArray<cglib::vec4<std::int8_t>>& attribs, VertexArray<std::uint16_t>& indices, DrawPass pass, const LabelPlateIndices& plates, int secondaryStyleIndex, int iconStyleIndex) const {
+    bool Label::calculateVertexData(float size, const ViewState& viewState, int styleIndex, int haloStyleIndex, VertexArray<cglib::vec3<float>>& vertices, VertexArray<cglib::vec3<float>>& offsets, VertexArray<cglib::vec3<float>>& normals, VertexArray<cglib::vec2<std::int16_t>>& texCoords, VertexArray<cglib::vec4<std::int8_t>>& attribs, VertexArray<std::uint16_t>& indices, DrawPass pass, const LabelPlateIndices& plates, int secondaryStyleIndex, int iconStyleIndex, int iconHaloStyleIndex) const {
         VT_STAT_CLOCK(labelClock);
         std::shared_ptr<const Placement> placement = getPlacement(viewState);
         VT_STAT_SPLIT(labelPlacementNs, labelClock);
@@ -824,13 +824,24 @@ namespace massif::vt {
         normals.fill(placement->normal, _cachedVertices.size());
         texCoords.copy(_cachedTexCoords, 0, _cachedTexCoords.size());
 
-        if (haloStyleIndex >= 0) {
+        // The icon's halo lives in this pass too, so an icon keeps its outline on a label whose
+        // TEXT has none - a cycleway's bicycle sets icon-halo-width 3 and text-halo-width 0, and
+        // gating the whole pass on the text left it bare.
+        if (haloStyleIndex >= 0 || iconHaloStyleIndex >= 0) {
             for (const cglib::vec4<std::int8_t>& attrib : _cachedAttribs) {
-                attribs.append(cglib::vec4<std::int8_t>(static_cast<std::int8_t>(haloStyleIndex), attrib(1), static_cast<std::int8_t>(_opacity * 127.0f), billboardMode));
+                int glyphHaloIndex = (attrib(0) == 2 ? iconHaloStyleIndex : haloStyleIndex);
+                attribs.append(cglib::vec4<std::int8_t>(static_cast<std::int8_t>(glyphHaloIndex < 0 ? 0 : glyphHaloIndex), attrib(1), static_cast<std::int8_t>(_opacity * 127.0f), billboardMode));
             }
             
             std::uint16_t offset = static_cast<std::uint16_t>(vertices.size() - _cachedVertices.size());
             for (std::uint16_t idx : _cachedIndices) {
+                // Each run takes its OWN halo, and is left out when it has none. An icon never
+                // borrows the text's: that dilated its distance field past the few texels it
+                // carries outside the ink, so the whole quad read as inside - a white square behind
+                // a city dot - and it kept drawing after icon-opacity had faded the icon out.
+                if ((_cachedAttribs[idx](0) == 2 ? iconHaloStyleIndex : haloStyleIndex) < 0) {
+                    continue;
+                }
                 indices.append(idx + offset);
             }
 

@@ -3445,6 +3445,7 @@ namespace massif::vt {
         LabelPlateIndices plateIndices;
         int secondaryStyleIndex = -1;
         int iconStyleIndex = -1;
+        int iconHaloStyleIndex = -1;
         for (const std::shared_ptr<Label>& label : labels) {
             if (!label->isValid()) {
                 continue;
@@ -3487,10 +3488,14 @@ namespace massif::vt {
                 // And so may the icon run - a font icon in its own colour next to the name.
                 bool hasIconColor = static_cast<bool>(labelStyle->iconColorFunc);
                 cglib::vec4<float> iconColor = hasIconColor ? cglib::vec4<float>(evaluateColorFunc(*labelStyle->iconColorFunc).rgba()) : color;
+                // And its own halo - an icon never takes the text's (see Label::appendLabelPlates).
+                float iconHaloRadius = labelStyle->iconHaloRadiusFunc ? std::min(evaluateFloatFunc(*labelStyle->iconHaloRadiusFunc), MAX_HALO_PIXELS) : 0.0f;
+                bool hasIconHalo = iconHaloRadius > 0.0f && labelStyle->iconHaloColorFunc;
+                cglib::vec4<float> iconHaloColor = hasIconHalo ? cglib::vec4<float>(evaluateColorFunc(*labelStyle->iconHaloColorFunc).rgba()) : color;
                 // The style layer's own occluded opacity, or this layer's default where it sets
                 // none - and a batch carries one, so a change ends it like a change of atlas does.
                 float labelOcclusionOpacity = labelStyle->occlusionOpacity.value_or(_labelOcclusionOpacity);
-                if (bitmap != labelBitmap || labelBatchParams.occlusionOpacity != labelOcclusionOpacity || labelBatchParams.scale != labelStyle->scale || labelBatchParams.glyphRenderSize != labelStyle->glyphRenderSize || labelBatchParams.parameterCount + 2 + plateCount + (hasSecondaryColor ? 1 : 0) + (hasIconColor ? 1 : 0) > LabelBatchParameters::MAX_PARAMETERS) {
+                if (bitmap != labelBitmap || labelBatchParams.occlusionOpacity != labelOcclusionOpacity || labelBatchParams.scale != labelStyle->scale || labelBatchParams.glyphRenderSize != labelStyle->glyphRenderSize || labelBatchParams.parameterCount + 2 + plateCount + (hasSecondaryColor ? 1 : 0) + (hasIconColor ? 1 : 0) + (hasIconHalo ? 1 : 0) > LabelBatchParameters::MAX_PARAMETERS) {
                     renderLabelBatch(labelBatchParams, bitmap);
                     bitmap = labelBitmap;
                     labelBatchParams.labelCount = 0;
@@ -3505,6 +3510,7 @@ namespace massif::vt {
                     plateIndices = LabelPlateIndices();
                     secondaryStyleIndex = -1;
                     iconStyleIndex = -1;
+                    iconHaloStyleIndex = -1;
                 } else {
                     for (styleIndex = labelBatchParams.parameterCount; --styleIndex >= 0; ) {
                         if (labelBatchParams.colorTable[styleIndex] == color && labelBatchParams.widthTable[styleIndex] == size && labelBatchParams.strokeWidthTable[styleIndex] == 0) {
@@ -3569,6 +3575,21 @@ namespace massif::vt {
                     }
                 }
 
+                iconHaloStyleIndex = -1;
+                if (hasIconHalo) {
+                    for (iconHaloStyleIndex = labelBatchParams.parameterCount; --iconHaloStyleIndex >= 0; ) {
+                        if (labelBatchParams.colorTable[iconHaloStyleIndex] == iconHaloColor && labelBatchParams.widthTable[iconHaloStyleIndex] == size && labelBatchParams.strokeWidthTable[iconHaloStyleIndex] == iconHaloRadius) {
+                            break;
+                        }
+                    }
+                    if (iconHaloStyleIndex < 0) {
+                        iconHaloStyleIndex = labelBatchParams.parameterCount++;
+                        labelBatchParams.colorTable[iconHaloStyleIndex] = iconHaloColor;
+                        labelBatchParams.widthTable[iconHaloStyleIndex] = size;
+                        labelBatchParams.strokeWidthTable[iconHaloStyleIndex] = iconHaloRadius;
+                    }
+                }
+
                 iconStyleIndex = -1;
                 if (hasIconColor) {
                     for (iconStyleIndex = labelBatchParams.parameterCount; --iconStyleIndex >= 0; ) {
@@ -3589,7 +3610,7 @@ namespace massif::vt {
 
             VT_STAT_CLOCK(statClock);
             std::size_t labelVertexOffset = _labelVertices.size();
-            label->calculateVertexData(labelBatchParams.widthTable[styleIndex], _viewState, styleIndex, haloStyleIndex, _labelVertices, _labelOffsets, _labelNormals, _labelTexCoords, _labelAttribs, _labelIndices, pass, pass == Label::DrawPass::CALLOUT_LINE ? LabelPlateIndices() : plateIndices, pass == Label::DrawPass::CALLOUT_LINE ? -1 : secondaryStyleIndex, pass == Label::DrawPass::CALLOUT_LINE ? -1 : iconStyleIndex);
+            label->calculateVertexData(labelBatchParams.widthTable[styleIndex], _viewState, styleIndex, haloStyleIndex, _labelVertices, _labelOffsets, _labelNormals, _labelTexCoords, _labelAttribs, _labelIndices, pass, pass == Label::DrawPass::CALLOUT_LINE ? LabelPlateIndices() : plateIndices, pass == Label::DrawPass::CALLOUT_LINE ? -1 : secondaryStyleIndex, pass == Label::DrawPass::CALLOUT_LINE ? -1 : iconStyleIndex, pass == Label::DrawPass::CALLOUT_LINE ? -1 : iconHaloStyleIndex);
             if (labelStyle->transform) {
                 // Conjugated by the tile matrix the style's translate is a pure world translation, so
                 // it rides on the vertices - as a BATCH matrix it made every such label its own draw.

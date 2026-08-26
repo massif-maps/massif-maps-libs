@@ -162,10 +162,13 @@ namespace massif::mvt {
 
         float tileSize = symbolizerContext.getSettings().getTileSize();
         float fontScale = symbolizerContext.getSettings().getFontScale();
+        // The shield image's own scale, on top of the display's. Everything the IMAGE is measured
+        // by takes it; the text keeps fontScale alone.
+        float imageScale = fontScale * _imageScale.getValue(exprContext);
         float pixelScale = symbolizerContext.getSettings().getPixelScale();
         float bitmapSize = 0;
         if (backgroundImage && backgroundImage->bitmap) {
-            bitmapSize = static_cast<float>(std::max(backgroundImage->bitmap->width, backgroundImage->bitmap->height)) * fontScale;
+            bitmapSize = static_cast<float>(std::max(backgroundImage->bitmap->width, backgroundImage->bitmap->height)) * imageScale;
         }
         float minimumDistance = _minimumDistance.getValue(exprContext) * fontScale * pixelScale;
         float maxDistance = _maxDistance.getValue(exprContext);
@@ -207,8 +210,21 @@ namespace massif::mvt {
         bool textOptional = _textOptional.getValue(exprContext);
         std::vector<vt::Font::Glyph> iconGlyphs = buildIconGlyphs(font, symbolizerContext, exprContext, sizeStatic);
         std::optional<vt::ColorFunction> iconColorFunc;
-        if (_iconFill.isDefined() && !iconGlyphs.empty()) {
+        // An SDF shield-file joins the icon run as a glyph too (TileLayerBuilder), so it needs the
+        // icon colour even with no font icon beside it. Without this a white city dot took the text
+        // fill instead and drew near-black.
+        bool sdfBackground = sdfMode && backgroundImage && backgroundImage->bitmap;
+        if (_iconFill.isDefined() && (!iconGlyphs.empty() || sdfBackground)) {
             iconColorFunc = _iconFillFuncBuilder.createColorOpacityFunction(_iconFill.getFunction(exprContext), _iconOpacity.getFunction(exprContext));
+        }
+
+        // The icon's own halo. Built only when a radius asks for one, so a style that sets none
+        // costs no batch slot.
+        std::optional<vt::ColorFunction> iconHaloColorFunc;
+        std::optional<vt::FloatFunction> iconHaloRadiusFunc;
+        if (_iconHaloRadius.isDefined() && (!iconGlyphs.empty() || sdfBackground)) {
+            iconHaloColorFunc = _iconHaloFillFuncBuilder.createColorOpacityFunction(_iconHaloFill.getFunction(exprContext), _iconOpacity.getFunction(exprContext));
+            iconHaloRadiusFunc = _iconHaloRadiusFuncBuilder.createScaledFloatFunction(_iconHaloRadius.getFunction(exprContext), fontScale * symbolizerContext.getSettings().getPixelScale());
         }
 
         vt::ColorFunction fillFunc = _fillFuncBuilder.createColorOpacityFunction(_fill.getFunction(exprContext), _opacity.getFunction(exprContext));
@@ -240,16 +256,16 @@ namespace massif::mvt {
         vt::TextFormatter formatter = (unlockImage ? textFormatter : shieldFormatter);
         if (backgroundImage && backgroundImage->bitmap) {
             if (unlockImage) {
-                backgroundOffset = cglib::vec2<float>(-backgroundImage->bitmap->width * fontScale * 0.5f + shieldFormatterOptions.offset(0), -backgroundImage->bitmap->height * fontScale * 0.5f + shieldFormatterOptions.offset(1));
+                backgroundOffset = cglib::vec2<float>(-backgroundImage->bitmap->width * imageScale * 0.5f + shieldFormatterOptions.offset(0), -backgroundImage->bitmap->height * imageScale * 0.5f + shieldFormatterOptions.offset(1));
             }
             else {
-                backgroundOffset = cglib::vec2<float>(-backgroundImage->bitmap->width * fontScale * 0.5f, -backgroundImage->bitmap->height * fontScale * 0.5f);
+                backgroundOffset = cglib::vec2<float>(-backgroundImage->bitmap->width * imageScale * 0.5f, -backgroundImage->bitmap->height * imageScale * 0.5f);
             }
         }
 
         if (clip) {
-            return [compOp, fillFunc, haloFillFunc, sizeFunc, haloRadiusFunc, fontScale, repeatAlongLine, billboardRepeat, text, orientationAngle, formatter, backgroundOffset, backgroundImage, sdfMode, spacing, textSize, tileSize, this](const FeatureCollection& featureCollection, vt::TileLayerBuilder& layerBuilder) {
-                vt::TextStyle style(compOp, fillFunc, sizeFunc, haloFillFunc, haloRadiusFunc, orientationAngle, fontScale, backgroundOffset, backgroundImage);
+            return [compOp, fillFunc, haloFillFunc, sizeFunc, haloRadiusFunc, fontScale, imageScale, iconHaloColorFunc, iconHaloRadiusFunc, repeatAlongLine, billboardRepeat, text, orientationAngle, formatter, backgroundOffset, backgroundImage, sdfMode, spacing, textSize, tileSize, this](const FeatureCollection& featureCollection, vt::TileLayerBuilder& layerBuilder) {
+                vt::TextStyle style(compOp, fillFunc, sizeFunc, haloFillFunc, haloRadiusFunc, orientationAngle, imageScale, backgroundOffset, backgroundImage);
             style.backgroundSdf = sdfMode;
                 vt::TileLayerBuilder::TextProcessor textProcessor;
                 for (std::size_t featureIndex = 0; featureIndex < featureCollection.size(); featureIndex++) {
@@ -308,8 +324,10 @@ namespace massif::mvt {
             };
         }
 
-        return [compOp, fillFunc, haloFillFunc, sizeFunc, haloRadiusFunc, fontScale, repeatAlongLine, billboardRepeat, orientation, text, hash, orientationAngle, formatter, backgroundOffset, backgroundImage, sdfMode, spacing, textSize, tileId, tileSize, labelIdOverride, groupId, placementPriority, minimumDistance, maxDistance, anchors, textOptional, iconGlyphs, iconColorFunc, textLineAlign, textPlate, iconPlate, this](const FeatureCollection& featureCollection, vt::TileLayerBuilder& layerBuilder) {
-            vt::TextLabelStyle style(orientation, fillFunc, sizeFunc, haloFillFunc, haloRadiusFunc, true, orientationAngle, fontScale, backgroundOffset, backgroundImage, maxDistance);
+        return [compOp, fillFunc, haloFillFunc, sizeFunc, haloRadiusFunc, fontScale, imageScale, iconHaloColorFunc, iconHaloRadiusFunc, repeatAlongLine, billboardRepeat, orientation, text, hash, orientationAngle, formatter, backgroundOffset, backgroundImage, sdfMode, spacing, textSize, tileId, tileSize, labelIdOverride, groupId, placementPriority, minimumDistance, maxDistance, anchors, textOptional, iconGlyphs, iconColorFunc, textLineAlign, textPlate, iconPlate, this](const FeatureCollection& featureCollection, vt::TileLayerBuilder& layerBuilder) {
+            vt::TextLabelStyle style(orientation, fillFunc, sizeFunc, haloFillFunc, haloRadiusFunc, true, orientationAngle, imageScale, backgroundOffset, backgroundImage, maxDistance);
+            style.iconHaloColorFunc = iconHaloColorFunc;
+            style.iconHaloRadiusFunc = iconHaloRadiusFunc;
             style.backgroundSdf = sdfMode;
             style.anchors = anchors;
             style.textOptional = textOptional;
