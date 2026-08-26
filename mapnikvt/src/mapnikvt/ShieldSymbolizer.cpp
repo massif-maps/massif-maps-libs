@@ -162,11 +162,12 @@ namespace massif::mvt {
 
         float tileSize = symbolizerContext.getSettings().getTileSize();
         float fontScale = symbolizerContext.getSettings().getFontScale();
+        float pixelScale = symbolizerContext.getSettings().getPixelScale();
         float bitmapSize = 0;
         if (backgroundImage && backgroundImage->bitmap) {
             bitmapSize = static_cast<float>(std::max(backgroundImage->bitmap->width, backgroundImage->bitmap->height)) * fontScale;
         }
-        float minimumDistance = _minimumDistance.getValue(exprContext);
+        float minimumDistance = _minimumDistance.getValue(exprContext) * fontScale * pixelScale;
         float maxDistance = _maxDistance.getValue(exprContext);
         float placementPriority = _placementPriority.getValue(exprContext);
         float orientationAngle = _orientationAngle.getValue(exprContext);
@@ -213,7 +214,11 @@ namespace massif::mvt {
         vt::ColorFunction fillFunc = _fillFuncBuilder.createColorOpacityFunction(_fill.getFunction(exprContext), _opacity.getFunction(exprContext));
         vt::FloatFunction sizeFunc = _sizeFuncBuilder.createScaledFloatFunction(_size.getFunction(exprContext), fontScale);
         vt::ColorFunction haloFillFunc = _haloFillFuncBuilder.createColorOpacityFunction(_haloFill.getFunction(exprContext), _haloOpacity.getFunction(exprContext));
-        vt::FloatFunction haloRadiusFunc = _haloRadiusFuncBuilder.createScaledFloatFunction(_haloRadius.getFunction(exprContext), fontScale);
+        // Style pixels, like the text size beside it: the halo has to keep its width RELATIVE to the
+        // glyphs on every display, and the renderer measures it in device pixels. Left unscaled it
+        // shrank against its own text as the dpi rose (1.2 drew 1.8 px where mapbox draws 3.2 on a
+        // 2.6x screen).
+        vt::FloatFunction haloRadiusFunc = _haloRadiusFuncBuilder.createScaledFloatFunction(_haloRadius.getFunction(exprContext), fontScale * pixelScale);
 
         vt::TileId tileId = exprContext.getTileId();
         std::string text = getTransformedText(exprContext);

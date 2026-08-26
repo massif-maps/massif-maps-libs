@@ -3460,13 +3460,10 @@ namespace massif::vt {
                 cglib::vec4<float> color = cglib::vec4<float>(evaluateColorFunc(labelStyle->colorFunc).rgba());
                 float size = evaluateFloatFunc(labelStyle->sizeFunc);
                 cglib::vec4<float> haloColor = cglib::vec4<float>(evaluateColorFunc(labelStyle->haloColorFunc).rgba());
-                float haloRadius = evaluateFloatFunc(labelStyle->haloRadiusFunc) * HALO_RADIUS_SCALE;
-                haloRadius = std::min(haloRadius, static_cast<float>(GLYPH_RENDER_SPREAD));
-                // In SCREEN PIXELS from here on: labelFsh measures the halo against the same one
-                // screen pixel the antialias ramp is, so it no longer depends on which raster size
-                // the label landed on. The clamp above stays where it was - it is the point past
-                // which the encoded field runs out, and it is what a style's widest halo met before.
-                haloRadius *= HALO_PIXELS_PER_UNIT;
+                // Already in SCREEN PIXELS: the symbolizer scaled the style's radius by the pixel
+                // scale, and labelFsh measures the halo against the same one screen pixel the
+                // antialias ramp is. The cap is where the encoded field runs out.
+                float haloRadius = std::min(evaluateFloatFunc(labelStyle->haloRadiusFunc), MAX_HALO_PIXELS);
 
                 // Up to four plates: a fill and a border behind the text, and the same behind the
                 // icon. Each colour is one more slot in the batch, exactly like the halo.
@@ -5641,8 +5638,7 @@ namespace massif::vt {
                 // Text drawn as geometry (text-clip) takes the same halo units as a label: measured
                 // in antialias ramps, and pointVsh pushes the ramp centre out by twice its width in
                 // screen pixels, exactly like labelFsh.
-                float haloRadius = std::min(evaluateFloatFunc(styleParams.offsetFuncs[i]) * HALO_RADIUS_SCALE, static_cast<float>(GLYPH_RENDER_SPREAD));
-                strokeWidths[i] = 2.0f * haloRadius * HALO_PIXELS_PER_UNIT;
+                strokeWidths[i] = 2.0f * std::min(evaluateFloatFunc(styleParams.offsetFuncs[i]), MAX_HALO_PIXELS);
             }
             VT_STAT_SPLIT(geomStyleEvalNs, statClock);
 
