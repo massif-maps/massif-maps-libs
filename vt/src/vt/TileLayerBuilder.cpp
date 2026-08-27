@@ -65,13 +65,17 @@ namespace {
     // derived from the sign of dx, which means nothing once dx is a gap.
     static std::vector<massif::vt::TileLabel::Variant> buildLabelVariants(const std::vector<massif::vt::LabelAnchor>& anchors, massif::vt::LabelLineAlign lineAlign, bool textOptional, bool hasIcon, const std::vector<massif::vt::Font::Glyph>& glyphs, const cglib::vec2<float>& iconExtent, const cglib::vec2<float>& styleOffset) {
         std::vector<massif::vt::TileLabel::Variant> variants;
-        if (anchors.empty()) {
+        // 'text-optional' is a layout list on its own: no side to try, but still the icon alone as
+        // a last resort. Most mapbox styles set it WITHOUT a variable anchor, and returning here on
+        // an empty anchor list dropped their POI icons with the names the culler could not fit.
+        bool iconAlone = textOptional && hasIcon;
+        if (anchors.empty() && !iconAlone) {
             return variants;
         }
 
         cglib::bbox2<float> textBBox = measureGlyphRun(glyphs, true);
         if (textBBox.min(0) > textBBox.max(0)) {
-            return variants; // no text to move
+            return variants; // no text to move, and none to make optional either
         }
         // The box as it would be with no dx/dy, so that the offset can be re-applied per side.
         cglib::vec2<float> boxMin = textBBox.min - styleOffset;
@@ -95,7 +99,11 @@ namespace {
             }
             variants.emplace_back(desired - styleOffset, true, resolveLineAlign(lineAlign, dir));
         }
-        if (textOptional && hasIcon) {
+        if (anchors.empty()) {
+            // The style's own layout, spelled as a variant so the icon-only one can follow it.
+            variants.emplace_back(cglib::vec2<float>(0, 0), true, resolveLineAlign(lineAlign, cglib::vec2<float>(0, 0)));
+        }
+        if (iconAlone) {
             variants.emplace_back(cglib::vec2<float>(0, 0), false);
         }
         return variants;
