@@ -662,6 +662,8 @@ namespace massif::css {
         { "line-cap", "stroke-linecap" },
         { "line-miterlimit", "stroke-miterlimit" },
         { "line-offset", "offset" },
+        { "line-gap-width", "gap-width" },
+        { "line-blur", "blur" },
         { "line-end-arrow", "end-arrow" },
         { "line-arrow-width", "arrow-width" },
         { "line-arrow-length", "arrow-length" },
