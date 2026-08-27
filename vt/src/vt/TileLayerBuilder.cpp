@@ -711,6 +711,8 @@ namespace massif::vt {
             labelStyle->iconHaloColorFunc = style.iconHaloColorFunc;
             labelStyle->iconHaloRadiusFunc = style.iconHaloRadiusFunc;
             labelStyle->iconRefSize = formatter.getFontSize();
+            labelStyle->iconScaleFunc = style.iconScaleFunc;
+            labelStyle->iconRefScale = style.iconRefScale;
             _labelStyle = labelStyle;
         }
 

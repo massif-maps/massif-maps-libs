@@ -746,6 +746,12 @@ namespace massif::vt {
         float iconScale = scale;
         if (_style->iconRefSize > 0 && size > 0) {
             iconScale = scale * (_style->iconRefSize / size);
+            // ...and then follows its OWN ramp. The glyph carries one baked size, so the live value
+            // is applied as a ratio to it - mapbox's bus stop grows 0 -> 1.2 over z15..z22 on a
+            // curve that has nothing to do with the name's.
+            if (_style->iconScaleFunc && _style->iconRefScale > 0) {
+                iconScale *= (*_style->iconScaleFunc)(viewState) / _style->iconRefScale;
+            }
         }
         auto vertexScale = [&](std::size_t i) {
             return (i < _cachedAttribs.size() && _cachedAttribs[i](0) == 2) ? iconScale : scale;

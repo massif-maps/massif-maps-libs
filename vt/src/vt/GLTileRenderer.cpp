@@ -3489,7 +3489,7 @@ namespace massif::vt {
                 bool hasIconColor = static_cast<bool>(labelStyle->iconColorFunc);
                 cglib::vec4<float> iconColor = hasIconColor ? cglib::vec4<float>(evaluateColorFunc(*labelStyle->iconColorFunc).rgba()) : color;
                 // And its own halo - an icon never takes the text's (see Label::appendLabelPlates).
-                float iconHaloRadius = labelStyle->iconHaloRadiusFunc ? std::min(evaluateFloatFunc(*labelStyle->iconHaloRadiusFunc), MAX_HALO_PIXELS) : 0.0f;
+                float iconHaloRadius = labelStyle->iconHaloRadiusFunc ? std::min(evaluateFloatFunc(*labelStyle->iconHaloRadiusFunc), MAX_ICON_HALO_PIXELS) : 0.0f;
                 bool hasIconHalo = iconHaloRadius > 0.0f && labelStyle->iconHaloColorFunc;
                 cglib::vec4<float> iconHaloColor = hasIconHalo ? cglib::vec4<float>(evaluateColorFunc(*labelStyle->iconHaloColorFunc).rgba()) : color;
                 // The style layer's own occluded opacity, or this layer's default where it sets

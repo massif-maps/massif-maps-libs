@@ -66,7 +66,7 @@ namespace massif::mvt {
         // Scales the shield IMAGE without touching the text. An SDF sprite has to ship at its own
         // resolution and be shrunk here: resampling the field into a smaller bitmap loses exactly
         // the resolution the field needs, and the smaller the icon the blockier it came out.
-        FloatProperty _imageScale = FloatProperty(1.0f);
+        FloatFunctionProperty _imageScale = FloatFunctionProperty(1.0f);
         BoolProperty _unlockImage = BoolProperty(false);
         FloatProperty _shieldDx = FloatProperty(0.0f);
         FloatProperty _shieldDy = FloatProperty(0.0f);
@@ -102,6 +102,7 @@ namespace massif::mvt {
         FloatProperty _iconBackgroundBorderWidth = FloatProperty(0.0f);
 
         ColorFunctionBuilder _iconFillFuncBuilder;
+        FloatFunctionBuilder _imageScaleFuncBuilder;
         ColorFunctionBuilder _iconHaloFillFuncBuilder;
         FloatFunctionBuilder _iconHaloRadiusFuncBuilder;
     };

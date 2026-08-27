@@ -536,6 +536,12 @@ namespace massif::vt {
         // run out and the halo stops growing whatever the style asks - it is the old
         // GLYPH_RENDER_SPREAD cap, carried over unchanged.
         static constexpr float MAX_HALO_PIXELS = 4.7f;
+        // An ICON carries a padded field (the converter continues the ramp outward past the ink), so
+        // its halo can run further than a font glyph's - mapbox's icon-halo-width 3 is 7.8 device
+        // pixels on a 2.6x screen and the glyph cap clipped it. Not much further, though: the
+        // encoding runs out at 127.5/16 ~ 8 texels, and past that the quad's own edge reads as
+        // inside and draws as straight white lines across it.
+        static constexpr float MAX_ICON_HALO_PIXELS = 8.0f;
         static constexpr float STROKE_UV_SCALE = 2.857f; // stroked line UV scale factor
         static constexpr float TERRAIN_LAYER_DEPTH_DELTA = 1.0f / 524288.0f; // 2^-19: NDC depth separation per draped layer bias unit (GPU terrain draping mode)
         // The FLOOR of a proxy tile's depth, tangram's `1` in
