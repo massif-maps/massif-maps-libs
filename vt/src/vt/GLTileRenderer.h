@@ -716,7 +716,7 @@ namespace massif::vt {
 
         const CompiledBitmap& buildCompiledBitmap(const std::shared_ptr<const Bitmap>& bitmap, bool genMipmaps);
         const CompiledBitmap& buildCompiledTileBitmap(const std::shared_ptr<TileBitmap>& tileBitmap);
-        const CompiledGeometry& buildCompiledTileGeometry(const std::shared_ptr<TileGeometry>& tileGeometry);
+        const CompiledGeometry* buildCompiledTileGeometry(const std::shared_ptr<TileGeometry>& tileGeometry);
         // id must be a string LITERAL: its address is the identity in the front cache below.
         const ShaderProgram& buildShaderProgram(const char* id, const std::string& vsh, const std::string& fsh, LightingMode lightingMode, RasterFilterMode filterMode, unsigned int flags);
         const std::vector<std::shared_ptr<TileSurface>>& buildCompiledTerrainGridSurfaces();

@@ -5792,7 +5792,14 @@ namespace massif::vt {
         }
         VT_STAT_SPLIT(geomStyleNs, statClock);
 
-        const CompiledGeometry& compiledGeometry = buildCompiledTileGeometry(geometry);
+        const CompiledGeometry* compiledGeometryPtr = buildCompiledTileGeometry(geometry);
+        if (!compiledGeometryPtr) {
+            if (styleParams.pattern) {
+                glBindTexture(GL_TEXTURE_2D, 0);
+            }
+            return;
+        }
+        const CompiledGeometry& compiledGeometry = *compiledGeometryPtr;
         VT_STAT_SPLIT(geomCompileNs, statClock);
         bindGeometryVertexLayout(shaderProgram, geometry, compiledGeometry);
 
@@ -6150,7 +6157,7 @@ namespace massif::vt {
         return it->second;
     }
 
-    const GLTileRenderer::CompiledGeometry& GLTileRenderer::buildCompiledTileGeometry(const std::shared_ptr<TileGeometry>& tileGeometry) {
+    const GLTileRenderer::CompiledGeometry* GLTileRenderer::buildCompiledTileGeometry(const std::shared_ptr<TileGeometry>& tileGeometry) {
         // The style parameter that picks a feature out may have changed since this geometry was
         // built: repointing its features at their other style slot is a byte rewrite here, not a
         // tile decode. Done before the buffers are looked at, so a geometry compiled for the first
@@ -6171,6 +6178,17 @@ namespace massif::vt {
             it = _compiledTileGeometryMap.end();
         }
         if (it == _compiledTileGeometryMap.end()) {
+            // Nothing left to upload. releaseVertexArrays() frees the CPU copy once a geometry is
+            // in a VBO, which assumes ONE renderer per geometry - and a renderer is rebuilt from
+            // scratch whenever the tile transformer changes (TileRenderer::setTileTransformer, i.e.
+            // every terrain toggle), while the tiles themselves are handed straight to it. Uploading
+            // the empty arrays gave a buffer with NO data store and a draw of 65535 indices into it:
+            // undefined on a device, a null dereference inside the emulator's GL encoder. The tiles
+            // are re-decoded for the new transformer anyway, so skipping is a frame or two of
+            // missing geometry rather than a crash.
+            if (tileGeometry->getIndicesCount() > 0 && tileGeometry->getIndices().empty()) {
+                return nullptr;
+            }
             VT_STAT_INC(geomCompileMisses);
             CompiledGeometry compiledGeometry;
             createCompiledGeometry(compiledGeometry);
@@ -6195,7 +6213,7 @@ namespace massif::vt {
             glBufferSubData(GL_ARRAY_BUFFER, dirtyBytes->first, dirtyBytes->second - dirtyBytes->first, tileGeometry->getVertexGeometry().data() + dirtyBytes->first);
             tileGeometry->clearDirtyVertexBytes();
         }
-        return it->second.geometry;
+        return &it->second.geometry;
     }
 
     const GLTileRenderer::ShaderProgram& GLTileRenderer::buildShaderProgram(const char* id, const std::string& vsh, const std::string& fsh, LightingMode lightingMode, RasterFilterMode filterMode, unsigned int flags) {
