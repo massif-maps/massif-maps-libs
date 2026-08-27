@@ -505,6 +505,10 @@ namespace massif::mvt {
         float secondaryScale = _secondaryScale.getValue(exprContext);
         float secondaryGap = _secondaryDx.getValue(exprContext) * fontScale;
         float secondaryOffset = -_secondaryDy.getValue(exprContext) * fontScale;
-        return vt::TextFormatter::Options(alignment, offset, wrapCharacter, wrapBefore, wrapWidth * fontScale, characterSpacing, lineSpacing, secondaryText, secondaryScale, secondaryGap, secondaryOffset);
+        // NOT scaled by fontScale, unlike the offsets above: splitLines accumulates a word's width
+        // from advances taken at the STYLE size (glyph.advance * _fontSize), so a threshold in
+        // device pixels made every label wrap fontScale times too late - on a 2.6x screen, never.
+        // Where a label wraps is a property of the style, not of the display.
+        return vt::TextFormatter::Options(alignment, offset, wrapCharacter, wrapBefore, wrapWidth, characterSpacing, lineSpacing, secondaryText, secondaryScale, secondaryGap, secondaryOffset);
     }
 }
