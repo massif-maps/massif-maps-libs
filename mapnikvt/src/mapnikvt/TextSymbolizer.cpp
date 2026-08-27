@@ -51,9 +51,10 @@ namespace massif::mvt {
         float tileSize = symbolizerContext.getSettings().getTileSize();
         float fontScale = symbolizerContext.getSettings().getFontScale();
         float pixelScale = symbolizerContext.getSettings().getPixelScale();
-        // Style pixels, like dx/dy and the text size, but the culler measures in DEVICE pixels -
-        // so the pixel scale has to be applied here. Left out, a style's separation shrank to a
-        // third of what it asked for on a hi-dpi screen.
+        // The culler measures in DEVICE pixels, so this takes the pixel scale the way emSizePixels
+        // and iconSizePixels do. dx/dy, halo-radius and wrap-width beside it take fontScale alone
+        // because they are in GLYPH units - the formatter divides them by the font size. Left
+        // unscaled, a style's separation shrank to a third of what it asked for on a hi-dpi screen.
         float minimumDistance = _minimumDistance.getValue(exprContext) * fontScale * pixelScale;
         float maxDistance = _maxDistance.getValue(exprContext);
         float occlusionOpacity = _occlusionOpacity.getValue(exprContext);
