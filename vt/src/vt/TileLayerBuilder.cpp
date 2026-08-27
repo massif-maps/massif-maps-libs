@@ -1297,10 +1297,21 @@ namespace massif::vt {
         float u0 = 0.0f, v0 = 0.0f;
         float du_dx = 0.0f, dv_dy = 0.0f;
         if (style.pattern) {
-            u0 = static_cast<float>(std::fmod((_tileId.x + 0.5) * _tileSize, style.pattern->bitmap->width))  / style.pattern->widthScale;
-            v0 = static_cast<float>(std::fmod((_tileId.y + 0.5) * _tileSize, style.pattern->bitmap->height)) / style.pattern->heightScale;
             du_dx = _tileSize / style.pattern->widthScale;
             dv_dy = _tileSize / style.pattern->heightScale;
+            // The tile's own phase, so the pattern runs on across a tile border. Wrapped at ONE
+            // PERIOD, which is bitmap->width * widthScale in these texcoord units: the fragment
+            // stage samples uPattern at texCoord / (texCoordScale * widthScale), and texCoordScale
+            // - only the int16 packing scale - cancels. Wrapping at the BITMAP WIDTH instead left a
+            // fraction of a period at every border, and MapTiler's construction hatch spans 18.2
+            // periods per tile, so a fifth of one was dropped each time. Accumulated in DOUBLE: a
+            // z21 tile index reaches 2^21 and a float step loses the remainder well before that.
+            // Only visible at high overzoom, where a tile is a few hundred pixels and those borders
+            // fall all over a single polygon.
+            double uPeriod = static_cast<double>(style.pattern->bitmap->width) * style.pattern->widthScale;
+            double vPeriod = static_cast<double>(style.pattern->bitmap->height) * style.pattern->heightScale;
+            u0 = static_cast<float>(std::fmod((_tileId.x + 0.5) * static_cast<double>(du_dx), uPeriod));
+            v0 = static_cast<float>(std::fmod((_tileId.y + 0.5) * static_cast<double>(dv_dy), vPeriod));
         }
 
         std::size_t offset = _coords.size();
