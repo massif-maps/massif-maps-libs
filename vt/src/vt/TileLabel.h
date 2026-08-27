@@ -56,6 +56,10 @@ namespace massif::vt {
             // The icon run's own halo (see TextLabelStyle) - unset draws none.
             std::optional<ColorFunction> iconHaloColorFunc;
             std::optional<FloatFunction> iconHaloRadiusFunc;
+            // The text size the icon run was measured in ems of. The icon keeps the SIZE IN PIXELS
+            // that gives, whatever the text does afterwards - mapbox sizes an icon by icon-size and
+            // the name by text-size, and they are not the same ramp. 0 leaves the icon on the text.
+            float iconRefSize = 0.0f;
             // Added to the placement priority by the culler, per label and per pass - the one
             // place a style function may read view::distance (see TextLabelStyle::rankFunc).
             FloatFunction rankFunc;

@@ -738,6 +738,19 @@ namespace massif::vt {
             return false;
         }
 
+        // The icon run keeps a fixed PIXEL size: it was laid out in ems of iconRefSize, so undoing
+        // that and re-applying the screen scale leaves it independent of what the text size does.
+        // A MapTiler bus stop ramps text-size 0 -> 12 between z15 and z17 while its icon-size is
+        // constant, and riding the text made the icon grow across each tile level and snap back at
+        // the next - and vanish entirely where the ramp reached 0.
+        float iconScale = scale;
+        if (_style->iconRefSize > 0 && size > 0) {
+            iconScale = scale * (_style->iconRefSize / size);
+        }
+        auto vertexScale = [&](std::size_t i) {
+            return (i < _cachedAttribs.size() && _cachedAttribs[i](0) == 2) ? iconScale : scale;
+        };
+
         // Build vertex data cache
         bool valid = isSurfaceFacingView(viewState, *placement);
         if (pass == DrawPass::CALLOUT_LINE) {
@@ -761,16 +774,18 @@ namespace massif::vt {
             if (isScreenLineRun()) {
                 // Laid out on the camera axes, so the shader can span it from them: emit the
                 // anchor and the run-local offset and let uLabelAxisX/Y do the rest.
-                for (const cglib::vec3<float>& vertex : _cachedVertices) {
-                    offsets.append(cglib::vec3<float>(vertex(0) * scale, vertex(1) * scale, 0));
+                for (std::size_t i = 0; i < _cachedVertices.size(); i++) {
+                    float s = vertexScale(i);
+                    offsets.append(cglib::vec3<float>(_cachedVertices[i](0) * s, _cachedVertices[i](1) * s, 0));
                 }
             }
             else {
                 // Flat on the surface: the run was laid out on the placement's own tangent frame,
                 // so span it here and hand the shader a world offset.
                 billboardMode = WORLD_OFFSET;
-                for (const cglib::vec3<float>& vertex : _cachedVertices) {
-                    offsets.append(xAxis * (vertex(0) * scale) + yAxis * (vertex(1) * scale));
+                for (std::size_t i = 0; i < _cachedVertices.size(); i++) {
+                    float s = vertexScale(i);
+                    offsets.append(xAxis * (_cachedVertices[i](0) * s) + yAxis * (_cachedVertices[i](1) * s));
                 }
             }
 
@@ -807,15 +822,17 @@ namespace massif::vt {
                 // lifted along the camera up axis by what the culler decided (see
                 // setCalloutOffset) and slid sideways so that the style's line anchor sits over
                 // the feature; the anchor itself stays put, which is where its leader line starts.
-                for (const cglib::vec3<float>& vertex : _cachedVertices) {
-                    offsets.append(cglib::vec3<float>(vertex(0) * scale + calloutShift(0), vertex(1) * scale + calloutShift(1), 0));
+                for (std::size_t i = 0; i < _cachedVertices.size(); i++) {
+                    float s = vertexScale(i);
+                    offsets.append(cglib::vec3<float>(_cachedVertices[i](0) * s + calloutShift(0), _cachedVertices[i](1) * s + calloutShift(1), 0));
                 }
             } else {
                 // Axes come from the placement (or from the placement normal and the camera
                 // up vector) - span the offset here and hand the shader a world offset.
                 billboardMode = WORLD_OFFSET;
-                for (const cglib::vec3<float>& vertex : _cachedVertices) {
-                    offsets.append(xAxis * (vertex(0) * scale) + yAxis * (vertex(1) * scale));
+                for (std::size_t i = 0; i < _cachedVertices.size(); i++) {
+                    float s = vertexScale(i);
+                    offsets.append(xAxis * (_cachedVertices[i](0) * s) + yAxis * (_cachedVertices[i](1) * s));
                 }
             }
         }

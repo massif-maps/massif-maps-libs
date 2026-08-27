@@ -710,6 +710,7 @@ namespace massif::vt {
             labelStyle->occlusionOpacity = style.occlusionOpacity; // not in the ctor: its signature is long enough
             labelStyle->iconHaloColorFunc = style.iconHaloColorFunc;
             labelStyle->iconHaloRadiusFunc = style.iconHaloRadiusFunc;
+            labelStyle->iconRefSize = formatter.getFontSize();
             _labelStyle = labelStyle;
         }
 
