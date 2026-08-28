@@ -678,6 +678,7 @@ namespace massif::vt {
             labelStyle->iconRefSize = formatter.getFontSize();
             labelStyle->iconScaleFunc = style.iconScaleFunc;
             labelStyle->iconRefScale = style.iconRefScale;
+            labelStyle->iconOpacityFunc = style.iconOpacityFunc;
             _labelStyle = labelStyle;
         }
 

@@ -3558,8 +3558,13 @@ namespace massif::vt {
                     // as styleIndex + 1, so a REUSED pair has to be consecutive as well.
                     bool border = plate.drawsBorder();
                     int slots = (border ? 2 : 1);
-                    cglib::vec4<float> fillColor = cglib::vec4<float>(plate.style.color.rgba());
-                    cglib::vec4<float> borderColor = cglib::vec4<float>(plate.style.borderColor.rgba());
+                    // The icon's plate is its background, so icon-opacity fades it with the glyph
+                    // on it - LIVE, because that opacity is a zoom ramp: baked at decode, a POI
+                    // whose icon a zoom step hides kept its disc until the tile was decoded again,
+                    // which is the coloured square that flashed while zooming.
+                    float plateOpacity = (i == 1 && labelStyle->iconOpacityFunc ? evaluateFloatFunc(*labelStyle->iconOpacityFunc) : 1.0f);
+                    cglib::vec4<float> fillColor = cglib::vec4<float>(plate.style.color.rgba()) * plateOpacity;
+                    cglib::vec4<float> borderColor = cglib::vec4<float>(plate.style.borderColor.rgba()) * plateOpacity;
                     int index = labelBatchParams.parameterCount - slots;
                     for (; index >= 0; index--) {
                         if (labelBatchParams.colorTable[index] == fillColor && labelBatchParams.widthTable[index] == size && labelBatchParams.strokeWidthTable[index] == 0

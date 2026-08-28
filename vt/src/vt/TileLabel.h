@@ -59,6 +59,8 @@ namespace massif::vt {
             // The icon's own size ramp and the value it was baked at (see TextLabelStyle).
             std::optional<FloatFunction> iconScaleFunc;
             float iconRefScale = 0.0f;
+            // mapbox's icon-opacity, live - what the icon PLATE fades by (see TextLabelStyle).
+            std::optional<FloatFunction> iconOpacityFunc;
             // The text size the icon run was measured in ems of. The icon keeps the SIZE IN PIXELS
             // that gives, whatever the text does afterwards - mapbox sizes an icon by icon-size and
             // the name by text-size, and they are not the same ramp. 0 leaves the icon on the text.

@@ -206,14 +206,10 @@ namespace massif::mvt {
         vt::LabelLineAlign textLineAlign = parseLineAlign(_textHorizontalAlignment.getValue(exprContext));
         vt::LabelPlateStyle textPlate = getPlateStyle(symbolizerContext, exprContext);
         vt::LabelPlateStyle iconPlate;
-        // The plate IS the icon's background, so icon-opacity fades it with the glyph on it.
-        // Without this a POI whose icon is hidden - Standard hides one per `sizerank` from z17 -
-        // kept its disc, and every prominent POI drew as a bare coloured dot beside its name.
-        float iconPlateOpacity = _iconOpacity.getStaticValue(exprContext);
-        iconPlate.color = vt::Color::fromColorOpacity(_iconBackgroundFill.getValue(exprContext), _iconBackgroundOpacity.getValue(exprContext) * iconPlateOpacity);
+        iconPlate.color = vt::Color::fromColorOpacity(_iconBackgroundFill.getValue(exprContext), _iconBackgroundOpacity.getValue(exprContext));
         iconPlate.radius = _iconBackgroundRadius.getValue(exprContext) * fontScale;
         iconPlate.padding = cglib::vec2<float>(_iconBackgroundPaddingX.getValue(exprContext) * fontScale, _iconBackgroundPaddingY.getValue(exprContext) * fontScale);
-        iconPlate.borderColor = vt::Color::fromColorOpacity(_iconBackgroundBorderFill.getValue(exprContext), _iconBackgroundBorderOpacity.getValue(exprContext) * iconPlateOpacity);
+        iconPlate.borderColor = vt::Color::fromColorOpacity(_iconBackgroundBorderFill.getValue(exprContext), _iconBackgroundBorderOpacity.getValue(exprContext));
         iconPlate.borderWidth = _iconBackgroundBorderWidth.getValue(exprContext) * fontScale;
         bool textOptional = _textOptional.getValue(exprContext);
         std::vector<vt::Font::Glyph> iconGlyphs = buildIconGlyphs(font, symbolizerContext, exprContext, sizeStatic);
@@ -224,6 +220,12 @@ namespace massif::mvt {
         bool sdfBackground = sdfMode && backgroundImage && backgroundImage->bitmap;
         if (_iconFill.isDefined() && (!iconGlyphs.empty() || sdfBackground)) {
             iconColorFunc = _iconFillFuncBuilder.createColorOpacityFunction(_iconFill.getFunction(exprContext), _iconOpacity.getFunction(exprContext));
+        }
+        // The plate behind the icon fades with it: it IS the icon's background. Only where the
+        // style states one, so a rule that never touches icon-opacity costs nothing.
+        std::optional<vt::FloatFunction> iconOpacityFunc;
+        if (_iconOpacity.isDefined() && iconPlate.enabled()) {
+            iconOpacityFunc = _iconOpacity.getFunction(exprContext);
         }
 
         // The icon's own halo. Built only when a radius asks for one, so a style that sets none
@@ -332,7 +334,7 @@ namespace massif::mvt {
             };
         }
 
-        return [compOp, fillFunc, haloFillFunc, sizeFunc, haloRadiusFunc, fontScale, imageScale, imageScaleFunc, iconHaloColorFunc, iconHaloRadiusFunc, repeatAlongLine, billboardRepeat, orientation, text, hash, orientationAngle, formatter, backgroundOffset, backgroundImage, sdfMode, spacing, textSize, tileId, tileSize, labelIdOverride, groupId, placementPriority, rankFunc, minimumDistance, maxDistance, anchors, textOptional, iconGlyphs, iconColorFunc, textLineAlign, textPlate, iconPlate, this](const FeatureCollection& featureCollection, vt::TileLayerBuilder& layerBuilder) {
+        return [compOp, fillFunc, haloFillFunc, sizeFunc, haloRadiusFunc, fontScale, imageScale, imageScaleFunc, iconHaloColorFunc, iconHaloRadiusFunc, repeatAlongLine, billboardRepeat, orientation, text, hash, orientationAngle, formatter, backgroundOffset, backgroundImage, sdfMode, spacing, textSize, tileId, tileSize, labelIdOverride, groupId, placementPriority, rankFunc, minimumDistance, maxDistance, anchors, textOptional, iconGlyphs, iconColorFunc, iconOpacityFunc, textLineAlign, textPlate, iconPlate, this](const FeatureCollection& featureCollection, vt::TileLayerBuilder& layerBuilder) {
             vt::TextLabelStyle style(orientation, fillFunc, sizeFunc, haloFillFunc, haloRadiusFunc, true, orientationAngle, imageScale, backgroundOffset, backgroundImage, maxDistance,
                                      std::optional<vt::ColorFunction>(), rankFunc);
             style.iconHaloColorFunc = iconHaloColorFunc;
@@ -344,6 +346,7 @@ namespace massif::mvt {
             style.textOptional = textOptional;
             style.iconGlyphs = iconGlyphs;
             style.iconColorFunc = iconColorFunc;
+            style.iconOpacityFunc = iconOpacityFunc;
             style.textLineAlign = textLineAlign;
             style.textPlate = textPlate;
             style.iconPlate = iconPlate;
