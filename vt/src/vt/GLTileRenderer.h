@@ -187,8 +187,12 @@ namespace massif::vt {
          * the renderer's: the walls used to be scaled by the tile blend, so every building rose out
          * of the ground each time its tile faded in - which no source style asks for, and which is
          * a timed animation rather than the zoom ramp a style would write.
+         *
+         * `fadeOnAppear` is the same question for the COLOUR, and is on by default because every
+         * other kind of geometry fades that way. A style that ramps `fill-extrusion-opacity` over
+         * zoom owns the appearance itself and turns it off.
          */
-        void setBuildingHeight(float scale, bool growOnAppear);
+        void setBuildingHeight(float scale, bool growOnAppear, bool fadeOnAppear);
         // 0 below the minimum zoom, ramping to 1 one level above it.
         static float groundAOZoomFade(float zoom);
         // Whether the contact shadows would draw anything at all this frame (intensity and zoom).
@@ -834,6 +838,7 @@ namespace massif::vt {
 
         float _buildingHeightScale = 1.0f;
         bool _buildingGrowOnAppear = false;
+        bool _buildingFadeOnAppear = true;
         float _groundAOIntensity = 0.0f;
         float _groundAOAttenuation = 0.69f;
         bool _groundAOMaskPass = false; // set only while the mask is being drawn

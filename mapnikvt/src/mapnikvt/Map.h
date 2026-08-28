@@ -78,6 +78,10 @@ namespace massif::mvt {
             // in - a timed animation no source style asks for. A style that wants one writes it as
             // a zoom ramp on buildingHeightScale, which is what mapbox does.
             FloatFunctionProperty buildingGrowOnAppear = FloatFunctionProperty(0.0f);
+            // Whether a tile's fade-in also fades its buildings IN. On, like every other kind of
+            // geometry; a style that ramps its own extrusion opacity over zoom turns it off and
+            // owns the appearance itself.
+            FloatFunctionProperty buildingFadeOnAppear = FloatFunctionProperty(1.0f);
             // 0 makes the bevel a flat facet with its own tone instead of a rolled edge.
             FloatFunctionProperty buildingRoundedRoof = FloatFunctionProperty(1.0f);
             FloatFunctionProperty terrainLighting = FloatFunctionProperty(0.0f);   // 0/1: light the terrain with the sun

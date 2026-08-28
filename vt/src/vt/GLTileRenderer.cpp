@@ -744,11 +744,12 @@ namespace massif::vt {
         _groundAOAttenuation = attenuation;
     }
 
-    void GLTileRenderer::setBuildingHeight(float scale, bool growOnAppear) {
+    void GLTileRenderer::setBuildingHeight(float scale, bool growOnAppear, bool fadeOnAppear) {
         std::lock_guard<std::mutex> lock(_mutex);
 
         _buildingHeightScale = scale;
         _buildingGrowOnAppear = growOnAppear;
+        _buildingFadeOnAppear = fadeOnAppear;
     }
 
     bool GLTileRenderer::isGroundAOActive() const {
@@ -5677,9 +5678,13 @@ namespace massif::vt {
         setupGeometryCommonUniforms(shaderProgram, sourceTileId, targetTileId, geometry, GeometryDrawMode { flatDrape, terrainVTF, shadowReceiver, terrainLit, terrainFlag });
         VT_STAT_SPLIT(geomTerrainNs, statClock);
 
+        // An extrusion may sit out the tile's fade: a style that ramps its own opacity over zoom -
+        // Standard goes 0 at z15 to full at z15.3 - then owns the whole appearance, instead of
+        // fading a second time on a timer whenever a tile arrives.
+        float colorBlend = (geometry->getType() == TileGeometry::Type::POLYGON3D && !_buildingFadeOnAppear ? 1.0f : blend);
         std::array<cglib::vec4<float>, TileGeometry::StyleParameters::MAX_PARAMETERS> colors;
         for (int i = 0; i < styleParams.parameterCount; i++) {
-            Color color = Color::fromColorOpacity(evaluateColorFunc(styleParams.colorFuncs[i]) * blend, opacity);
+            Color color = Color::fromColorOpacity(evaluateColorFunc(styleParams.colorFuncs[i]) * colorBlend, opacity);
             colors[i] = cglib::vec4<float>(color.rgba());
         }
         VT_STAT_SPLIT(geomStyleEvalNs, statClock);
