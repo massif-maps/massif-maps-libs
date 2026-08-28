@@ -206,10 +206,14 @@ namespace massif::mvt {
         vt::LabelLineAlign textLineAlign = parseLineAlign(_textHorizontalAlignment.getValue(exprContext));
         vt::LabelPlateStyle textPlate = getPlateStyle(symbolizerContext, exprContext);
         vt::LabelPlateStyle iconPlate;
-        iconPlate.color = vt::Color::fromColorOpacity(_iconBackgroundFill.getValue(exprContext), _iconBackgroundOpacity.getValue(exprContext));
+        // The plate IS the icon's background, so icon-opacity fades it with the glyph on it.
+        // Without this a POI whose icon is hidden - Standard hides one per `sizerank` from z17 -
+        // kept its disc, and every prominent POI drew as a bare coloured dot beside its name.
+        float iconPlateOpacity = _iconOpacity.getStaticValue(exprContext);
+        iconPlate.color = vt::Color::fromColorOpacity(_iconBackgroundFill.getValue(exprContext), _iconBackgroundOpacity.getValue(exprContext) * iconPlateOpacity);
         iconPlate.radius = _iconBackgroundRadius.getValue(exprContext) * fontScale;
         iconPlate.padding = cglib::vec2<float>(_iconBackgroundPaddingX.getValue(exprContext) * fontScale, _iconBackgroundPaddingY.getValue(exprContext) * fontScale);
-        iconPlate.borderColor = vt::Color::fromColorOpacity(_iconBackgroundBorderFill.getValue(exprContext), _iconBackgroundBorderOpacity.getValue(exprContext));
+        iconPlate.borderColor = vt::Color::fromColorOpacity(_iconBackgroundBorderFill.getValue(exprContext), _iconBackgroundBorderOpacity.getValue(exprContext) * iconPlateOpacity);
         iconPlate.borderWidth = _iconBackgroundBorderWidth.getValue(exprContext) * fontScale;
         bool textOptional = _textOptional.getValue(exprContext);
         std::vector<vt::Font::Glyph> iconGlyphs = buildIconGlyphs(font, symbolizerContext, exprContext, sizeStatic);
