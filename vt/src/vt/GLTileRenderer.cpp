@@ -744,6 +744,13 @@ namespace massif::vt {
         _groundAOAttenuation = attenuation;
     }
 
+    void GLTileRenderer::setBuildingHeight(float scale, bool growOnAppear) {
+        std::lock_guard<std::mutex> lock(_mutex);
+
+        _buildingHeightScale = scale;
+        _buildingGrowOnAppear = growOnAppear;
+    }
+
     bool GLTileRenderer::isGroundAOActive() const {
         std::lock_guard<std::mutex> lock(_mutex);
 
@@ -5782,7 +5789,7 @@ namespace massif::vt {
                 glUniform1fv(shaderProgram.uniforms[U_STROKESCALETABLE], styleParams.parameterCount, strokeScales.data());
             }
         } else if (geometry->getType() == TileGeometry::Type::POLYGON3DGROUND) {
-            glUniform1f(shaderProgram.uniforms[U_HEIGHTSCALE], blend / vertexGeomLayoutParams.heightScale * vertexGeomLayoutParams.coordScale);
+            glUniform1f(shaderProgram.uniforms[U_HEIGHTSCALE], buildingHeightScale(blend) / vertexGeomLayoutParams.heightScale * vertexGeomLayoutParams.coordScale);
             glUniform1f(shaderProgram.uniforms[U_BINORMALSCALE], 1.0f / vertexGeomLayoutParams.binormalScale);
             glUniform2f(shaderProgram.uniforms[U_GROUNDAOPARAMS], _groundAOIntensity * (_groundAOBakePass ? 1.0f : groundAOZoomFade(_viewState.zoom)), _groundAOAttenuation);
             // Same tile clip the walls get - see polygon3DGroundFsh for why it is not optional.
@@ -5791,7 +5798,7 @@ namespace massif::vt {
             glUniformMatrix3fv(shaderProgram.uniforms[U_TILEMATRIX], 1, GL_FALSE, groundTileMatrix.data());
         } else if (geometry->getType() == TileGeometry::Type::POLYGON3D) {
             glUniform1f(shaderProgram.uniforms[U_UVSCALE], 1.0f / vertexGeomLayoutParams.texCoordScale);
-            glUniform1f(shaderProgram.uniforms[U_HEIGHTSCALE], blend / vertexGeomLayoutParams.heightScale * vertexGeomLayoutParams.coordScale);
+            glUniform1f(shaderProgram.uniforms[U_HEIGHTSCALE], buildingHeightScale(blend) / vertexGeomLayoutParams.heightScale * vertexGeomLayoutParams.coordScale);
             cglib::mat3x3<float> tileMatrix = cglib::mat3x3<float>::convert(cglib::inverse(calculateTileMatrix2D(targetTileId)) * calculateTileMatrix2D(sourceTileId));
             if (styleParams.translate) {
                 float zoomScale = std::pow(2.0f, sourceTileId.zoom - _viewState.zoom);

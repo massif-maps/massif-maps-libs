@@ -69,6 +69,15 @@ namespace massif::mvt {
             // but darkening it is what makes a block read as 3D rather than as a lit slab - it is
             // how mapbox's buildings look, and it is a styling choice, not a lighting one.
             FloatFunctionProperty buildingRoofShade = FloatFunctionProperty(1.0f);
+            // Every extrusion's height, multiplied. mapbox's `fill-extrusion-vertical-scale`, and
+            // the way Standard grows its buildings out of the ground as they appear (0 at z15, 1 at
+            // z15.3) - a ZOOM ramp, not a timed animation, so it is the same at every visit.
+            FloatFunctionProperty buildingHeightScale = FloatFunctionProperty(1.0f);
+            // Whether a tile's fade-in also RAISES its buildings. Off: the walls used to be scaled
+            // by the tile blend, so every building grew out of the ground each time its tile faded
+            // in - a timed animation no source style asks for. A style that wants one writes it as
+            // a zoom ramp on buildingHeightScale, which is what mapbox does.
+            FloatFunctionProperty buildingGrowOnAppear = FloatFunctionProperty(0.0f);
             // 0 makes the bevel a flat facet with its own tone instead of a rolled edge.
             FloatFunctionProperty buildingRoundedRoof = FloatFunctionProperty(1.0f);
             FloatFunctionProperty terrainLighting = FloatFunctionProperty(0.0f);   // 0/1: light the terrain with the sun

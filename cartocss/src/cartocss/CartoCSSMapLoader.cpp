@@ -307,6 +307,8 @@ namespace massif::css {
             { "text-occlusion-opacity", &mvt::Map::Settings::textOcclusionOpacity },
             { "building-edge-radius", &mvt::Map::Settings::buildingEdgeRadius },
             { "building-roof-shade", &mvt::Map::Settings::buildingRoofShade },
+            { "building-height-scale", &mvt::Map::Settings::buildingHeightScale },
+            { "building-grow-on-appear", &mvt::Map::Settings::buildingGrowOnAppear },
             { "building-rounded-roof", &mvt::Map::Settings::buildingRoundedRoof },
             { "terrain-lighting", &mvt::Map::Settings::terrainLighting },
             { "shadow-strength", &mvt::Map::Settings::shadowStrength },
