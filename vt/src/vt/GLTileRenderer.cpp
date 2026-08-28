@@ -3490,10 +3490,22 @@ namespace massif::vt {
                 float iconHaloRadius = labelStyle->iconHaloRadiusFunc ? std::min(evaluateFloatFunc(*labelStyle->iconHaloRadiusFunc), MAX_ICON_HALO_PIXELS) : 0.0f;
                 bool hasIconHalo = iconHaloRadius > 0.0f && labelStyle->iconHaloColorFunc;
                 cglib::vec4<float> iconHaloColor = hasIconHalo ? cglib::vec4<float>(evaluateColorFunc(*labelStyle->iconHaloColorFunc).rgba()) : color;
+                // The em size the ICON RUN is drawn at, which is not the text's: the run keeps a
+                // fixed pixel size of its own (Label::calculateVertexData scales it by
+                // iconRefSize/size, then by its own ramp). The width table is what labelVsh divides
+                // uSDFRamp by, so an icon sharing the text's slot got the text's antialias ramp -
+                // 20 px of icon smoothed as if it were 13 px of text, which fattened every thin
+                // stroke until it closed: a fork lost the gaps between its tines.
+                float iconSize = labelStyle->iconRefSize > 0.0f ? labelStyle->iconRefSize : size;
+                if (labelStyle->iconScaleFunc && labelStyle->iconRefScale > 0.0f) {
+                    iconSize *= evaluateFloatFunc(*labelStyle->iconScaleFunc) / labelStyle->iconRefScale;
+                }
+                // A slot of its own whenever that ramp would differ, not only for a coloured icon.
+                bool hasIconRun = hasIconColor || iconSize != size;
                 // The style layer's own occluded opacity, or this layer's default where it sets
                 // none - and a batch carries one, so a change ends it like a change of atlas does.
                 float labelOcclusionOpacity = labelStyle->occlusionOpacity.value_or(_labelOcclusionOpacity);
-                if (bitmap != labelBitmap || labelBatchParams.occlusionOpacity != labelOcclusionOpacity || labelBatchParams.scale != labelStyle->scale || labelBatchParams.glyphRenderSize != labelStyle->glyphRenderSize || labelBatchParams.parameterCount + 2 + plateCount + (hasSecondaryColor ? 1 : 0) + (hasIconColor ? 1 : 0) + (hasIconHalo ? 1 : 0) > LabelBatchParameters::MAX_PARAMETERS) {
+                if (bitmap != labelBitmap || labelBatchParams.occlusionOpacity != labelOcclusionOpacity || labelBatchParams.scale != labelStyle->scale || labelBatchParams.glyphRenderSize != labelStyle->glyphRenderSize || labelBatchParams.parameterCount + 2 + plateCount + (hasSecondaryColor ? 1 : 0) + (hasIconRun ? 1 : 0) + (hasIconHalo ? 1 : 0) > LabelBatchParameters::MAX_PARAMETERS) {
                     renderLabelBatch(labelBatchParams, bitmap);
                     bitmap = labelBitmap;
                     labelBatchParams.labelCount = 0;
@@ -3585,29 +3597,29 @@ namespace massif::vt {
                 iconHaloStyleIndex = -1;
                 if (hasIconHalo) {
                     for (iconHaloStyleIndex = labelBatchParams.parameterCount; --iconHaloStyleIndex >= 0; ) {
-                        if (labelBatchParams.colorTable[iconHaloStyleIndex] == iconHaloColor && labelBatchParams.widthTable[iconHaloStyleIndex] == size && labelBatchParams.strokeWidthTable[iconHaloStyleIndex] == iconHaloRadius) {
+                        if (labelBatchParams.colorTable[iconHaloStyleIndex] == iconHaloColor && labelBatchParams.widthTable[iconHaloStyleIndex] == iconSize && labelBatchParams.strokeWidthTable[iconHaloStyleIndex] == iconHaloRadius) {
                             break;
                         }
                     }
                     if (iconHaloStyleIndex < 0) {
                         iconHaloStyleIndex = labelBatchParams.parameterCount++;
                         labelBatchParams.colorTable[iconHaloStyleIndex] = iconHaloColor;
-                        labelBatchParams.widthTable[iconHaloStyleIndex] = size;
+                        labelBatchParams.widthTable[iconHaloStyleIndex] = iconSize;
                         labelBatchParams.strokeWidthTable[iconHaloStyleIndex] = iconHaloRadius;
                     }
                 }
 
                 iconStyleIndex = -1;
-                if (hasIconColor) {
+                if (hasIconRun) {
                     for (iconStyleIndex = labelBatchParams.parameterCount; --iconStyleIndex >= 0; ) {
-                        if (labelBatchParams.colorTable[iconStyleIndex] == iconColor && labelBatchParams.widthTable[iconStyleIndex] == size && labelBatchParams.strokeWidthTable[iconStyleIndex] == 0) {
+                        if (labelBatchParams.colorTable[iconStyleIndex] == iconColor && labelBatchParams.widthTable[iconStyleIndex] == iconSize && labelBatchParams.strokeWidthTable[iconStyleIndex] == 0) {
                             break;
                         }
                     }
                     if (iconStyleIndex < 0) {
                         iconStyleIndex = labelBatchParams.parameterCount++;
                         labelBatchParams.colorTable[iconStyleIndex] = iconColor;
-                        labelBatchParams.widthTable[iconStyleIndex] = size;
+                        labelBatchParams.widthTable[iconStyleIndex] = iconSize;
                         labelBatchParams.strokeWidthTable[iconStyleIndex] = 0;
                     }
                 }
