@@ -697,6 +697,7 @@ namespace massif::css {
         { "line-pattern-file", "file" },
         { "line-pattern-fill", "fill" },
         { "line-pattern-opacity", "opacity" },
+        { "line-pattern-emissive-strength", "emissive-strength" },
         { "line-pattern-offset", "offset" },
         { "line-pattern-geometry-transform", "geometry-transform" },
         { "line-pattern-comp-op", "comp-op" },
@@ -710,6 +711,7 @@ namespace massif::css {
         { "polygon-pattern-file", "file" },
         { "polygon-pattern-fill", "fill" },
         { "polygon-pattern-opacity", "opacity" },
+        { "polygon-pattern-emissive-strength", "emissive-strength" },
         { "polygon-pattern-geometry-transform", "geometry-transform" },
         { "polygon-pattern-comp-op", "comp-op" },
 
