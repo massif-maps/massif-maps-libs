@@ -91,6 +91,12 @@ namespace massif::mvt {
             // 0 makes the bevel a flat facet with its own tone instead of a rolled edge.
             FloatFunctionProperty buildingRoundedRoof = FloatFunctionProperty(1.0f);
             FloatFunctionProperty terrainLighting = FloatFunctionProperty(0.0f);   // 0/1: light the terrain with the sun
+            // 0/1: the style's 2D colours ALREADY carry the scene light, so the ground must not be
+            // lit a second time. A converted MapBox style folds mapbox's own ground radiance into
+            // every colour at conversion time; lighting it again multiplied a dusk ground by its
+            // dark blue ambient twice and took it to a fifth of what gl-js draws. Says nothing about
+            // the terrain's shadows, which stay on.
+            FloatFunctionProperty colorsPrelit = FloatFunctionProperty(0.0f);
             FloatFunctionProperty shadowStrength = FloatFunctionProperty(0.0f);    // 0 = no shadows
             FloatFunctionProperty shadowBias = FloatFunctionProperty(0.25f);       // meters
             FloatFunctionProperty shadowSoftness = FloatFunctionProperty(1.0f);    // PCF radius in shadow texels

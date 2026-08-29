@@ -313,6 +313,7 @@ namespace massif::css {
             { "building-fade-on-appear", &mvt::Map::Settings::buildingFadeOnAppear },
             { "building-rounded-roof", &mvt::Map::Settings::buildingRoundedRoof },
             { "terrain-lighting", &mvt::Map::Settings::terrainLighting },
+            { "colors-prelit", &mvt::Map::Settings::colorsPrelit },
             { "shadow-strength", &mvt::Map::Settings::shadowStrength },
             { "shadow-bias", &mvt::Map::Settings::shadowBias },
             { "shadow-softness", &mvt::Map::Settings::shadowSoftness },

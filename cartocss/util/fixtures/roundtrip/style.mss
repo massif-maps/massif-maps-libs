@@ -17,6 +17,7 @@ Map {
   shadow-strength: 0.7;
   shadow-cascades: 3;
   terrain-lighting: 1;
+  colors-prelit: 1;
   building-roof-shade: 0.8;
   building-ao-intensity: 0.25;
   /* what mapbox2css emits: the style's zoom ramp, and our tilt ramp the shadows ignore */

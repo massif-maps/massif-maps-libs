@@ -19,7 +19,7 @@ namespace massif::mvt {
      * CartoCSSMapLoader::loadMapSettings. The XML parser and the XML generator both walk these
      * tables, so a new setting reaches css2xml and back by being added here once.
      */
-    inline constexpr std::array<std::pair<const char*, FloatFunctionProperty Map::Settings::*>, 34> MAP_SETTINGS_FLOAT_PROPERTIES = {{
+    inline constexpr std::array<std::pair<const char*, FloatFunctionProperty Map::Settings::*>, 35> MAP_SETTINGS_FLOAT_PROPERTIES = {{
         { "sun-azimuth", &Map::Settings::sunAzimuth },
         { "sun-altitude", &Map::Settings::sunAltitude },
         { "sun-intensity", &Map::Settings::sunIntensity },
@@ -41,6 +41,7 @@ namespace massif::mvt {
         { "building-grow-on-appear", &Map::Settings::buildingGrowOnAppear },
         { "building-fade-on-appear", &Map::Settings::buildingFadeOnAppear },
         { "terrain-lighting", &Map::Settings::terrainLighting },
+        { "colors-prelit", &Map::Settings::colorsPrelit },
         { "shadow-strength", &Map::Settings::shadowStrength },
         { "shadow-bias", &Map::Settings::shadowBias },
         { "shadow-softness", &Map::Settings::shadowSoftness },
