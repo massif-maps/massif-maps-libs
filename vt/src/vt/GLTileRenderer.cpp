@@ -2057,23 +2057,19 @@ namespace massif::vt {
         if (!(tileScale > 0) || !(_terrainShadowNormalOffset > 0) || _terrainShadowMapSize <= 0) {
             return offsets;
         }
-        // CLAMPED to the near cascade's offset, not each cascade's own. The offset moves the sample
-        // across the shadow map, so on the far cascade - whose texel is metres of ground - three of
-        // them walk a roof out of the mountain shadow it stands in, and the further the value is
-        // raised the more of the roof loses it. mapbox does not hit this: two cascades over a
-        // shorter range, so their worst texel is small. Acne is a NEAR-surface problem anyway.
-        double nearOffsetWorld = 0;
+        // EACH cascade gets its OWN texel, which is mapbox's model (shadow_renderer setupShadows:
+        // offset0 from cascade 0's radius, offset1 from the last one's). Clamped to the near
+        // cascade's instead, an outer page whose texel is metres of ground was offset by a
+        // near-page texel of centimetres - far too little to lift a wall off its own depth - so
+        // every building that fell out of the near pages wore a grey patch of its own acne. That is
+        // why one cascade was clean and three were not: with one page there is no other to clamp to.
         for (int i = 0; i < _terrainShadowCascades; i++) {
             const cglib::mat4x4<double>& m = _terrainShadowViewProjs[i];
             double boxScale = cglib::length(cglib::vec3<double>(m(0, 0), m(0, 1), m(0, 2)));
             if (!(boxScale > 0)) {
                 continue;
             }
-            double offsetWorld = _terrainShadowNormalOffset * 2.0 / (boxScale * _terrainShadowMapSize);
-            if (i == 0) {
-                nearOffsetWorld = offsetWorld;
-            }
-            offsets[i] = static_cast<float>(std::min(offsetWorld, nearOffsetWorld) / tileScale);
+            offsets[i] = static_cast<float>(_terrainShadowNormalOffset * 2.0 / (boxScale * _terrainShadowMapSize) / tileScale);
         }
         return offsets;
     }
