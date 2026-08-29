@@ -3478,9 +3478,24 @@ namespace massif::vt {
             std::shared_ptr<const BitmapPattern> labelPattern = labelStyle->glyphMap->getBitmapPattern();
             const std::shared_ptr<const Bitmap>& labelBitmap = labelPattern->bitmap;
             if (lastLabelStyle != labelStyle) {
-                cglib::vec4<float> color = cglib::vec4<float>(evaluateColorFunc(labelStyle->colorFunc).rgba());
+                // The scene light, as far as the label's emissive lets it through. mapbox lights a
+                // label like any other surface, but defaults text and icon to 1 - a no-op here -
+                // which is what keeps a name legible over a night map. One factor for every colour
+                // the style carries, evaluated once per label STYLE.
+                float labelEmissive = evaluateFloatFunc(labelStyle->emissiveFunc);
+                auto lit = [this, labelEmissive](const cglib::vec4<float>& rgba) {
+                    if (labelEmissive >= 1.0f) {
+                        return rgba;
+                    }
+                    cglib::vec4<float> out = rgba;
+                    for (int c = 0; c < 3; c++) {
+                        out(c) *= labelEmissive + (1.0f - labelEmissive) * _radiance(c);
+                    }
+                    return out;
+                };
+                cglib::vec4<float> color = lit(cglib::vec4<float>(evaluateColorFunc(labelStyle->colorFunc).rgba()));
                 float size = evaluateFloatFunc(labelStyle->sizeFunc);
-                cglib::vec4<float> haloColor = cglib::vec4<float>(evaluateColorFunc(labelStyle->haloColorFunc).rgba());
+                cglib::vec4<float> haloColor = lit(cglib::vec4<float>(evaluateColorFunc(labelStyle->haloColorFunc).rgba()));
                 // Already in SCREEN PIXELS: the symbolizer scaled the style's radius by the pixel
                 // scale, and labelFsh measures the halo against the same one screen pixel the
                 // antialias ramp is. The cap is where the encoded field runs out.
@@ -3497,14 +3512,14 @@ namespace massif::vt {
                 // The second run of text may have its own colour, which is one more slot in the
                 // batch - exactly like the halo and the plate.
                 bool hasSecondaryColor = static_cast<bool>(labelStyle->secondaryColorFunc);
-                cglib::vec4<float> secondaryColor = hasSecondaryColor ? cglib::vec4<float>(evaluateColorFunc(*labelStyle->secondaryColorFunc).rgba()) : color;
+                cglib::vec4<float> secondaryColor = hasSecondaryColor ? lit(cglib::vec4<float>(evaluateColorFunc(*labelStyle->secondaryColorFunc).rgba())) : color;
                 // And so may the icon run - a font icon in its own colour next to the name.
                 bool hasIconColor = static_cast<bool>(labelStyle->iconColorFunc);
-                cglib::vec4<float> iconColor = hasIconColor ? cglib::vec4<float>(evaluateColorFunc(*labelStyle->iconColorFunc).rgba()) : color;
+                cglib::vec4<float> iconColor = hasIconColor ? lit(cglib::vec4<float>(evaluateColorFunc(*labelStyle->iconColorFunc).rgba())) : color;
                 // And its own halo - an icon never takes the text's (see Label::appendLabelPlates).
                 float iconHaloRadius = labelStyle->iconHaloRadiusFunc ? std::min(evaluateFloatFunc(*labelStyle->iconHaloRadiusFunc), MAX_ICON_HALO_PIXELS) : 0.0f;
                 bool hasIconHalo = iconHaloRadius > 0.0f && labelStyle->iconHaloColorFunc;
-                cglib::vec4<float> iconHaloColor = hasIconHalo ? cglib::vec4<float>(evaluateColorFunc(*labelStyle->iconHaloColorFunc).rgba()) : color;
+                cglib::vec4<float> iconHaloColor = hasIconHalo ? lit(cglib::vec4<float>(evaluateColorFunc(*labelStyle->iconHaloColorFunc).rgba())) : color;
                 // The em size the ICON RUN is drawn at, which is not the text's: the run keeps a
                 // fixed pixel size of its own (Label::calculateVertexData scales it by
                 // iconRefSize/size, then by its own ramp). The width table is what labelVsh divides
@@ -3578,8 +3593,8 @@ namespace massif::vt {
                     // whose icon a zoom step hides kept its disc until the tile was decoded again,
                     // which is the coloured square that flashed while zooming.
                     float plateOpacity = (i == 1 && labelStyle->iconOpacityFunc ? evaluateFloatFunc(*labelStyle->iconOpacityFunc) : 1.0f);
-                    cglib::vec4<float> fillColor = cglib::vec4<float>(plate.style.color.rgba()) * plateOpacity;
-                    cglib::vec4<float> borderColor = cglib::vec4<float>(plate.style.borderColor.rgba()) * plateOpacity;
+                    cglib::vec4<float> fillColor = lit(cglib::vec4<float>(plate.style.color.rgba())) * plateOpacity;
+                    cglib::vec4<float> borderColor = lit(cglib::vec4<float>(plate.style.borderColor.rgba())) * plateOpacity;
                     int index = labelBatchParams.parameterCount - slots;
                     for (; index >= 0; index--) {
                         if (labelBatchParams.colorTable[index] == fillColor && labelBatchParams.widthTable[index] == size && labelBatchParams.strokeWidthTable[index] == 0
@@ -5000,6 +5015,7 @@ namespace massif::vt {
         for (int i = 0; i < 3; i++) {
             combine(static_cast<std::size_t>(std::max(0.0f, std::min(1.0f, _radiance(i))) * 64.0f) * (i + 1));
         }
+        combine(static_cast<std::size_t>(std::max(0.0f, std::min(1.0f, _backgroundEmissive)) * 64.0f) * 4);
         for (auto it = renderTile.renderLayers.begin(); it != renderTile.renderLayers.end(); it++) {
             const RenderTileLayer& renderLayer = it->second;
             // The contact shadows count too: they are baked INTO the drape, but the extrusions
@@ -5398,6 +5414,15 @@ namespace massif::vt {
         Color backgroundColor = background->getColorFunc()(_viewState);
         if (!background->getPattern() && !backgroundColor.value()) {
             return;
+        }
+        // The map's background is the largest surface on screen and its colour is a Map setting, so
+        // it never passes through a symbolizer's grade - graded here by the same rule.
+        if (_backgroundEmissive < 1.0f) {
+            std::array<float, 4> rgba = backgroundColor.rgba();
+            for (int c = 0; c < 3; c++) {
+                rgba[c] *= _backgroundEmissive + (1.0f - _backgroundEmissive) * _radiance(c);
+            }
+            backgroundColor = Color(rgba[0], rgba[1], rgba[2], rgba[3]);
         }
 
         bool flatDrape = (_drapeMVPOverride != nullptr);

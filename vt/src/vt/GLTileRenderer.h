@@ -288,6 +288,9 @@ namespace massif::vt {
         // What the scene light does to a flat, upward-facing surface, in sRGB - mapbox's ground
         // radiance. Only a colour whose emissive is below 1 is multiplied by it.
         void setRadiance(const cglib::vec3<float>& radiance) { _radiance = radiance; }
+        // How much of the map background's colour is emitted rather than lit. It is a Map setting,
+        // so it is one value for the whole style rather than a per-geometry function.
+        void setBackgroundEmissive(float emissive) { _backgroundEmissive = emissive; }
         // The projection's metres-to-internal factor, so shadows do not need a DEM to be fitted.
         void setMetersToInternal(double metersToInternal) { _metersToInternal = metersToInternal; }
         void setTerrainShadowMap(GLuint texture, int mapSize, int cascades, const std::array<float, MAX_SHADOW_CASCADES>& depthBiases, float strength, float softness, bool depthTexture, bool hardwarePCF, float normalOffset, const cglib::vec3<float>& sunDir, const std::array<cglib::mat4x4<double>, MAX_SHADOW_CASCADES>& lightViewProjs);
@@ -883,6 +886,7 @@ namespace massif::vt {
         // at all: the factor is a property of the PROJECTION, so the caller can state it outright.
         double _metersToInternal = 0;
         cglib::vec3<float> _radiance = cglib::vec3<float>(1.0f, 1.0f, 1.0f);
+        float _backgroundEmissive = 1.0f;
         int _terrainShadowCascades = 1;
         std::array<float, MAX_SHADOW_CASCADES> _terrainShadowBiases = { { 0.0f, 0.0f, 0.0f, 0.0f } };
         GLuint _terrainShadowMaskTexture = 0;

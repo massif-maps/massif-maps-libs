@@ -31,6 +31,7 @@ namespace massif::mvt {
             bindProperty("spacing", &_spacing);
             bindProperty("fill", &_fill);
             bindProperty("opacity", &_opacity);
+            bindProperty("emissive-strength", &_emissive);
             bindProperty("halo-fill", &_haloFill);
             bindProperty("halo-opacity", &_haloOpacity);
             bindProperty("halo-radius", &_haloRadius);
@@ -111,6 +112,9 @@ namespace massif::mvt {
         FloatProperty _spacing = FloatProperty(0.0f);
         ColorFunctionProperty _fill = ColorFunctionProperty("#000000");
         FloatFunctionProperty _opacity = FloatFunctionProperty(1.0f);
+        // mapbox's text-/icon-emissive-strength: 1 keeps the label as authored at any hour, which
+        // is mapbox's own default; 0 hands it to the scene light.
+        FloatFunctionProperty _emissive = FloatFunctionProperty(1.0f);
         ColorFunctionProperty _haloFill = ColorFunctionProperty("#ffffff");
         FloatFunctionProperty _haloOpacity = FloatFunctionProperty(1.0f);
         FloatFunctionProperty _haloRadius = FloatFunctionProperty(0.0f);

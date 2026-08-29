@@ -68,6 +68,7 @@ namespace massif::mvt {
         std::optional<cglib::vec2<float>> calloutLineAnchor = parseBoxAnchor(_calloutLineAnchor.getValue(exprContext));
         std::optional<cglib::vec2<float>> calloutBandAnchor = parseBoxAnchor(_calloutAlign.getValue(exprContext));
         vt::FloatFunction rankFunc = _rank.getFunction(exprContext);
+        vt::FloatFunction emissiveFunc = _emissive.getFunction(exprContext);
         std::optional<vt::ColorFunction> secondaryColorFunc;
         if (_secondaryFill.isDefined() || _secondaryOpacity.isDefined()) {
             secondaryColorFunc = _secondaryFillFuncBuilder.createColorOpacityFunction(_secondaryFill.getFunction(exprContext), _secondaryOpacity.getFunction(exprContext));
@@ -197,8 +198,9 @@ namespace massif::mvt {
             };
         }
 
-        return [compOp, fillFunc, haloFillFunc, sizeFunc, haloRadiusFunc, fontScale, orientation, repeatAlongLine, billboardRepeat, lineRun, text, hash, orientationAngle, formatter, backgroundOffset, backgroundImage, spacing, textSize, tileId, tileSize, labelIdOverride, groupId, placementPriority, minimumDistance, maxDistance, occlusionOpacity, secondaryColorFunc, rankFunc, calloutScreenAnchor, calloutOffset, calloutStep, calloutMaxRows, calloutPersistPasses, calloutLineWidth, calloutLineAnchor, calloutBandAnchor, textPlate, allowOverlapSameFeatureId, sameFeatureIdDependent, this](const FeatureCollection& featureCollection, vt::TileLayerBuilder& layerBuilder) {
+        return [compOp, fillFunc, haloFillFunc, sizeFunc, haloRadiusFunc, fontScale, orientation, repeatAlongLine, billboardRepeat, lineRun, text, hash, orientationAngle, formatter, backgroundOffset, backgroundImage, spacing, textSize, tileId, tileSize, labelIdOverride, groupId, placementPriority, minimumDistance, maxDistance, occlusionOpacity, secondaryColorFunc, rankFunc, calloutScreenAnchor, calloutOffset, calloutStep, calloutMaxRows, calloutPersistPasses, calloutLineWidth, calloutLineAnchor, calloutBandAnchor, textPlate, emissiveFunc, allowOverlapSameFeatureId, sameFeatureIdDependent, this](const FeatureCollection& featureCollection, vt::TileLayerBuilder& layerBuilder) {
             vt::TextLabelStyle style(orientation, fillFunc, sizeFunc, haloFillFunc, haloRadiusFunc, true, orientationAngle, fontScale, backgroundOffset, backgroundImage, maxDistance, secondaryColorFunc, rankFunc, calloutScreenAnchor, calloutOffset, calloutStep, calloutMaxRows, calloutPersistPasses, calloutLineWidth, calloutLineAnchor, calloutBandAnchor, textPlate);
+            style.emissiveFunc = emissiveFunc;
             if (occlusionOpacity >= 0.0f) {
                 style.occlusionOpacity = occlusionOpacity;
             }

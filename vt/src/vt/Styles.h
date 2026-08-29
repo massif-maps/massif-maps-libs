@@ -226,6 +226,11 @@ namespace massif::vt {
         // Added to the placement priority by the culler, once per label and per pass - see
         // TextLabelStyle::rankFunc.
         FloatFunction rankFunc = FloatFunction(0.0f);
+        // How much of the label's colour is EMITTED rather than lit by the scene - mapbox's
+        // text-/icon-emissive-strength. 1 keeps a label legible at any hour, which is mapbox's
+        // default and what every style did before this existed. Set after construction, like
+        // occlusionOpacity.
+        FloatFunction emissiveFunc = FloatFunction(1.0f);
 
         explicit PointLabelStyle(LabelOrientation orientation, ColorFunction colorFunc, FloatFunction sizeFunc, bool autoflip, std::shared_ptr<const BitmapImage> image, const std::optional<Transform>& transform, float maxDistance = 0.0f, bool sdfMode = false, ColorFunction haloColorFunc = ColorFunction(), FloatFunction haloRadiusFunc = FloatFunction()) : orientation(orientation), colorFunc(std::move(colorFunc)), sizeFunc(std::move(sizeFunc)), autoflip(autoflip), image(std::move(image)), transform(transform), maxDistance(maxDistance), sdfMode(sdfMode), haloColorFunc(std::move(haloColorFunc)), haloRadiusFunc(std::move(haloRadiusFunc)) { }
     };
@@ -301,6 +306,11 @@ namespace massif::vt {
         // the glyph on it. Baked at decode instead, a POI whose icon a zoom step hides kept its
         // disc until the tile was decoded again.
         std::optional<FloatFunction> iconOpacityFunc;
+        // How much of the label's colour is EMITTED rather than lit by the scene - mapbox's
+        // text-/icon-emissive-strength. 1 keeps a label legible at any hour, which is mapbox's
+        // default and what every style did before this existed. Set after construction, like
+        // occlusionOpacity.
+        FloatFunction emissiveFunc = FloatFunction(1.0f);
 
         explicit TextLabelStyle(LabelOrientation orientation, ColorFunction colorFunc, FloatFunction sizeFunc, ColorFunction haloColorFunc, FloatFunction haloRadiusFunc, bool autoflip, float angle, float backgroundScale, const cglib::vec2<float>& backgroundOffset, std::shared_ptr<const BitmapImage> backgroundImage, float maxDistance = 0.0f, const std::optional<ColorFunction>& secondaryColorFunc = std::optional<ColorFunction>(), FloatFunction rankFunc = FloatFunction(0.0f), float calloutScreenAnchor = -1.0f, float calloutOffset = 0.0f, float calloutStep = 0.0f, int calloutMaxRows = 8, int calloutPersistPasses = 0, float calloutLineWidth = 1.0f, const std::optional<cglib::vec2<float>>& calloutLineAnchor = std::optional<cglib::vec2<float>>(), const std::optional<cglib::vec2<float>>& calloutBandAnchor = std::optional<cglib::vec2<float>>(), const LabelPlateStyle& textPlate = LabelPlateStyle(), const LabelPlateStyle& iconPlate = LabelPlateStyle(), LabelLineAlign textLineAlign = LabelLineAlign::CENTER, std::vector<LabelAnchor> anchors = std::vector<LabelAnchor>(), bool textOptional = false, std::vector<Font::Glyph> iconGlyphs = std::vector<Font::Glyph>(), const std::optional<ColorFunction>& iconColorFunc = std::optional<ColorFunction>()) : orientation(orientation), colorFunc(std::move(colorFunc)), sizeFunc(std::move(sizeFunc)), haloColorFunc(std::move(haloColorFunc)), haloRadiusFunc(std::move(haloRadiusFunc)), autoflip(autoflip), angle(angle), backgroundScale(backgroundScale), backgroundOffset(backgroundOffset), backgroundImage(std::move(backgroundImage)), maxDistance(maxDistance), secondaryColorFunc(secondaryColorFunc), rankFunc(std::move(rankFunc)), calloutScreenAnchor(calloutScreenAnchor), calloutOffset(calloutOffset), calloutStep(calloutStep), calloutMaxRows(calloutMaxRows), calloutPersistPasses(calloutPersistPasses), calloutLineWidth(calloutLineWidth), calloutLineAnchor(calloutLineAnchor), calloutBandAnchor(calloutBandAnchor), textPlate(textPlate), iconPlate(iconPlate), textLineAlign(textLineAlign), anchors(std::move(anchors)), textOptional(textOptional), iconGlyphs(std::move(iconGlyphs)), iconColorFunc(iconColorFunc) { }
     };

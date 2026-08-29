@@ -566,9 +566,10 @@ namespace massif::vt {
             transform = Transform::fromMatrix2Translate(matrix, translate);
         }
 
-        if (!_labelStyle || _labelStyle->orientation != style.orientation || _labelStyle->colorFunc != style.colorFunc || _labelStyle->sizeFunc != style.sizeFunc || _labelStyle->haloColorFunc != style.haloColorFunc || _labelStyle->haloRadiusFunc != style.haloRadiusFunc || _labelStyle->autoflip != style.autoflip || _labelStyle->scale != scale || _labelStyle->ascent != 0.0f || _labelStyle->descent != 0.0f || _labelStyle->transform != transform || _labelStyle->glyphMap != glyphMap || _labelStyle->maxDistance != style.maxDistance || _labelStyle->occlusionOpacity != style.occlusionOpacity || _labelStyle->rankFunc != style.rankFunc) {
+        if (!_labelStyle || _labelStyle->orientation != style.orientation || _labelStyle->colorFunc != style.colorFunc || _labelStyle->sizeFunc != style.sizeFunc || _labelStyle->haloColorFunc != style.haloColorFunc || _labelStyle->haloRadiusFunc != style.haloRadiusFunc || _labelStyle->autoflip != style.autoflip || _labelStyle->scale != scale || _labelStyle->ascent != 0.0f || _labelStyle->descent != 0.0f || _labelStyle->transform != transform || _labelStyle->glyphMap != glyphMap || _labelStyle->maxDistance != style.maxDistance || _labelStyle->occlusionOpacity != style.occlusionOpacity || _labelStyle->rankFunc != style.rankFunc || _labelStyle->emissiveFunc != style.emissiveFunc) {
             auto labelStyle = std::make_shared<TileLabel::Style>(style.orientation, style.colorFunc, style.sizeFunc, style.haloColorFunc, style.haloRadiusFunc, style.autoflip, scale, 0.0f, 0.0f, transform, glyphMap, 27, style.maxDistance, std::optional<ColorFunction>(), style.rankFunc);
             labelStyle->occlusionOpacity = style.occlusionOpacity; // not in the ctor: its signature is long enough
+            labelStyle->emissiveFunc = style.emissiveFunc;
             _labelStyle = labelStyle;
         }
 
@@ -635,7 +636,8 @@ namespace massif::vt {
             || _labelStyle->calloutLineWidth != style.calloutLineWidth
             || _labelStyle->textPlate.style != style.textPlate
             || _labelStyle->iconPlate.style != style.iconPlate
-            || _labelStyle->textLineAlign != resolveLineAlign(style.textLineAlign, cglib::vec2<float>(0, 0));
+            || _labelStyle->textLineAlign != resolveLineAlign(style.textLineAlign, cglib::vec2<float>(0, 0))
+            || _labelStyle->emissiveFunc != style.emissiveFunc;
 
         if (needsNewLabelStyle) {
             std::optional<GlyphMap::Glyph> calloutLineGlyph;
@@ -681,6 +683,7 @@ namespace massif::vt {
             labelStyle->iconScaleFunc = style.iconScaleFunc;
             labelStyle->iconRefScale = style.iconRefScale;
             labelStyle->iconOpacityFunc = style.iconOpacityFunc;
+            labelStyle->emissiveFunc = style.emissiveFunc;
             _labelStyle = labelStyle;
         }
 
