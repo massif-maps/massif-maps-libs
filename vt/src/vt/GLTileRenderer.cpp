@@ -726,7 +726,12 @@ namespace massif::vt {
         // as one does, and the map would be redrawn on every frame of exactly the moment this is
         // meant to protect. A single tile fading alone moves the mean by less than the step and
         // rides on the age cap instead.
-        return count > 0 ? signature / count : 0.0f;
+        //
+        // Times the caster's own height scale: a style that ramps its extrusions to nothing over
+        // zoom (Standard, 0 at z15) changes the caster geometry without touching a single tile
+        // blend, so the map was never refreshed and the buildings' shadows stayed on an empty map
+        // after they had gone.
+        return count > 0 ? _buildingHeightScale * signature / count : 0.0f;
     }
 
     float GLTileRenderer::groundAOZoomFade(float zoom) {
