@@ -192,7 +192,7 @@ namespace massif::vt {
          * other kind of geometry fades that way. A style that ramps `fill-extrusion-opacity` over
          * zoom owns the appearance itself and turns it off.
          */
-        void setBuildingHeight(float scale, bool growOnAppear, bool fadeOnAppear);
+        void setBuildingHeight(float scale, float viewScale, bool growOnAppear, bool fadeOnAppear);
         // 0 below the minimum zoom, ramping to 1 one level above it.
         static float groundAOZoomFade(float zoom);
         // Whether the contact shadows would draw anything at all this frame (intensity and zoom).
@@ -832,11 +832,23 @@ namespace massif::vt {
         // The style's height multiplier, times the tile's fade-in when the renderer is asked to
         // grow buildings as they appear. Not the CASTER's: a shadow keeps the height the style
         // states, so it does not shrink with a fade.
+        //
+        // The VIEW scale is a camera effect - flattening the extrusions as the view turns onto the
+        // map - so the sun caster leaves it out: those buildings are still there and their shadows
+        // keep their length. Everything else, the label-occlusion depth included, matches the
+        // screen. A style that means "not there yet" uses buildingHeightScale, which the caster
+        // does follow: no building, no shadow.
         float buildingHeightScale(float blend) const {
+            return _shadowCasterSun ? casterHeightScale(blend) : casterHeightScale(blend) * _buildingHeightViewScale;
+        }
+        // The height the shadow MAP holds, which is what a receiver must look its own depth up at.
+        float casterHeightScale(float blend) const {
             return _buildingHeightScale * (_buildingGrowOnAppear && !_shadowCasterViewProj ? blend : 1.0f);
         }
 
         float _buildingHeightScale = 1.0f;
+        float _buildingHeightViewScale = 1.0f;
+        bool _shadowCasterSun = false; // set only while the sun's shadow map is being baked
         bool _buildingGrowOnAppear = false;
         bool _buildingFadeOnAppear = true;
         float _groundAOIntensity = 0.0f;

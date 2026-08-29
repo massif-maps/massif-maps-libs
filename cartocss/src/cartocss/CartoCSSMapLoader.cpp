@@ -308,6 +308,7 @@ namespace massif::css {
             { "building-edge-radius", &mvt::Map::Settings::buildingEdgeRadius },
             { "building-roof-shade", &mvt::Map::Settings::buildingRoofShade },
             { "building-height-scale", &mvt::Map::Settings::buildingHeightScale },
+            { "building-height-view-scale", &mvt::Map::Settings::buildingHeightViewScale },
             { "building-grow-on-appear", &mvt::Map::Settings::buildingGrowOnAppear },
             { "building-fade-on-appear", &mvt::Map::Settings::buildingFadeOnAppear },
             { "building-rounded-roof", &mvt::Map::Settings::buildingRoundedRoof },

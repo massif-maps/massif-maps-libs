@@ -696,15 +696,13 @@ namespace massif::vt {
         // handled by the slope-scaled caster offset, which the tightened light frustum made
         // effective again.
         _shadowCasterViewProj = &lightViewProj;
+        _shadowCasterSun = true;
         forEachVisibleExtrusion(&tileIds, [this, &draws](const RenderTileLayer& renderLayer, const std::shared_ptr<TileGeometry>& geometry) {
-            // The tile's OWN blend, not 1: an extrusion fades in by GROWING - blend scales its
-            // height - so a caster drawn at full height throws the shadow of a finished building
-            // from under a half-grown one, and the shadow pops out of existence when the tile is
-            // finally dropped.
             renderTileGeometry(renderLayer.sourceTileId, renderLayer.targetTileId, renderLayer.blend, 1.0f, renderLayer.tileSize, geometry);
             draws++;
             return true;
         });
+        _shadowCasterSun = false;
         _shadowCasterViewProj = nullptr;
         return draws;
     }
@@ -712,10 +710,11 @@ namespace massif::vt {
     float GLTileRenderer::shadowCasterFadeSignature() const {
         std::lock_guard<std::mutex> lock(_mutex);
 
-        // A number that moves exactly as fast as the caster geometry does. An extrusion fades in
-        // by GROWING, so its blend IS its height: the owner refreshes the shadow map when this has
-        // moved far enough to see, instead of every frame of every fade (which costs a full caster
-        // pass each time) or never (which leaves the shadow of a building that is not that shape).
+        // A number that moves exactly as fast as the caster SET does: a tile's blend is how far it
+        // has arrived, so this tracks extrusions appearing and leaving. The owner refreshes the
+        // shadow map when it has moved far enough to see, instead of every frame of every fade
+        // (a full caster pass each time) or never (the shadow of a building that is not there).
+        // The caster's HEIGHT no longer follows the blend - see buildingHeightScale.
         float signature = 0.0f;
         int count = 0;
         forEachVisibleExtrusion(nullptr, [&signature, &count](const RenderTileLayer& renderLayer, const std::shared_ptr<TileGeometry>&) {
@@ -744,10 +743,11 @@ namespace massif::vt {
         _groundAOAttenuation = attenuation;
     }
 
-    void GLTileRenderer::setBuildingHeight(float scale, bool growOnAppear, bool fadeOnAppear) {
+    void GLTileRenderer::setBuildingHeight(float scale, float viewScale, bool growOnAppear, bool fadeOnAppear) {
         std::lock_guard<std::mutex> lock(_mutex);
 
         _buildingHeightScale = scale;
+        _buildingHeightViewScale = viewScale;
         _buildingGrowOnAppear = growOnAppear;
         _buildingFadeOnAppear = fadeOnAppear;
     }
@@ -5802,8 +5802,10 @@ namespace massif::vt {
             cglib::mat3x3<float> groundTileMatrix = cglib::mat3x3<float>::convert(cglib::inverse(calculateTileMatrix2D(targetTileId)) * calculateTileMatrix2D(sourceTileId));
             glUniformMatrix3fv(shaderProgram.uniforms[U_TILEMATRIX], 1, GL_FALSE, groundTileMatrix.data());
         } else if (geometry->getType() == TileGeometry::Type::POLYGON3D) {
+            float heightUnits = 1.0f / vertexGeomLayoutParams.heightScale * vertexGeomLayoutParams.coordScale;
             glUniform1f(shaderProgram.uniforms[U_UVSCALE], 1.0f / vertexGeomLayoutParams.texCoordScale);
-            glUniform1f(shaderProgram.uniforms[U_HEIGHTSCALE], buildingHeightScale(blend) / vertexGeomLayoutParams.heightScale * vertexGeomLayoutParams.coordScale);
+            glUniform1f(shaderProgram.uniforms[U_HEIGHTSCALE], buildingHeightScale(blend) * heightUnits);
+            glUniform1f(shaderProgram.uniforms[U_SHADOWHEIGHTSCALE], casterHeightScale(blend) * heightUnits);
             cglib::mat3x3<float> tileMatrix = cglib::mat3x3<float>::convert(cglib::inverse(calculateTileMatrix2D(targetTileId)) * calculateTileMatrix2D(sourceTileId));
             if (styleParams.translate) {
                 float zoomScale = std::pow(2.0f, sourceTileId.zoom - _viewState.zoom);

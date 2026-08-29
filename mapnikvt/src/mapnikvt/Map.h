@@ -73,6 +73,12 @@ namespace massif::mvt {
             // the way Standard grows its buildings out of the ground as they appear (0 at z15, 1 at
             // z15.3) - a ZOOM ramp, not a timed animation, so it is the same at every visit.
             FloatFunctionProperty buildingHeightScale = FloatFunctionProperty(1.0f);
+            // The same, but a CAMERA effect: the shadow caster ignores it. A style flattens its
+            // extrusions as the view turns onto the map (a view::tilt ramp) so a top-down city
+            // stays legible - the buildings are still there, so their shadows keep their length.
+            // Anything that means "the building is not there yet" belongs in buildingHeightScale,
+            // which the caster does follow: no building, no shadow.
+            FloatFunctionProperty buildingHeightViewScale = FloatFunctionProperty(1.0f);
             // Whether a tile's fade-in also RAISES its buildings. Off: the walls used to be scaled
             // by the tile blend, so every building grew out of the ground each time its tile faded
             // in - a timed animation no source style asks for. A style that wants one writes it as
