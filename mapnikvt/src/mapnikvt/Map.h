@@ -97,6 +97,13 @@ namespace massif::mvt {
             // dark blue ambient twice and took it to a fifth of what gl-js draws. Says nothing about
             // the terrain's shadows, which stay on.
             FloatFunctionProperty colorsPrelit = FloatFunctionProperty(0.0f);
+            // How much of an extrusion's colour is EMITTED rather than lit, mapbox's
+            // fill-extrusion-emissive-strength. 0 is at the mercy of the scene light, 1 is drawn as
+            // authored whatever the hour. Above 1 it overdrives, as their mix() does.
+            FloatFunctionProperty buildingEmissive = FloatFunctionProperty(0.0f);
+            // The same question for the map's BACKGROUND, which is a Map setting rather than a
+            // symbolizer: mapbox's background-emissive-strength. 1 draws it as authored.
+            FloatFunctionProperty backgroundEmissive = FloatFunctionProperty(1.0f);
             FloatFunctionProperty shadowStrength = FloatFunctionProperty(0.0f);    // 0 = no shadows
             FloatFunctionProperty shadowBias = FloatFunctionProperty(0.25f);       // meters
             FloatFunctionProperty shadowSoftness = FloatFunctionProperty(1.0f);    // PCF radius in shadow texels

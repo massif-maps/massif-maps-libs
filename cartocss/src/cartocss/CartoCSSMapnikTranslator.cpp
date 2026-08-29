@@ -675,6 +675,7 @@ namespace massif::css {
     const std::unordered_map<std::string, std::string> CartoCSSMapnikTranslator::_symbolizerPropertyMap = {
         { "line-color", "stroke" },
         { "line-opacity", "stroke-opacity" },
+        { "line-emissive-strength", "stroke-emissive-strength" },
         { "line-width", "stroke-width" },
         { "line-dasharray", "stroke-dasharray" },
         { "line-join", "stroke-linejoin" },
@@ -702,6 +703,7 @@ namespace massif::css {
 
         { "polygon-fill", "fill" },
         { "polygon-opacity", "fill-opacity" },
+        { "polygon-emissive-strength", "fill-emissive-strength" },
         { "polygon-geometry-transform", "geometry-transform" },
         { "polygon-comp-op", "comp-op" },
 

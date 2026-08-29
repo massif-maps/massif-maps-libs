@@ -4992,6 +4992,14 @@ namespace massif::vt {
         auto combine = [&hash](std::size_t value) {
             hash ^= value + 0x9e3779b9 + (hash << 6) + (hash >> 2);
         };
+        // The scene light is baked in with the colours, so moving the sun makes every cached drape
+        // stale - without this, changing the hour on a running map moved the buildings, which are
+        // lit by a per-frame uniform, and left the ground exactly as it was. QUANTISED to 64 steps
+        // per channel so a day cycle re-bakes a few dozen times over its whole range rather than
+        // once per frame.
+        for (int i = 0; i < 3; i++) {
+            combine(static_cast<std::size_t>(std::max(0.0f, std::min(1.0f, _radiance(i))) * 64.0f) * (i + 1));
+        }
         for (auto it = renderTile.renderLayers.begin(); it != renderTile.renderLayers.end(); it++) {
             const RenderTileLayer& renderLayer = it->second;
             // The contact shadows count too: they are baked INTO the drape, but the extrusions
@@ -5691,7 +5699,19 @@ namespace massif::vt {
         float colorBlend = (geometry->getType() == TileGeometry::Type::POLYGON3D && !_buildingFadeOnAppear ? 1.0f : blend);
         std::array<cglib::vec4<float>, TileGeometry::StyleParameters::MAX_PARAMETERS> colors;
         for (int i = 0; i < styleParams.parameterCount; i++) {
+            // The scene light, applied where the colour is already evaluated once per frame and
+            // cached - so this costs one multiply per DISTINCT colour, not per feature. mapbox's
+            // `mix(apply_lighting_ground(color), color, emissive_strength)`: at emissive 1, which is
+            // the default and what every style did before this existed, it is exactly a no-op.
             Color color = Color::fromColorOpacity(evaluateColorFunc(styleParams.colorFuncs[i]) * colorBlend, opacity);
+            float emissive = evaluateFloatFunc(styleParams.emissiveFuncs[i]);
+            if (emissive < 1.0f) {
+                std::array<float, 4> rgba = color.rgba();
+                for (int c = 0; c < 3; c++) {
+                    rgba[c] *= emissive + (1.0f - emissive) * _radiance(c);
+                }
+                color = Color(rgba[0], rgba[1], rgba[2], rgba[3]);
+            }
             colors[i] = cglib::vec4<float>(color.rgba());
         }
         VT_STAT_SPLIT(geomStyleEvalNs, statClock);

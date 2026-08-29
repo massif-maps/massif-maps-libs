@@ -314,6 +314,8 @@ namespace massif::css {
             { "building-rounded-roof", &mvt::Map::Settings::buildingRoundedRoof },
             { "terrain-lighting", &mvt::Map::Settings::terrainLighting },
             { "colors-prelit", &mvt::Map::Settings::colorsPrelit },
+            { "building-emissive-strength", &mvt::Map::Settings::buildingEmissive },
+            { "background-emissive-strength", &mvt::Map::Settings::backgroundEmissive },
             { "shadow-strength", &mvt::Map::Settings::shadowStrength },
             { "shadow-bias", &mvt::Map::Settings::shadowBias },
             { "shadow-softness", &mvt::Map::Settings::shadowSoftness },

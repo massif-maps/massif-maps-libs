@@ -138,6 +138,8 @@ namespace massif::vt {
         LineJoinMode joinMode;
         LineCapMode capMode;
         ColorFunction colorFunc;
+        // How much of the colour is EMITTED rather than lit - see PolygonStyle. 1 = as authored.
+        FloatFunction emissiveFunc;
         FloatFunction widthFunc;
         FloatFunction offsetFunc;
         // mapbox's `line-gap-width`: the width of a GAP down the middle that is not drawn, so one
@@ -171,16 +173,20 @@ namespace massif::vt {
 
         bool hasEndArrow() const { return (endArrowWidth > 0 && endArrowLength > 0) || (endArrowShape && endArrowShape->size() >= 3); }
 
-        explicit LineStyle(CompOp compOp, LineJoinMode joinMode, LineCapMode capMode, ColorFunction colorFunc, FloatFunction widthFunc, FloatFunction offsetFunc, float splitDotLimit, float miterDotLimit, std::shared_ptr<const BitmapPattern> strokePattern, const std::optional<Transform>& transform, float endArrowWidth = 0, float endArrowLength = 0, bool endArrowOnly = false, std::shared_ptr<const std::vector<cglib::vec2<float>>> endArrowShape = std::shared_ptr<const std::vector<cglib::vec2<float>>>(), FloatFunction gapWidthFunc = FloatFunction(0), FloatFunction blurFunc = FloatFunction(0)) : compOp(compOp), joinMode(joinMode), capMode(capMode), colorFunc(std::move(colorFunc)), widthFunc(std::move(widthFunc)), offsetFunc(std::move(offsetFunc)), gapWidthFunc(std::move(gapWidthFunc)), blurFunc(std::move(blurFunc)), splitDotLimit(splitDotLimit), miterDotLimit(miterDotLimit), strokePattern(std::move(strokePattern)), transform(transform), endArrowWidth(endArrowWidth), endArrowLength(endArrowLength), endArrowOnly(endArrowOnly), endArrowShape(std::move(endArrowShape)) { }
+        explicit LineStyle(CompOp compOp, LineJoinMode joinMode, LineCapMode capMode, ColorFunction colorFunc, FloatFunction widthFunc, FloatFunction offsetFunc, float splitDotLimit, float miterDotLimit, std::shared_ptr<const BitmapPattern> strokePattern, const std::optional<Transform>& transform, float endArrowWidth = 0, float endArrowLength = 0, bool endArrowOnly = false, std::shared_ptr<const std::vector<cglib::vec2<float>>> endArrowShape = std::shared_ptr<const std::vector<cglib::vec2<float>>>(), FloatFunction gapWidthFunc = FloatFunction(0), FloatFunction blurFunc = FloatFunction(0), FloatFunction emissiveFunc = FloatFunction(1.0f)) : compOp(compOp), joinMode(joinMode), capMode(capMode), colorFunc(std::move(colorFunc)), emissiveFunc(std::move(emissiveFunc)), widthFunc(std::move(widthFunc)), offsetFunc(std::move(offsetFunc)), gapWidthFunc(std::move(gapWidthFunc)), blurFunc(std::move(blurFunc)), splitDotLimit(splitDotLimit), miterDotLimit(miterDotLimit), strokePattern(std::move(strokePattern)), transform(transform), endArrowWidth(endArrowWidth), endArrowLength(endArrowLength), endArrowOnly(endArrowOnly), endArrowShape(std::move(endArrowShape)) { }
     };
 
     struct PolygonStyle final {
         CompOp compOp;
         ColorFunction colorFunc;
+        // How much of the colour is EMITTED rather than lit by the scene - mapbox's
+        // *-emissive-strength. 1 draws it exactly as authored, which is what every style did before
+        // this existed, so it is the default and adding the term changes nothing on its own.
+        FloatFunction emissiveFunc;
         std::shared_ptr<const BitmapPattern> pattern;
         std::optional<Transform> transform;
 
-        explicit PolygonStyle(CompOp compOp, ColorFunction colorFunc, std::shared_ptr<const BitmapPattern> pattern, const std::optional<Transform>& transform) : compOp(compOp), colorFunc(std::move(colorFunc)), pattern(std::move(pattern)), transform(transform) { }
+        explicit PolygonStyle(CompOp compOp, ColorFunction colorFunc, std::shared_ptr<const BitmapPattern> pattern, const std::optional<Transform>& transform, FloatFunction emissiveFunc = FloatFunction(1.0f)) : compOp(compOp), colorFunc(std::move(colorFunc)), emissiveFunc(std::move(emissiveFunc)), pattern(std::move(pattern)), transform(transform) { }
     };
 
     // How an extrusion is capped. FLAT is one polygon at the top, as every extrusion has always
