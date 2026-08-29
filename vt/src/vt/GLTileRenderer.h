@@ -284,6 +284,8 @@ namespace massif::vt {
         // drawn as a flat sea-level plane. Tells a missing shadow caused by a tile that was never
         // asked for apart from one clipped by the light box. Reading it clears it.
         int consumeShadowCastersMissingElevation() { int n = _shadowCastersMissingElevation; _shadowCastersMissingElevation = 0; return n; }
+        // The projection's metres-to-internal factor, so shadows do not need a DEM to be fitted.
+        void setMetersToInternal(double metersToInternal) { _metersToInternal = metersToInternal; }
         void setTerrainShadowMap(GLuint texture, int mapSize, int cascades, const std::array<float, MAX_SHADOW_CASCADES>& depthBiases, float strength, float softness, bool depthTexture, bool hardwarePCF, float normalOffset, const cglib::vec3<float>& sunDir, const std::array<cglib::mat4x4<double>, MAX_SHADOW_CASCADES>& lightViewProjs);
         // Light-space view-projection fitted to the given terrain tiles; false if the set is empty
         // or no elevation is loaded. minHeight/maxHeight bound the shadowed volume - a generous slab
@@ -872,6 +874,10 @@ namespace massif::vt {
         std::vector<TileId> _terrainPaintTiles; // what a paint covers when it draws itself
         GLuint _terrainShadowTexture = 0;
         int _terrainShadowMapSize = 0;
+        // Metres -> world z units, for a map with NO elevation at all. The fit reads this factor
+        // off a decoded DEM tile, which is fine on terrain and is why a flat 2D map got no shadows
+        // at all: the factor is a property of the PROJECTION, so the caller can state it outright.
+        double _metersToInternal = 0;
         int _terrainShadowCascades = 1;
         std::array<float, MAX_SHADOW_CASCADES> _terrainShadowBiases = { { 0.0f, 0.0f, 0.0f, 0.0f } };
         GLuint _terrainShadowMaskTexture = 0;

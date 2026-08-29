@@ -346,6 +346,12 @@ namespace massif::vt {
             }
         }
         if (metersToInternal <= 0) {
+            // No DEM anywhere - a flat 2D map. The factor is the projection's, not the tile's, so
+            // the caller states it and the whole fit works with no elevation: buildings then cast
+            // on a flat map exactly as they do on terrain.
+            metersToInternal = _metersToInternal;
+        }
+        if (metersToInternal <= 0) {
             texelMeters = -3; // diagnostic: which fit bail-out fired
             return false;
         }
