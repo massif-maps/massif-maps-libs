@@ -188,9 +188,10 @@ namespace massif::vt {
          * of the ground each time its tile faded in - which no source style asks for, and which is
          * a timed animation rather than the zoom ramp a style would write.
          *
-         * `fadeOnAppear` is the same question for the COLOUR, and is on by default because every
-         * other kind of geometry fades that way. A style that ramps `fill-extrusion-opacity` over
-         * zoom owns the appearance itself and turns it off.
+         * `fadeOnAppear` is the same question for the COLOUR, and is OFF by default: an extrusion
+         * that fades in is transparent for the length of the fade, and its own shadow - cast at
+         * full strength from the first frame - is then plainly visible THROUGH its walls. gl-js has
+         * no timed fade for an extrusion either. A style that wants one turns it back on.
          */
         void setBuildingHeight(float scale, float viewScale, bool growOnAppear, bool fadeOnAppear);
         // 0 below the minimum zoom, ramping to 1 one level above it.
@@ -852,7 +853,7 @@ namespace massif::vt {
         float _buildingHeightViewScale = 1.0f;
         bool _shadowCasterSun = false; // set only while the sun's shadow map is being baked
         bool _buildingGrowOnAppear = false;
-        bool _buildingFadeOnAppear = true;
+        bool _buildingFadeOnAppear = false;
         float _groundAOIntensity = 0.0f;
         float _groundAOAttenuation = 0.69f;
         bool _groundAOMaskPass = false; // set only while the mask is being drawn
