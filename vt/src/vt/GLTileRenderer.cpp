@@ -3493,9 +3493,23 @@ namespace massif::vt {
                     }
                     return out;
                 };
+                // The halo may be lit HARDER than the ink it outlines: a name kept legible by a high
+                // emissive over a map that darkens still wants its outline to go dark with the map,
+                // or the two meet at the same grey and the outline stops separating anything.
+                float haloEmissive = labelStyle->haloEmissiveFunc ? evaluateFloatFunc(*labelStyle->haloEmissiveFunc) : labelEmissive;
+                auto litHalo = [this, haloEmissive](const cglib::vec4<float>& rgba) {
+                    if (haloEmissive >= 1.0f) {
+                        return rgba;
+                    }
+                    cglib::vec4<float> out = rgba;
+                    for (int c = 0; c < 3; c++) {
+                        out(c) *= haloEmissive + (1.0f - haloEmissive) * _radiance(c);
+                    }
+                    return out;
+                };
                 cglib::vec4<float> color = lit(cglib::vec4<float>(evaluateColorFunc(labelStyle->colorFunc).rgba()));
                 float size = evaluateFloatFunc(labelStyle->sizeFunc);
-                cglib::vec4<float> haloColor = lit(cglib::vec4<float>(evaluateColorFunc(labelStyle->haloColorFunc).rgba()));
+                cglib::vec4<float> haloColor = litHalo(cglib::vec4<float>(evaluateColorFunc(labelStyle->haloColorFunc).rgba()));
                 // Already in SCREEN PIXELS: the symbolizer scaled the style's radius by the pixel
                 // scale, and labelFsh measures the halo against the same one screen pixel the
                 // antialias ramp is. The cap is where the encoded field runs out.
@@ -3519,7 +3533,7 @@ namespace massif::vt {
                 // And its own halo - an icon never takes the text's (see Label::appendLabelPlates).
                 float iconHaloRadius = labelStyle->iconHaloRadiusFunc ? std::min(evaluateFloatFunc(*labelStyle->iconHaloRadiusFunc), MAX_ICON_HALO_PIXELS) : 0.0f;
                 bool hasIconHalo = iconHaloRadius > 0.0f && labelStyle->iconHaloColorFunc;
-                cglib::vec4<float> iconHaloColor = hasIconHalo ? lit(cglib::vec4<float>(evaluateColorFunc(*labelStyle->iconHaloColorFunc).rgba())) : color;
+                cglib::vec4<float> iconHaloColor = hasIconHalo ? litHalo(cglib::vec4<float>(evaluateColorFunc(*labelStyle->iconHaloColorFunc).rgba())) : color;
                 // The em size the ICON RUN is drawn at, which is not the text's: the run keeps a
                 // fixed pixel size of its own (Label::calculateVertexData scales it by
                 // iconRefSize/size, then by its own ramp). The width table is what labelVsh divides
