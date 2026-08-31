@@ -3605,7 +3605,9 @@ namespace massif::vt {
                     // The icon's plate is its background, so icon-opacity fades it with the glyph
                     // on it - LIVE, because that opacity is a zoom ramp: baked at decode, a POI
                     // whose icon a zoom step hides kept its disc until the tile was decoded again,
-                    // which is the coloured square that flashed while zooming.
+                    // which is the coloured square that flashed while zooming. This is the ICON's
+                    // own ramp, not the label's fade alpha the ring model took back out, and the
+                    // two shapes are disjoint now, so scaling both by it composites nothing twice.
                     float plateOpacity = (i == 1 && labelStyle->iconOpacityFunc ? evaluateFloatFunc(*labelStyle->iconOpacityFunc) : 1.0f);
                     cglib::vec4<float> fillColor = lit(cglib::vec4<float>(plate.style.color.rgba())) * plateOpacity;
                     cglib::vec4<float> borderColor = lit(cglib::vec4<float>(plate.style.borderColor.rgba())) * plateOpacity;
