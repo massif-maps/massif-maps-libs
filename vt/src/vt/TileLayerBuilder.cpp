@@ -1328,13 +1328,11 @@ namespace massif::vt {
             if (points.size() < 3) {
                 return 0.0f;
             }
-            // Which way is IN, from the ring's winding, exactly as the ground skirt does.
-            float area = 0.0f;
-            for (std::size_t i = 0, j = points.size() - 1; i < points.size(); j = i++) {
-                area += points[j](0) * points[i](1) - points[i](0) * points[j](1);
-            }
-            float sign = area < 0.0f ? -1.0f : 1.0f;
-
+            // Which way is IN comes from the ring's traversal alone: the caller orients the rings
+            // against each other first (see tesselatePolygon3D), so the edge normal already points
+            // out of the MATERIAL - out of the footprint on the outer ring, into the void on a
+            // hole. Taking each ring's own winding instead inset a hole toward its own centre,
+            // which is the wrong way round and left the band around it inverted.
             for (std::size_t i = 0; i < points.size(); i++) {
                 std::size_t prev = (i + points.size() - 1) % points.size();
                 std::size_t next = (i + 1) % points.size();
@@ -1345,10 +1343,8 @@ namespace massif::vt {
                 if (!(lenPrev > 0.0f) || !(lenNext > 0.0f)) {
                     return 0.0f; // a ring that touches itself
                 }
-                cglib::vec2<float> tPrev = ePrev * (1.0f / lenPrev);
-                cglib::vec2<float> tNext = eNext * (1.0f / lenNext);
-                cglib::vec2<float> nPrev = cglib::vec2<float>(tPrev(1), -tPrev(0)) * sign;
-                cglib::vec2<float> nNext = cglib::vec2<float>(tNext(1), -tNext(0)) * sign;
+                cglib::vec2<float> nPrev = extrusionEdgeNormal(points[prev], points[i]);
+                cglib::vec2<float> nNext = extrusionEdgeNormal(points[i], points[next]);
 
                 // The miter is 1/cos(halfAngle) - NOT 2/(1 + dot), which is that value squared and
                 // over-insets every corner (2x instead of 1.41x at a right angle, far worse when
@@ -1396,14 +1392,10 @@ namespace massif::vt {
         // Which side of an edge the building stands on, so the fragment can hold the band at full
         // strength there instead of letting it fall off under the walls. The left normal below
         // points into a counter-clockwise ring - and OUT of a hole ring, where the material is the
-        // side the ring does not enclose. Which ring is a hole cannot be read from its winding
-        // here: the tile data does not guarantee holes wind the other way, and a courtyard whose
-        // winding matched its outer ring came out filled solid.
-        float area2 = 0.0f;
-        for (std::size_t i = 0, j = points.size() - 1; i < points.size(); j = i++) {
-            area2 += points[j](0) * points[i](1) - points[i](0) * points[j](1);
-        }
-        float inwardSign = (area2 > 0.0f ? 1.0f : -1.0f) * (hole ? -1.0f : 1.0f);
+        // side the ring does not enclose. The caller orients the rings against each other (see
+        // tesselatePolygon3D) precisely because the tile data does not: a courtyard wound like its
+        // outer ring came out filled solid.
+        float inwardSign = (extrusionRingArea2(points) > 0.0f ? 1.0f : -1.0f) * (hole ? -1.0f : 1.0f);
 
         // One quad per edge, covering that edge's bounding CAPSULE: the fragment measures its own
         // distance to the segment, so the caps round every corner and join one edge's shadow to the
@@ -1696,6 +1688,15 @@ namespace massif::vt {
             }
             while (points.size() > 1 && points.back() == points.front()) {
                 points.pop_back();
+            }
+            // Oriented ONCE, here: the outer ring counter-clockwise, every hole the other way.
+            // Nothing downstream looks at winding again - a wall's outward normal, a quad's
+            // winding and the roof inset all follow the traversal direction. A courtyard wound
+            // like its parent had its walls facing inward, so they were culled and the building
+            // was see-through from inside, and its roof ring was inset the wrong way, which
+            // inverted the bevel band around the hole.
+            if (extrusionRingNeedsReverse(points, !pointsList.empty())) {
+                std::reverse(points.begin(), points.end());
             }
             pointsList.push_back(std::move(points));
         }

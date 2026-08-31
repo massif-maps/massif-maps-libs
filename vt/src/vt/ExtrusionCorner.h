@@ -9,11 +9,29 @@
 
 #include <algorithm>
 #include <cmath>
+#include <vector>
 
 #include <cglib/vec.h>
 
 namespace massif::vt {
-    // The outward normal of a footprint edge, before any winding correction.
+    // Twice a ring's signed area: positive counter-clockwise. Only the SIGN is used here, to
+    // orient a footprint's rings against each other.
+    inline float extrusionRingArea2(const std::vector<cglib::vec2<float>>& points) {
+        float area2 = 0.0f;
+        for (std::size_t i = 0, j = points.size() - 1; i < points.size(); j = i++) {
+            area2 += points[j](0) * points[i](1) - points[i](0) * points[j](1);
+        }
+        return area2;
+    }
+
+    // Whether a ring has to be reversed to reach the orientation everything downstream assumes:
+    // the outer ring counter-clockwise, every hole the other way. MVT asks for this and real tiles
+    // do not always deliver.
+    inline bool extrusionRingNeedsReverse(const std::vector<cglib::vec2<float>>& points, bool hole) {
+        return points.size() >= 3 && (extrusionRingArea2(points) < 0.0f) != hole;
+    }
+
+    // The outward normal of a footprint edge, for a ring in that orientation.
     inline cglib::vec2<float> extrusionEdgeNormal(const cglib::vec2<float>& a, const cglib::vec2<float>& b) {
         cglib::vec2<float> t = cglib::unit(b - a);
         return cglib::vec2<float>(t(1), -t(0));
