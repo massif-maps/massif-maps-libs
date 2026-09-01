@@ -3184,6 +3184,9 @@ namespace massif::vt {
                         // A span takes its height from its own two ends, so it is NOT a decal on
                         // the ground and must not be pulled towards it.
                         bool span = geometry->getVertexGeometryLayoutParameters().spanOffset >= 0;
+                        if (span) {
+                            resolveLineSpanBases(renderLayer->sourceTileId, geometry);
+                        }
                         bool decal = terrainVTF && !span && (geometry->getType() == TileGeometry::Type::LINE || geometry->getType() == TileGeometry::Type::POINT);
                         if (decal) {
                             glEnable(GL_POLYGON_OFFSET_FILL);
@@ -4043,6 +4046,76 @@ namespace massif::vt {
         }
         if (!allResolved) {
             return false; // still drawn, on the per-vertex ground, until the elevation lands
+        }
+        geometry->setBaseResolved(true);
+        geometry->setBaseElevationVersion(version);
+        return true;
+    }
+
+    bool GLTileRenderer::resolveLineSpanBases(const TileId& sourceTileId, const std::shared_ptr<TileGeometry>& geometry) const {
+        const TileGeometry::VertexGeometryLayoutParameters& params = geometry->getVertexGeometryLayoutParameters();
+        if (params.baseOffset < 0 || params.spanOffset < 0 || !_extrusionElevationProvider) {
+            return true; // not a span, or no elevation at all - the line stays on the ground
+        }
+        unsigned int version = _extrusionBaseVersion.load(std::memory_order_relaxed);
+        if (geometry->isBaseResolved() && geometry->getBaseElevationVersion() == version) {
+            return true;
+        }
+        const VertexArray<std::uint8_t>& vertexGeometry = geometry->getVertexGeometry();
+        if (vertexGeometry.empty() || params.vertexSize <= 0) {
+            return false;
+        }
+
+        // On the CPU because it must be TILE-INDEPENDENT. Sampling the two ends from the elevation
+        // texture of the tile being drawn only works while they are inside it, and the whole point
+        // of drawing spans from a coarser tile is that they are not - a long bridge's portals sit
+        // well outside the fine tile its middle lands in.
+        cglib::mat3x3<double> tileMatrix = calculateTileMatrix2D(sourceTileId, 1.0f);
+        std::size_t vertexCount = vertexGeometry.size() / params.vertexSize;
+        // One PAIR of elevation queries per span: every vertex of a bridge carries the same two
+        // ends, and they arrive together.
+        std::int16_t lastSpan[4] = { 0, 0, 0, 0 };
+        double h0 = 0, h1 = 0;
+        bool haveSpan = false, spanUsable = false;
+        bool allResolved = true;
+        for (std::size_t i = 0; i < vertexCount; i++) {
+            const std::uint8_t* vertex = vertexGeometry.data() + i * params.vertexSize;
+            const std::int16_t* span = reinterpret_cast<const std::int16_t*>(vertex + params.spanOffset);
+            if (!haveSpan || span[0] != lastSpan[0] || span[1] != lastSpan[1] || span[2] != lastSpan[2] || span[3] != lastSpan[3]) {
+                for (int j = 0; j < 4; j++) {
+                    lastSpan[j] = span[j];
+                }
+                haveSpan = true;
+                // A degenerate pair is the builder saying the tile CUT this span, so its ends are
+                // not its portals (see createLineProcessor). It keeps the sentinel and drapes.
+                spanUsable = (span[0] != span[2] || span[1] != span[3]);
+                if (spanUsable) {
+                    cglib::vec2<double> t0(span[0] / static_cast<double>(params.coordScale), span[1] / static_cast<double>(params.coordScale));
+                    cglib::vec2<double> t1(span[2] / static_cast<double>(params.coordScale), span[3] / static_cast<double>(params.coordScale));
+                    cglib::vec2<double> w0 = cglib::transform_point(cglib::vec2<double>(t0(0), 1.0 - t0(1)), tileMatrix);
+                    cglib::vec2<double> w1 = cglib::transform_point(cglib::vec2<double>(t1(0), 1.0 - t1(1)), tileMatrix);
+                    spanUsable = _extrusionElevationProvider(cglib::vec3<double>(w0(0), w0(1), 0), h0)
+                              && _extrusionElevationProvider(cglib::vec3<double>(w1(0), w1(1), 0), h1);
+                }
+            }
+            if (!spanUsable) {
+                allResolved = false;
+                continue;
+            }
+            const std::int16_t* pos = reinterpret_cast<const std::int16_t*>(vertex + params.coordOffset);
+            double dx = (lastSpan[2] - lastSpan[0]) / static_cast<double>(params.coordScale);
+            double dy = (lastSpan[3] - lastSpan[1]) / static_cast<double>(params.coordScale);
+            double len2 = dx * dx + dy * dy;
+            double t = 0;
+            if (len2 > 0) {
+                double rx = (pos[0] - lastSpan[0]) / static_cast<double>(params.coordScale);
+                double ry = (pos[1] - lastSpan[1]) / static_cast<double>(params.coordScale);
+                t = std::max(0.0, std::min(1.0, (rx * dx + ry * dy) / len2));
+            }
+            geometry->setVertexBase(i, static_cast<float>(h0 + (h1 - h0) * t));
+        }
+        if (!allResolved) {
+            return false;
         }
         geometry->setBaseResolved(true);
         geometry->setBaseElevationVersion(version);

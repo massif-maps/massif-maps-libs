@@ -1199,7 +1199,7 @@ namespace massif::vt {
         // The ground an extrusion stands on, resolved on the CPU after the fact and patched into
         // the uploaded vertices. A full float: it is written per building rather than per tile, so
         // a shared int16 scale would have to be chosen before any of them are known.
-        if (type == TileGeometry::Type::POLYGON3D) {
+        if (type == TileGeometry::Type::POLYGON3D || !spanEnds.empty()) {
             vertexGeomLayoutParams.baseOffset = vertexGeomLayoutParams.vertexSize;
             vertexGeomLayoutParams.vertexSize += sizeof(float);
             vertexGeomLayoutParams.vertexSize = (vertexGeomLayoutParams.vertexSize + 3) & ~3;
