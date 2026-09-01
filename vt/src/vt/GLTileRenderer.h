@@ -703,6 +703,13 @@ namespace massif::vt {
          * instead loses the building outright, and any wrong-but-plausible base buries it.
          */
         bool resolveExtrusionBases(const TileId& sourceTileId, const TileId& targetTileId, const std::shared_ptr<TileGeometry>& geometry) const;
+        /**
+         * The same for a SPAN line, resolved on the CPU so it is TILE-INDEPENDENT: the ground at
+         * the feature's own two ends, interpolated along the chord into a per-vertex slot. The
+         * elevation texture of the tile being drawn cannot answer for a portal outside it, which
+         * is exactly the case when spans come from a coarser tile than the base map.
+         */
+        bool resolveLineSpanBases(const TileId& sourceTileId, const std::shared_ptr<TileGeometry>& geometry) const;
         void renderTileMask(const TileId& tileId);
         void renderStencilDebugOverlay();
         // Bakes the DEM-derived paint of one target tile into the currently bound drape

@@ -1898,6 +1898,11 @@ namespace massif::vt {
         // inside this tile by construction - a span clipped by the tile border falls back to
         // draped - so the tile's own texture answers both, and the two agree by construction.
         attribute vec4 aVertexSpan;
+        // The chord height for THIS vertex, resolved on the CPU (resolveLineSpanBases) in internal
+        // z units. The sentinel means unresolved - a span the tile cut, or elevation not in yet -
+        // and the line stays on the terrain, which is what it did before.
+        attribute float aVertexBase;
+        uniform float uBaseScale;
         #endif
         #if defined(LIGHTING_FSH) || defined(LIGHTING_VSH)
         attribute vec3 aVertexNormal;
@@ -2002,13 +2007,10 @@ namespace massif::vt {
         #ifdef SPAN
             // A degenerate pair is the builder saying this span was CLIPPED by the tile, so its
             // ends are not its portals - it stays on the terrain, which centerPos already holds.
-            highp vec2 spanD = aVertexSpan.zw - aVertexSpan.xy;
-            highp float spanLen2 = dot(spanD, spanD);
-            highp float spanH0 = 0.0, spanH1 = 0.0;
-            if (spanLen2 > 0.0) {
-                spanH0 = applyTerrain(vec3(aVertexSpan.xy, pos.z)).z;
-                spanH1 = applyTerrain(vec3(aVertexSpan.zw, pos.z)).z;
-                centerPos.z = mix(spanH0, spanH1, clamp(dot(pos.xy - aVertexSpan.xy, spanD) / spanLen2, 0.0, 1.0));
+            highp float spanZ = aVertexBase * uBaseScale + uElevationScale.w;
+            bool spanResolved = aVertexBase > -1.0e29;
+            if (spanResolved) {
+                centerPos.z = spanZ;
             }
         #endif
             applyShadowPos(centerPos);
@@ -2019,8 +2021,11 @@ namespace massif::vt {
             // of every quad down on the ground while its centre stayed up on the chord - a ribbon
             // twisted on its long axis, which reads as a wedge at the span and inflates edgeLen
             // enough to trip the ceiling below, so the deck came out the wrong width as well.
-            if (spanLen2 > 0.0) {
-                edgePos.z = mix(spanH0, spanH1, clamp(dot((pos + delta).xy - aVertexSpan.xy, spanD) / spanLen2, 0.0, 1.0));
+            // The outer edge belongs to the deck too - left on the terrain it hangs the far side
+            // of every quad down on the ground and twists the ribbon. The chord varies along the
+            // line, not across it, so the edge takes the SAME height as its centre.
+            if (spanResolved) {
+                edgePos.z = spanZ;
             }
         #endif
             highp vec4 edgeClip = uMVPMatrix * vec4(edgePos, 1.0);
