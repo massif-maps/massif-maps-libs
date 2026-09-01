@@ -118,6 +118,9 @@ namespace massif::vt {
             cglib::vec2<float> translate;
             CompOp compOp;
             int glyphRenderSize;
+            // A span carries a per-vertex slot a draped line has no room for, so the two cannot
+            // share one geometry - a mode change splits the batch (see createLineProcessor).
+            LineElevationMode elevationMode;
 
             // patternUsed defaults to TRUE so every path that does not manage it (lines, points)
             // keeps sampling its pattern; only the polygon processor sets it per slot.
@@ -127,7 +130,7 @@ namespace massif::vt {
         void packGeometry(std::vector<std::shared_ptr<TileGeometry>>& geometryList) const;
         // The skirt stream, packed once per layer into its own POLYGON3DGROUND geometry.
         void packGroundSkirt(std::vector<std::shared_ptr<TileGeometry>>& geometryList) const;
-        void packGeometry(TileGeometry::Type type, int dimensions, float coordScale, float binormalScale, float texCoordScale, float heightScale, const VertexArray<cglib::vec3<float>>& coords, const VertexArray<cglib::vec2<float>>& texCoords, const VertexArray<cglib::vec3<float>>& normals, const VertexArray<cglib::vec3<float>>& binormals, const VertexArray<float>& heights, const VertexArray<cglib::vec4<std::int8_t>>& attribs, const VertexArray<std::size_t>& indices, const VertexArray<long long>& ids, const VertexArray<std::uint16_t >& geoPosIndexes, const TileGeometry::StyleParameters& styleParameters, std::vector<TileGeometry::FeatureStyleRange> featureStyleRanges, std::vector<std::shared_ptr<TileGeometry>>& geometryList) const;
+        void packGeometry(TileGeometry::Type type, int dimensions, float coordScale, float binormalScale, float texCoordScale, float heightScale, const VertexArray<cglib::vec3<float>>& coords, const VertexArray<cglib::vec2<float>>& texCoords, const VertexArray<cglib::vec3<float>>& normals, const VertexArray<cglib::vec3<float>>& binormals, const VertexArray<float>& heights, const VertexArray<cglib::vec4<std::int8_t>>& attribs, const VertexArray<cglib::vec4<float>>& spanEnds, const VertexArray<std::size_t>& indices, const VertexArray<long long>& ids, const VertexArray<std::uint16_t >& geoPosIndexes, const TileGeometry::StyleParameters& styleParameters, std::vector<TileGeometry::FeatureStyleRange> featureStyleRanges, std::vector<std::shared_ptr<TileGeometry>>& geometryList) const;
         void registerStyleVariantSlot(int styleIndex);
 
         bool tesselateGlyph(const cglib::vec2<float>& point, std::int8_t styleIndex, const cglib::vec2<float>& pen, const cglib::vec2<float>& size, const GlyphMap::Glyph* glyph);
@@ -188,6 +191,11 @@ namespace massif::vt {
         VertexArray<cglib::vec2<float>> _binormals;
         VertexArray<float> _heights;
         VertexArray<cglib::vec4<std::int8_t>> _attribs;
+        // A SPAN/UNDERGROUND line's own two ends, stamped on every vertex it produced: (p0, p1) in
+        // tile coords. The renderer resolves the ground at those two points and interpolates along
+        // the chord, so the DEM in between - the spike a DSM caught off a bridge deck included -
+        // never reaches the deck. Empty for a draped geometry.
+        VertexArray<cglib::vec4<float>> _spanEnds;
         // The current extrusion's footprint centroid, carried by every one of its vertices. The
         // renderer resolves the ground there once, on the CPU (GLTileRenderer::resolveExtrusionBases).
         cglib::vec2<float> _polygon3DCentroid = cglib::vec2<float>(0, 0);

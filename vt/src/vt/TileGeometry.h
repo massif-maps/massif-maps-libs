@@ -96,12 +96,15 @@ namespace massif::vt {
             // the ground under this vertex" - the pre-CPU behaviour, so a building whose elevation
             // never resolves is drawn slightly wrong rather than not at all.
             int baseOffset;
+            // SPAN/UNDERGROUND lines only: the feature's own two ends, (p0, p1) at coordScale, so
+            // the CPU pass can resolve the ground there and interpolate along the chord.
+            int spanOffset;
             float coordScale;
             float texCoordScale;
             float binormalScale;
             float heightScale;
 
-            VertexGeometryLayoutParameters() : vertexSize(0), dimensions(2), coordOffset(-1), attribsOffset(-1), texCoordOffset(-1), normalOffset(-1), binormalOffset(-1), heightOffset(-1), baseOffset(-1), coordScale(0), texCoordScale(0), binormalScale(0), heightScale(0) { }
+            VertexGeometryLayoutParameters() : vertexSize(0), dimensions(2), coordOffset(-1), attribsOffset(-1), texCoordOffset(-1), normalOffset(-1), binormalOffset(-1), heightOffset(-1), baseOffset(-1), spanOffset(-1), coordScale(0), texCoordScale(0), binormalScale(0), heightScale(0) { }
         };
 
         explicit TileGeometry(Type type, float geomScale, const StyleParameters& styleParameters, const VertexGeometryLayoutParameters& vertexGeometryLayoutParameters, VertexArray<std::uint8_t> vertexGeometry, VertexArray<std::uint16_t> indices, std::vector<std::pair<std::size_t, long long>> ids, std::vector<std::pair<std::size_t, std::uint16_t>> geoPosIndexes) : _type(type), _geomScale(geomScale), _styleParameters(styleParameters), _vertexGeometryLayoutParameters(vertexGeometryLayoutParameters), _indicesCount(static_cast<unsigned int>(indices.size())), _vertexGeometry(std::move(vertexGeometry)), _indices(std::move(indices)), _ids(std::move(ids)), _geoPosIndexes(std::move(geoPosIndexes)), _geoPosIndexesCount(static_cast<unsigned int>(indices.size())) { }

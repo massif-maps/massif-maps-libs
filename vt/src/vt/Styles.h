@@ -84,6 +84,24 @@ namespace massif::vt {
         NONE, BEVEL, MITER, ROUND
     };
 
+    /**
+     * What the terrain does to a line.
+     *
+     * DRAPE is every line that lies ON the ground: it follows the surface, and may be baked into
+     * the drape texture. The other two are structures that do NOT follow it, and take their height
+     * from their own two ends instead - a bridge is a chord over whatever the ground does in
+     * between, a tunnel the same chord under it. Both are kept out of the drape bake by
+     * construction: a baked pixel IS the ground.
+     *
+     * Per SYMBOLIZER, not per layer, because bridge-ness is a feature attribute - a converted
+     * MapBox style filters [structure] and one `road` layer carries both. Selecting by vt layer
+     * name (TerrainOptions::NoDrapeLayerFilter) cannot reach the shields and labels riding on a
+     * bridge, which is what left them sunk into the ground.
+     */
+    enum class LineElevationMode {
+        DRAPE, SPAN, UNDERGROUND
+    };
+
     enum class LineCapMode {
         NONE, SQUARE, ROUND
     };
@@ -171,9 +189,12 @@ namespace massif::vt {
         // the same path lands (casing - fill) / 2 outside the fill, as it does along the shaft.
         std::shared_ptr<const std::vector<cglib::vec2<float>>> endArrowShape;
 
+        // See LineElevationMode. DRAPE is what every style did before this existed.
+        LineElevationMode elevationMode;
+
         bool hasEndArrow() const { return (endArrowWidth > 0 && endArrowLength > 0) || (endArrowShape && endArrowShape->size() >= 3); }
 
-        explicit LineStyle(CompOp compOp, LineJoinMode joinMode, LineCapMode capMode, ColorFunction colorFunc, FloatFunction widthFunc, FloatFunction offsetFunc, float splitDotLimit, float miterDotLimit, std::shared_ptr<const BitmapPattern> strokePattern, const std::optional<Transform>& transform, float endArrowWidth = 0, float endArrowLength = 0, bool endArrowOnly = false, std::shared_ptr<const std::vector<cglib::vec2<float>>> endArrowShape = std::shared_ptr<const std::vector<cglib::vec2<float>>>(), FloatFunction gapWidthFunc = FloatFunction(0), FloatFunction blurFunc = FloatFunction(0), FloatFunction emissiveFunc = FloatFunction(1.0f)) : compOp(compOp), joinMode(joinMode), capMode(capMode), colorFunc(std::move(colorFunc)), emissiveFunc(std::move(emissiveFunc)), widthFunc(std::move(widthFunc)), offsetFunc(std::move(offsetFunc)), gapWidthFunc(std::move(gapWidthFunc)), blurFunc(std::move(blurFunc)), splitDotLimit(splitDotLimit), miterDotLimit(miterDotLimit), strokePattern(std::move(strokePattern)), transform(transform), endArrowWidth(endArrowWidth), endArrowLength(endArrowLength), endArrowOnly(endArrowOnly), endArrowShape(std::move(endArrowShape)) { }
+        explicit LineStyle(CompOp compOp, LineJoinMode joinMode, LineCapMode capMode, ColorFunction colorFunc, FloatFunction widthFunc, FloatFunction offsetFunc, float splitDotLimit, float miterDotLimit, std::shared_ptr<const BitmapPattern> strokePattern, const std::optional<Transform>& transform, float endArrowWidth = 0, float endArrowLength = 0, bool endArrowOnly = false, std::shared_ptr<const std::vector<cglib::vec2<float>>> endArrowShape = std::shared_ptr<const std::vector<cglib::vec2<float>>>(), FloatFunction gapWidthFunc = FloatFunction(0), FloatFunction blurFunc = FloatFunction(0), FloatFunction emissiveFunc = FloatFunction(1.0f), LineElevationMode elevationMode = LineElevationMode::DRAPE) : compOp(compOp), joinMode(joinMode), capMode(capMode), colorFunc(std::move(colorFunc)), emissiveFunc(std::move(emissiveFunc)), widthFunc(std::move(widthFunc)), offsetFunc(std::move(offsetFunc)), gapWidthFunc(std::move(gapWidthFunc)), blurFunc(std::move(blurFunc)), splitDotLimit(splitDotLimit), miterDotLimit(miterDotLimit), strokePattern(std::move(strokePattern)), transform(transform), endArrowWidth(endArrowWidth), endArrowLength(endArrowLength), endArrowOnly(endArrowOnly), endArrowShape(std::move(endArrowShape)), elevationMode(elevationMode) { }
     };
 
     struct PolygonStyle final {

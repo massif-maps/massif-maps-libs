@@ -703,6 +703,14 @@ namespace massif::vt {
          * instead loses the building outright, and any wrong-but-plausible base buries it.
          */
         bool resolveExtrusionBases(const TileId& sourceTileId, const TileId& targetTileId, const std::shared_ptr<TileGeometry>& geometry) const;
+        /**
+         * The same for a SPAN/UNDERGROUND line: the ground at the feature's own two ends, then
+         * interpolated along the chord. The tiler splits a way where structure/brunnel changes, so
+         * those two vertices ARE the portals. Returns false while an end is unresolved or is the
+         * TILE CLIP rather than a portal - the line then keeps the sentinel and stays draped,
+         * which is what a span longer than a tile does until the zoom holds it whole.
+         */
+        bool resolveLineSpanBases(const TileId& sourceTileId, const TileId& targetTileId, const std::shared_ptr<TileGeometry>& geometry) const;
         void renderTileMask(const TileId& tileId);
         void renderStencilDebugOverlay();
         // Bakes the DEM-derived paint of one target tile into the currently bound drape
@@ -722,7 +730,7 @@ namespace massif::vt {
         GLuint ensureDrapeTexture(const TileId& tileId);
         void releaseDrapeTexture(GLuint texture);
         void deleteDrapeResources();
-        bool isDrapeableGeometry(TileGeometry::Type type) const;
+        bool isDrapeableGeometry(const std::shared_ptr<TileGeometry>& geometry) const;
         // Builds the lit raster program ahead of the zoom-out that first needs it, so its compile
         // does not land inside the gesture.
         void warmTerrainRasterShader();
