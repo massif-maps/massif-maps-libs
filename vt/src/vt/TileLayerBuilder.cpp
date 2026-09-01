@@ -413,9 +413,25 @@ namespace massif::vt {
             if (style.elevationMode != LineElevationMode::DRAPE && !vertices.empty()) {
                 // The tiler splits a way where structure/brunnel changes, so a bridge feature's
                 // first and last vertex ARE its portals - no inference from the DEM needed.
+                //
+                // UNLESS the tile cut them: an end on the tile boundary is the clip, and a chord
+                // between two clip points is worse than no chord at all - the deck dives to
+                // whatever the ground does at the cut. A span longer than a tile (Millau is 2.46 km
+                // against ~1.75 km at z14) therefore follows the ground until the zoom holds it
+                // whole. Signalled by a DEGENERATE pair, which the vertex stage reads as "not a
+                // span" and leaves on the terrain.
+                constexpr float CLIP_MARGIN = 0.002f;
                 const Vertex& p0 = vertices.front();
                 const Vertex& p1 = vertices.back();
-                _spanEnds.fill(cglib::vec4<float>(p0(0), p0(1), p1(0), p1(1)), _coords.size() - _spanEnds.size());
+                auto insideTile = [](const Vertex& p) {
+                    return p(0) > CLIP_MARGIN && p(0) < 1.0f - CLIP_MARGIN
+                        && p(1) > CLIP_MARGIN && p(1) < 1.0f - CLIP_MARGIN;
+                };
+                cglib::vec4<float> ends(0, 0, 0, 0);
+                if (insideTile(p0) && insideTile(p1)) {
+                    ends = cglib::vec4<float>(p0(0), p0(1), p1(0), p1(1));
+                }
+                _spanEnds.fill(ends, _coords.size() - _spanEnds.size());
             }
             _ids.fill(id, _indices.size() - _ids.size());
             _geoPosIndexes.fill(0, _indices.size() - _geoPosIndexes.size());
