@@ -148,6 +148,9 @@ namespace massif::vt {
         // accumulate the alpha of the draped units above a no-drape layer into its occlusion mask
         // (docs/internals/rendering/04-terrain.md).
         COVERAGE_FLAG = 16777216,
+        // The line carries a CPU-resolved chord height per vertex (a bridge or tunnel deck) rather
+        // than sampling the ground - see LineElevationMode.
+        SPAN_FLAG = 33554432,
         // ... and the other end: a live no-drape layer scales its alpha by 1 - mask, so the draped
         // layers that come AFTER it in the style order win where they paint.
         DRAPE_MASK_FLAG = 33554432,
@@ -274,6 +277,7 @@ namespace massif::vt {
         { SHADOW_HW_FLAG, "SHADOW_HW" },
         { GEOMETRY_LIGHT_FLAG, "GEOMETRY_LIGHT" },
         { COVERAGE_FLAG, "COVERAGE" },
+        { SPAN_FLAG, "SPAN" },
         { DRAPE_MASK_FLAG, "DRAPE_MASK" }
     };
 
@@ -1881,6 +1885,14 @@ namespace massif::vt {
 
     static const std::string lineVsh = R"GLSL(
         attribute vec3 aVertexPosition;
+        #if defined(TERRAIN) && defined(SPAN)
+        // A bridge or tunnel deck: the ground at the feature's own two ends, interpolated along
+        // the chord on the CPU (GLTileRenderer::resolveLineSpanBases). Internal z units. The
+        // sentinel means it is not resolved - a clipped span, or elevation that has not arrived -
+        // and the line falls back to following the ground, which is what it did before.
+        attribute float aVertexBase;
+        uniform float uBaseScale;
+        #endif
         #if defined(LIGHTING_FSH) || defined(LIGHTING_VSH)
         attribute vec3 aVertexNormal;
         #endif
@@ -1981,6 +1993,11 @@ namespace massif::vt {
             setTerrainSlopeVaryings(pos);
             vTileUnit = pos.xy * uTileUnitScale + uTileUnitOffset;
             highp vec3 centerPos = applyTerrain(pos);
+        #ifdef SPAN
+            if (aVertexBase > -1.0e29) {
+                centerPos.z = aVertexBase * uBaseScale + uElevationScale.w;
+            }
+        #endif
             applyShadowPos(centerPos);
             highp vec4 centerClip = uMVPMatrix * vec4(centerPos, 1.0);
             highp vec4 edgeClip = uMVPMatrix * vec4(applyTerrain(pos + delta), 1.0);

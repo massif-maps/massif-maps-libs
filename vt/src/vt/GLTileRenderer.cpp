@@ -3163,7 +3163,7 @@ namespace massif::vt {
                     // Draped fills/lines are baked into the drape texture already - unless the
                     // layer opted out of the bake (setNoDrapeLayerFilter), in which case this pass
                     // is the only one that draws it.
-                    if (drapedTile && isDrapeableGeometry(geometry->getType()) && isLayerDraped(renderLayer->layer)) {
+                    if (drapedTile && isDrapeableGeometry(geometry) && isLayerDraped(renderLayer->layer)) {
                         continue;
                     }
                     // POLYGON3DGROUND is a contact shadow for the 3D pass, not 2D content.
@@ -3181,7 +3181,13 @@ namespace massif::vt {
                         // glyph of clipped text is tens of metres wide - and it was left out: whole
                         // letters disappeared over 3D terrain, only where the ground is draped
                         // (a draped tile draws its surface at TRUE depth and writes it).
-                        bool decal = terrainVTF && (geometry->getType() == TileGeometry::Type::LINE || geometry->getType() == TileGeometry::Type::POINT);
+                        // A span takes its height from its own two ends, so it is NOT a decal on
+                        // the ground and must not be pulled towards it.
+                        bool span = geometry->getVertexGeometryLayoutParameters().spanOffset >= 0;
+                        if (span) {
+                            resolveLineSpanBases(renderLayer->sourceTileId, renderLayer->targetTileId, geometry);
+                        }
+                        bool decal = terrainVTF && !span && (geometry->getType() == TileGeometry::Type::LINE || geometry->getType() == TileGeometry::Type::POINT);
                         if (decal) {
                             glEnable(GL_POLYGON_OFFSET_FILL);
                             glPolygonOffset(-2.0f, -8.0f);
@@ -4046,6 +4052,90 @@ namespace massif::vt {
         return true;
     }
 
+    namespace {
+        // A span end on the tile boundary is the CLIP, not a portal (the MVT buffer reaches a
+        // little past the edge, hence the margin).
+        bool insideTile(const cglib::vec2<double>& tilePos) {
+            constexpr double MARGIN = 0.002;
+            return tilePos(0) > MARGIN && tilePos(0) < 1.0 - MARGIN
+                && tilePos(1) > MARGIN && tilePos(1) < 1.0 - MARGIN;
+        }
+    }
+
+    bool GLTileRenderer::resolveLineSpanBases(const TileId& sourceTileId, const TileId& targetTileId, const std::shared_ptr<TileGeometry>& geometry) const {
+        const TileGeometry::VertexGeometryLayoutParameters& params = geometry->getVertexGeometryLayoutParameters();
+        if (params.baseOffset < 0 || params.spanOffset < 0 || !_extrusionElevationProvider) {
+            return true; // not a span, or no elevation at all - the line stays on the ground
+        }
+        unsigned int version = _extrusionBaseVersion.load(std::memory_order_relaxed);
+        if (geometry->isBaseResolved() && geometry->getBaseElevationVersion() == version) {
+            return true;
+        }
+        if (!resolveTerrainTexture(targetTileId).first) {
+            return false;
+        }
+        const VertexArray<std::uint8_t>& vertexGeometry = geometry->getVertexGeometry();
+        if (vertexGeometry.empty() || params.vertexSize <= 0) {
+            return false;
+        }
+
+        cglib::mat3x3<double> tileMatrix = calculateTileMatrix2D(sourceTileId, 1.0f);
+        std::size_t vertexCount = vertexGeometry.size() / params.vertexSize;
+        // One pair of elevation queries per SPAN, not per vertex: every vertex of a bridge carries
+        // the same two ends, and they arrive together.
+        std::int16_t lastSpan[4] = { 0, 0, 0, 0 };
+        double h0 = 0, h1 = 0;
+        bool haveSpan = false, spanUsable = false;
+        bool allResolved = true;
+        for (std::size_t i = 0; i < vertexCount; i++) {
+            const std::uint8_t* vertex = vertexGeometry.data() + i * params.vertexSize;
+            const std::int16_t* span = reinterpret_cast<const std::int16_t*>(vertex + params.spanOffset);
+            if (!haveSpan || span[0] != lastSpan[0] || span[1] != lastSpan[1] || span[2] != lastSpan[2] || span[3] != lastSpan[3]) {
+                for (int j = 0; j < 4; j++) {
+                    lastSpan[j] = span[j];
+                }
+                haveSpan = true;
+                cglib::vec2<double> t0(span[0] / static_cast<double>(params.coordScale), span[1] / static_cast<double>(params.coordScale));
+                cglib::vec2<double> t1(span[2] / static_cast<double>(params.coordScale), span[3] / static_cast<double>(params.coordScale));
+                // CLIPPED: an end that sits on the tile boundary is the clip, not a portal, and
+                // interpolating between two heights that are not the bridge's own is worse than
+                // draping. Falls back by leaving the sentinel in place. A span longer than a tile
+                // is therefore draped until the zoom is deep enough to hold it whole.
+                spanUsable = insideTile(t0) && insideTile(t1);
+                if (spanUsable) {
+                    cglib::vec2<double> w0 = cglib::transform_point(cglib::vec2<double>(t0(0), 1.0 - t0(1)), tileMatrix);
+                    cglib::vec2<double> w1 = cglib::transform_point(cglib::vec2<double>(t1(0), 1.0 - t1(1)), tileMatrix);
+                    spanUsable = _extrusionElevationProvider(cglib::vec3<double>(w0(0), w0(1), 0), h0)
+                              && _extrusionElevationProvider(cglib::vec3<double>(w1(0), w1(1), 0), h1);
+                }
+            }
+            if (!spanUsable) {
+                allResolved = false;
+                continue;
+            }
+            // Along the CHORD, so the ground in between - the DSM spike a bridge deck leaves in the
+            // DEM included - never reaches the deck.
+            const std::int16_t* pos = reinterpret_cast<const std::int16_t*>(vertex + params.coordOffset);
+            cglib::vec2<double> p(pos[0] / static_cast<double>(params.coordScale), pos[1] / static_cast<double>(params.coordScale));
+            cglib::vec2<double> d(lastSpan[2] / static_cast<double>(params.coordScale) - lastSpan[0] / static_cast<double>(params.coordScale),
+                                  lastSpan[3] / static_cast<double>(params.coordScale) - lastSpan[1] / static_cast<double>(params.coordScale));
+            double len2 = d(0) * d(0) + d(1) * d(1);
+            double t = 0;
+            if (len2 > 0) {
+                cglib::vec2<double> rel(p(0) - lastSpan[0] / static_cast<double>(params.coordScale),
+                                        p(1) - lastSpan[1] / static_cast<double>(params.coordScale));
+                t = std::max(0.0, std::min(1.0, (rel(0) * d(0) + rel(1) * d(1)) / len2));
+            }
+            geometry->setVertexBase(i, static_cast<float>(h0 + (h1 - h0) * t));
+        }
+        if (!allResolved) {
+            return false;
+        }
+        geometry->setBaseResolved(true);
+        geometry->setBaseElevationVersion(version);
+        return true;
+    }
+
     void GLTileRenderer::renderTileMask(const TileId& tileId) {
 #if MASSIF_VT_RENDER_STATS
         VT_STAT_CLOCK(maskClock);
@@ -4503,7 +4593,7 @@ namespace massif::vt {
                 }
                 drapeOrtho = calculateDrapeMVPMatrix(renderLayer.sourceTileId, targetTileId);
                 for (const std::shared_ptr<TileGeometry>& geometry : renderLayer.layer->getGeometries()) {
-                    if (isDrapeableGeometry(geometry->getType()) && isLayerDraped(renderLayer.layer)) {
+                    if (isDrapeableGeometry(geometry) && isLayerDraped(renderLayer.layer)) {
                         renderTileGeometry(renderLayer.sourceTileId, renderLayer.targetTileId, 1.0f, geometryOpacity, renderLayer.tileSize, geometry);
                         bakedPrimitives++;
                     }
@@ -4537,7 +4627,7 @@ namespace massif::vt {
                 bool draped = isLayerDraped(renderLayer.layer);
                 bool drapeable = !renderLayer.layer->getBackgrounds().empty() || !renderLayer.layer->getBitmaps().empty();
                 for (const std::shared_ptr<TileGeometry>& geometry : renderLayer.layer->getGeometries()) {
-                    drapeable = drapeable || isDrapeableGeometry(geometry->getType());
+                    drapeable = drapeable || isDrapeableGeometry(geometry);
                 }
                 if (drapeable) {
                     drapedByLayer[renderLayer.layer->getLayerIndex()] = draped;
@@ -5020,7 +5110,13 @@ namespace massif::vt {
         }
     }
 
-    bool GLTileRenderer::isDrapeableGeometry(TileGeometry::Type type) const {
+    bool GLTileRenderer::isDrapeableGeometry(const std::shared_ptr<TileGeometry>& geometry) const {
+        // A span is a structure that does NOT lie on the ground, and a baked pixel IS the ground -
+        // so it leaves the bake by construction, whatever the layer filter says.
+        if (geometry->getVertexGeometryLayoutParameters().spanOffset >= 0) {
+            return false;
+        }
+        TileGeometry::Type type = geometry->getType();
         // The maplibre drapeable set: backgrounds, fills, lines and rasters go into the texture;
         // 3D extrusions and point symbols stay live in the scene (they are not surface-conformal,
         // so flattening them into the terrain skin would be wrong, not just imprecise).
@@ -5182,7 +5278,7 @@ namespace massif::vt {
             return true;
         }
         for (const std::shared_ptr<TileGeometry>& geometry : renderLayer.layer->getGeometries()) {
-            if (isDrapeableGeometry(geometry->getType())) {
+            if (isDrapeableGeometry(geometry)) {
                 return true;
             }
         }
@@ -5312,7 +5408,7 @@ namespace massif::vt {
                 // needs the sub-rect transform to land on the target tile's texture.
                 drapeOrtho = calculateDrapeMVPMatrix(renderLayer.sourceTileId, targetTileId);
                 for (const std::shared_ptr<TileGeometry>& geometry : renderLayer.layer->getGeometries()) {
-                    if (isDrapeableGeometry(geometry->getType())) {
+                    if (isDrapeableGeometry(geometry)) {
                         renderTileGeometry(renderLayer.sourceTileId, renderLayer.targetTileId, 1.0f, geometryOpacity, renderLayer.tileSize, geometry);
                     }
                 }
@@ -5777,7 +5873,7 @@ namespace massif::vt {
             shaderProgramPtr = &buildShaderProgram("point", pointVsh, pointFsh, LightingMode::GEOMETRY2D, RasterFilterMode::NONE, (styleParams.pattern ? PATTERN_FLAG : 0) | (styleParams.translate ? TRANSFORM_FLAG : 0) | (styleOffsetting ? OFFSET_FLAG : 0) | terrainFlag | (shadowReceiver ? shadowReceiverFlags() : 0) | lightFlag | fogFlag());
             break;
         case TileGeometry::Type::LINE:
-            shaderProgramPtr = &buildShaderProgram("line", lineVsh, lineFsh, LightingMode::GEOMETRY2D, RasterFilterMode::NONE, (styleParams.pattern ? PATTERN_FLAG : 0) | (styleParams.translate ? TRANSFORM_FLAG : 0) | (styleOffsetting ? OFFSET_FLAG : 0) | (styleGapWidth ? GAPWIDTH_FLAG : 0) | (styleBlur ? BLUR_FLAG : 0) | terrainFlag | (shadowReceiver ? shadowReceiverFlags() : 0) | lightFlag | fogFlag() | coverageFlag() | drapeMaskFlag());
+            shaderProgramPtr = &buildShaderProgram("line", lineVsh, lineFsh, LightingMode::GEOMETRY2D, RasterFilterMode::NONE, (styleParams.pattern ? PATTERN_FLAG : 0) | (styleParams.translate ? TRANSFORM_FLAG : 0) | (styleOffsetting ? OFFSET_FLAG : 0) | (styleGapWidth ? GAPWIDTH_FLAG : 0) | (styleBlur ? BLUR_FLAG : 0) | terrainFlag | (shadowReceiver ? shadowReceiverFlags() : 0) | lightFlag | fogFlag() | coverageFlag() | drapeMaskFlag() | (vertexGeomLayoutParams.spanOffset >= 0 ? SPAN_FLAG : 0));
             break;
         case TileGeometry::Type::POLYGON:
             shaderProgramPtr = &buildShaderProgram("polygon", polygonVsh, polygonFsh, LightingMode::GEOMETRY2D, RasterFilterMode::NONE, (styleParams.pattern ? PATTERN_FLAG : 0) | (styleParams.translate ? TRANSFORM_FLAG : 0) | terrainFlag | (shadowReceiver ? shadowReceiverFlags() : 0) | lightFlag | fogFlag() | coverageFlag() | drapeMaskFlag());
