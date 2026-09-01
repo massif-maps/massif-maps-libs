@@ -2005,10 +2005,15 @@ namespace massif::vt {
                 highp vec2 e1 = aVertexSpan.zw;
                 highp vec2 d = e1 - e0;
                 highp float len2 = dot(d, d);
-                highp float t = len2 > 0.0 ? clamp(dot(pos.xy - e0, d) / len2, 0.0, 1.0) : 0.0;
-                highp float h0 = applyTerrain(vec3(e0, pos.z)).z;
-                highp float h1 = applyTerrain(vec3(e1, pos.z)).z;
-                centerPos.z = mix(h0, h1, t);
+                // A degenerate pair is the builder saying this span was CLIPPED by the tile, so
+                // its ends are not its portals - it stays on the terrain, which centerPos already
+                // holds.
+                if (len2 > 0.0) {
+                    highp float t = clamp(dot(pos.xy - e0, d) / len2, 0.0, 1.0);
+                    highp float h0 = applyTerrain(vec3(e0, pos.z)).z;
+                    highp float h1 = applyTerrain(vec3(e1, pos.z)).z;
+                    centerPos.z = mix(h0, h1, t);
+                }
             }
         #endif
             applyShadowPos(centerPos);
