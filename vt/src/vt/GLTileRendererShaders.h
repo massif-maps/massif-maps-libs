@@ -15,6 +15,7 @@ namespace massif::vt {
         A_VERTEXBINORMAL,
         A_VERTEXHEIGHT,
         A_VERTEXBASE,
+        A_VERTEXSPAN,
         A_VERTEXCOLOR,
         A_VERTEXATTRIBS,
         A_VERTEXOFFSET
@@ -168,6 +169,7 @@ namespace massif::vt {
         { "aVertexBinormal", A_VERTEXBINORMAL },
         { "aVertexHeight",   A_VERTEXHEIGHT },
         { "aVertexBase",     A_VERTEXBASE },
+        { "aVertexSpan",     A_VERTEXSPAN },
         { "aVertexColor",    A_VERTEXCOLOR },
         { "aVertexAttribs",  A_VERTEXATTRIBS },
         { "aVertexOffset",   A_VERTEXOFFSET }
@@ -1886,12 +1888,16 @@ namespace massif::vt {
     static const std::string lineVsh = R"GLSL(
         attribute vec3 aVertexPosition;
         #if defined(TERRAIN) && defined(SPAN)
-        // A bridge or tunnel deck: the ground at the feature's own two ends, interpolated along
-        // the chord on the CPU (GLTileRenderer::resolveLineSpanBases). Internal z units. The
-        // sentinel means it is not resolved - a clipped span, or elevation that has not arrived -
-        // and the line falls back to following the ground, which is what it did before.
-        attribute float aVertexBase;
-        uniform float uBaseScale;
+        // A bridge or tunnel deck: the feature's OWN two ends, (p0, p1) in this vertex frame. The
+        // deck is the chord between the ground at those two points, so the ground in between - a
+        // DSM spike off the deck included - never lifts it.
+        //
+        // Sampled HERE rather than on the CPU: the CPU grid cache is a different cache from the
+        // elevation textures, and at a deep zoom the grid for a point is routinely not resident
+        // while the texture is, so a CPU query answered "no data" for every span. Both ends are
+        // inside this tile by construction - a span clipped by the tile border falls back to
+        // draped - so the tile's own texture answers both, and the two agree by construction.
+        attribute vec4 aVertexSpan;
         #endif
         #if defined(LIGHTING_FSH) || defined(LIGHTING_VSH)
         attribute vec3 aVertexNormal;
@@ -1994,8 +2000,15 @@ namespace massif::vt {
             vTileUnit = pos.xy * uTileUnitScale + uTileUnitOffset;
             highp vec3 centerPos = applyTerrain(pos);
         #ifdef SPAN
-            if (aVertexBase > -1.0e29) {
-                centerPos.z = aVertexBase * uBaseScale + uElevationScale.w;
+            {
+                highp vec2 e0 = aVertexSpan.xy;
+                highp vec2 e1 = aVertexSpan.zw;
+                highp vec2 d = e1 - e0;
+                highp float len2 = dot(d, d);
+                highp float t = len2 > 0.0 ? clamp(dot(pos.xy - e0, d) / len2, 0.0, 1.0) : 0.0;
+                highp float h0 = applyTerrain(vec3(e0, pos.z)).z;
+                highp float h1 = applyTerrain(vec3(e1, pos.z)).z;
+                centerPos.z = mix(h0, h1, t);
             }
         #endif
             applyShadowPos(centerPos);
