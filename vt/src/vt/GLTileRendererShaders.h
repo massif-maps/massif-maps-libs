@@ -2000,25 +2000,30 @@ namespace massif::vt {
             vTileUnit = pos.xy * uTileUnitScale + uTileUnitOffset;
             highp vec3 centerPos = applyTerrain(pos);
         #ifdef SPAN
-            {
-                highp vec2 e0 = aVertexSpan.xy;
-                highp vec2 e1 = aVertexSpan.zw;
-                highp vec2 d = e1 - e0;
-                highp float len2 = dot(d, d);
-                // A degenerate pair is the builder saying this span was CLIPPED by the tile, so
-                // its ends are not its portals - it stays on the terrain, which centerPos already
-                // holds.
-                if (len2 > 0.0) {
-                    highp float t = clamp(dot(pos.xy - e0, d) / len2, 0.0, 1.0);
-                    highp float h0 = applyTerrain(vec3(e0, pos.z)).z;
-                    highp float h1 = applyTerrain(vec3(e1, pos.z)).z;
-                    centerPos.z = mix(h0, h1, t);
-                }
+            // A degenerate pair is the builder saying this span was CLIPPED by the tile, so its
+            // ends are not its portals - it stays on the terrain, which centerPos already holds.
+            highp vec2 spanD = aVertexSpan.zw - aVertexSpan.xy;
+            highp float spanLen2 = dot(spanD, spanD);
+            highp float spanH0 = 0.0, spanH1 = 0.0;
+            if (spanLen2 > 0.0) {
+                spanH0 = applyTerrain(vec3(aVertexSpan.xy, pos.z)).z;
+                spanH1 = applyTerrain(vec3(aVertexSpan.zw, pos.z)).z;
+                centerPos.z = mix(spanH0, spanH1, clamp(dot(pos.xy - aVertexSpan.xy, spanD) / spanLen2, 0.0, 1.0));
             }
         #endif
             applyShadowPos(centerPos);
             highp vec4 centerClip = uMVPMatrix * vec4(centerPos, 1.0);
-            highp vec4 edgeClip = uMVPMatrix * vec4(applyTerrain(pos + delta), 1.0);
+            highp vec3 edgePos = applyTerrain(pos + delta);
+        #ifdef SPAN
+            // The OUTER edge belongs to the deck too. Leaving it on the terrain hung the far side
+            // of every quad down on the ground while its centre stayed up on the chord - a ribbon
+            // twisted on its long axis, which reads as a wedge at the span and inflates edgeLen
+            // enough to trip the ceiling below, so the deck came out the wrong width as well.
+            if (spanLen2 > 0.0) {
+                edgePos.z = mix(spanH0, spanH1, clamp(dot((pos + delta).xy - aVertexSpan.xy, spanD) / spanLen2, 0.0, 1.0));
+            }
+        #endif
+            highp vec4 edgeClip = uMVPMatrix * vec4(edgePos, 1.0);
             highp vec2 edgeDir = edgeClip.xy / edgeClip.w - centerClip.xy / centerClip.w;
             edgeDir = vec2(edgeDir.x * uScreenScale.x, edgeDir.y); // NDC is anisotropic, work in height units
             highp float edgeLen = length(edgeDir);
@@ -2028,7 +2033,6 @@ namespace massif::vt {
             // is PACKED (int16, per-geometry scale), so its length only means widths once scaled -
             // raw it is ~32768 and the ceiling never engages at all.
             highp float nominalLen = roundedWidth * length(aVertexBinormal * uBinormalUnitScale) * uScreenScale.y;
-            highp vec3 edgePos = applyTerrain(pos + delta);
             if (edgeLen > nominalLen && nominalLen > 0.0) {
                 highp float shrink = nominalLen / edgeLen;
                 edgeDir = edgeDir * shrink;
