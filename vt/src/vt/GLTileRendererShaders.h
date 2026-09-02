@@ -34,6 +34,8 @@ namespace massif::vt {
         U_HEIGHTSCALE,
         U_BASESCALE,
         U_FLOATINGBASE,
+        U_SPANDRAPETEXTURE,
+        U_SPANDRAPETRANSFORM,
         U_SHADOWHEIGHTSCALE,
         U_COLORTABLE,
         U_WIDTHTABLE,
@@ -159,7 +161,11 @@ namespace massif::vt {
         // rule draws the two strips of a road casing. Compiled in only where a style asks for it.
         GAPWIDTH_FLAG = 67108864,
         // mapbox's `line-blur`: a widened antialias ramp. Same deal - only where a style asks.
-        BLUR_FLAG = 134217728
+        BLUR_FLAG = 134217728,
+        // A bridge DECK samples its own drape - the span content of its tile, baked apart from the
+        // ground's (bakeSpanDrapeTile) - so the road it carries lands on the deck rather than on
+        // the valley floor beside it. Only compiled in for a tile that has a span drape.
+        SPAN_DRAPE_FLAG = 268435456
     };
 
     static const std::map<std::string, int> attribMap = {
@@ -187,6 +193,8 @@ namespace massif::vt {
         { "uUVScale",          U_UVSCALE },
         { "uHeightScale",      U_HEIGHTSCALE },
         { "uBaseScale",        U_BASESCALE },
+        { "uSpanDrapeTexture", U_SPANDRAPETEXTURE },
+        { "uSpanDrapeTransform", U_SPANDRAPETRANSFORM },
         { "uFloatingBase",     U_FLOATINGBASE },
         { "uShadowHeightScale", U_SHADOWHEIGHTSCALE },
         { "uColorTable",       U_COLORTABLE },
@@ -280,7 +288,8 @@ namespace massif::vt {
         { GEOMETRY_LIGHT_FLAG, "GEOMETRY_LIGHT" },
         { COVERAGE_FLAG, "COVERAGE" },
         { SPAN_FLAG, "SPAN" },
-        { DRAPE_MASK_FLAG, "DRAPE_MASK" }
+        { DRAPE_MASK_FLAG, "DRAPE_MASK" },
+        { SPAN_DRAPE_FLAG, "SPAN_DRAPE" }
     };
 
     static const std::string textureFiltersFsh = R"GLSL(
@@ -2447,6 +2456,12 @@ namespace massif::vt {
     static const std::string polygon3DFsh = R"GLSL(
         varying highp_opt vec2 vTilePos;
         varying lowp vec4 vColor;
+        #ifdef SPAN_DRAPE
+        // The deck's own drape, in the DRAPE tile's uv: uSpanDrapeTransform maps this geometry's
+        // tile position into it, the same sub-rect an ancestor drape tile needs elsewhere.
+        uniform sampler2D uSpanDrapeTexture;
+        uniform mediump vec4 uSpanDrapeTransform;
+        #endif
         #ifdef TERRAIN_SHADOW
         varying mediump vec3 vShadowNormal;
         #endif
@@ -2476,14 +2491,25 @@ namespace massif::vt {
         #ifdef TERRAIN_SHADOW
             shadow = shadowFactorSlopeParts(max(0.0, dot(normalize(vShadowNormal), uSunDir)), skyShadow);
         #endif
+            lowp vec4 surfaceColor = vColor;
+        #ifdef SPAN_DRAPE
+            // The deck's ROOF wears the road; its walls keep the structure's own colour. vTilePos
+            // is this geometry's tile position, which is also where the span drape baked the road,
+            // so the two line up without any projection of their own.
+            // vTilePos carries the extrusion's own 1-y flip (see polygon3DVsh); the drape was
+            // baked in the surface's unflipped tile parametrization, so flip back to meet it.
+            highp_opt vec2 spanUV = vec2(vTilePos.x, 1.0 - vTilePos.y);
+            lowp vec4 draped = texture2D(uSpanDrapeTexture, spanUV * uSpanDrapeTransform.zw + uSpanDrapeTransform.xy);
+            surfaceColor = vec4(mix(surfaceColor.rgb, draped.rgb, draped.a), surfaceColor.a);
+        #endif
         #ifdef LIGHTING_FSH
             // The shadow goes INTO the lighting, where it dims the sun alone. Multiplied over the
             // finished colour instead it took the ambient with it, and since a wall facing away
             // from the sun is fully shadowed by the back-face rule above, every such wall went
             // black - the whole reason facades did not match mapbox.
-            glFragColor = applyFog(applyLighting3D(vColor, normalize(vNormal), vWallT, vSideVertex, shadow, skyShadow));
+            glFragColor = applyFog(applyLighting3D(surfaceColor, normalize(vNormal), vWallT, vSideVertex, shadow, skyShadow));
         #else
-            glFragColor = applyFog(vColor);
+            glFragColor = applyFog(surfaceColor);
             glFragColor.rgb *= shadow;
         #endif
         }

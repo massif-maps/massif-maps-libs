@@ -340,6 +340,16 @@ namespace massif::vt {
         // first renderer bakes, so later layers composite over earlier ones. Returns the number
         // of primitives drawn, so the owner can tell "nothing to bake" from "bake did nothing".
         int bakeDrapeTile(const TileId& targetTileId);
+        // The DECK's own drape: the span content of this tile and nothing else, so a bridge's road
+        // lands on the deck carrying it instead of on the valley floor beside it. Exact complement
+        // of bakeDrapeTile, which excludes spans by construction.
+        int bakeSpanDrapeTile(const TileId& targetTileId);
+        // The tiles that carry a bridge or a tunnel, with a fingerprint of what would be baked.
+        // Empty for a map with no spans, which is what keeps this free for everyone else.
+        void collectSpanDrapeTiles(std::map<TileId, std::size_t>& spanTiles) const;
+        // The baked span drape per tile, handed back by the owner after baking. Empty = no bridge
+        // in view, which is the only cost a map without spans pays.
+        void setSpanDrapeTextures(const std::map<TileId, GLuint>& textures);
         // This renderer's style layers with drapeable content in the visible set, in draw order,
         // each flagged draped (goes in the bake) or live (matched setNoDrapeLayerFilter). The owner
         // concatenates these across layers into one ordered stack, which is where a live layer's
@@ -674,10 +684,15 @@ namespace massif::vt {
 
         bool testLayerFilter(const std::string& layerName, const std::optional<std::regex>& filter) const;
         bool isLayerDraped(const std::shared_ptr<const TileLayer>& layer) const;
+        bool hasSpanContent(const RenderTileLayer& renderLayer) const;
+        bool resolveSpanDrape(const TileId& targetTileId, GLuint& texture, cglib::vec4<float>& uvTransform) const;
+        std::map<TileId, GLuint> _spanDrapeTextures;
+        GLuint _pendingSpanDrape = 0;
+        cglib::vec4<float> _pendingSpanDrapeTransform = cglib::vec4<float>(0, 0, 1, 1);
         // The body shared by bakeDrapeTile and bakeDrapeCoverage: the same covering tiles, the same
         // transforms, restricted to the style layers at or after fromStyleLayerIdx. Caller holds the
         // mutex and has already handled the terrain-paint case.
-        int bakeDrapeUnits(const TileId& targetTileId, int fromStyleLayerIdx);
+        int bakeDrapeUnits(const TileId& targetTileId, int fromStyleLayerIdx, bool spanOnly = false);
         // The mask a live style layer is occluded by over one target tile, and the transform taking
         // target-tile units to that mask tile's. False when there is no mask, or when the drape tile
         // is FINER than the target tile - one draw cannot sample several masks, so it draws as it
