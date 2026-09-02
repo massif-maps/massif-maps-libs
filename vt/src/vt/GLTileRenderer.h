@@ -47,6 +47,13 @@ namespace massif::vt {
         // shader define, so a change does not recompile every terrain program - but the shader
         // declares this many matrices and varyings, so raising it means touching the shader too.
         static constexpr int MAX_SHADOW_CASCADES = 4;
+        // How far shadows reach, as a multiple of the camera-to-focus distance. mapbox's model
+        // verbatim (3d-style/render/shadow_renderer.ts: cameraToCenterDistance * 1.5 * 3.0). Public
+        // because the outer cascade's fade range is derived from the same number.
+        static constexpr double SHADOW_CUTOUT_DISTANCE_FACTOR = 4.5;
+        // Fraction of that distance the outer cascade starts fading at - mapbox's
+        // u_shadow_fade_range = [far * 0.75, far].
+        static constexpr double SHADOW_FADE_START_FRACTION = 0.75;
 
         struct LightingShader {
             bool perVertex;
@@ -293,7 +300,7 @@ namespace massif::vt {
         void setBackgroundEmissive(float emissive) { _backgroundEmissive = emissive; }
         // The projection's metres-to-internal factor, so shadows do not need a DEM to be fitted.
         void setMetersToInternal(double metersToInternal) { _metersToInternal = metersToInternal; }
-        void setTerrainShadowMap(GLuint texture, int mapSize, int cascades, const cglib::vec3<float>& depthBias, const std::array<float, MAX_SHADOW_CASCADES>& depthScales, float strength, float softness, bool depthTexture, bool hardwarePCF, float normalOffset, const cglib::vec3<float>& sunDir, const std::array<cglib::mat4x4<double>, MAX_SHADOW_CASCADES>& lightViewProjs);
+        void setTerrainShadowMap(GLuint texture, int mapSize, int cascades, const cglib::vec3<float>& depthBias, const std::array<float, MAX_SHADOW_CASCADES>& depthScales, float strength, float softness, bool depthTexture, bool hardwarePCF, float normalOffset, const cglib::vec2<float>& fadeRange, const cglib::vec3<float>& sunDir, const std::array<cglib::mat4x4<double>, MAX_SHADOW_CASCADES>& lightViewProjs);
         // Light-space view-projection fitted to the given terrain tiles; false if the set is empty
         // or no elevation is loaded. minHeight/maxHeight bound the shadowed volume - a generous slab
         // is what makes a low sun pixelated, since the box is fitted around it. The box is snapped
@@ -602,6 +609,9 @@ namespace massif::vt {
         unsigned int surfaceShadowFlags() const;
         cglib::vec4<float> calculateShadowNormalOffsets(const cglib::mat4x4<double>& tileFrame) const;
         void setupShadowNormalOffsetUniforms(const ShaderProgram& shaderProgram, const cglib::mat4x4<double>& tileFrame) const;
+        void setupShadowFadeRangeUniform(const ShaderProgram& shaderProgram) const;
+        // Whether an extrusion layer is solid enough to cast - mapbox's noShadowCutoff.
+        bool extrusionCastsShadow(const RenderTileLayer& renderLayer) const;
         void setupSurfaceShadowUniforms(const ShaderProgram& shaderProgram, const cglib::mat4x4<double>& surfaceFrame, bool hasElevation);
         // Binds the program only when it is not the one already bound (see the definition).
         void useProgram(const ShaderProgram& shaderProgram);
@@ -927,6 +937,8 @@ namespace massif::vt {
         int _shadowCastersMissingElevation = 0;
         mutable bool _essl3Failed = false;       // an ESSL 3.00 program did not build; see hasShaderVersionFallback
         float _terrainShadowNormalOffset = 3.0f; // in shadow-map texels; mapbox's default
+        // View depth the outermost cascade fades out over, in internal units. Zero = no fade.
+        cglib::vec2<float> _terrainShadowFadeRange = cglib::vec2<float>(0.0f, 0.0f);
         cglib::vec3<float> _terrainShadowSunDir = cglib::vec3<float>(0.0f, 0.0f, 1.0f);
         unsigned int _warmedRasterShaderFlags = 0; // flag set warmTerrainRasterShader last built for (0 = none)
         Color _fogColor;

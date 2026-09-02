@@ -74,6 +74,7 @@ namespace massif::vt {
         U_SHADOWPARAMS,
         U_SHADOWBIAS,
         U_SHADOWDEPTHSCALE,
+        U_SHADOWFADERANGE,
         U_SHADOWNORMALOFFSET,
         U_SHADOWSUNDIR,
         U_SHADOWMASK,
@@ -225,6 +226,7 @@ namespace massif::vt {
         { "uShadowParams",      U_SHADOWPARAMS },
         { "uShadowBias",        U_SHADOWBIAS },
         { "uShadowDepthScale",  U_SHADOWDEPTHSCALE },
+        { "uShadowFadeRange",   U_SHADOWFADERANGE },
         { "uShadowNormalOffset", U_SHADOWNORMALOFFSET },
         { "uShadowSunDir",      U_SHADOWSUNDIR },
         { "uShadowMask",        U_SHADOWMASK },
@@ -775,6 +777,10 @@ namespace massif::vt {
         // shadow. uShadowDepthScale converts, per cascade, because each box normalises its own depth.
         uniform mediump vec3 uShadowBias;
         uniform highp vec4 uShadowDepthScale; // 1 / depth range in metres, per cascade
+        // Where the outermost cascade fades out, as a VIEW DEPTH in internal units:
+        // mapbox's u_shadow_fade_range = [far * 0.75, far]. Zero means do not fade - the
+        // orthographic drape bake, whose gl_FragCoord.w is 1 and carries no view depth.
+        uniform highp vec2 uShadowFadeRange;
         varying highp vec3 vShadowPos0;
         #if SHADOW_CASCADES >= 2
         varying highp vec3 vShadowPos1;
@@ -905,13 +911,19 @@ namespace massif::vt {
         #endif
             // The outermost cascade ends somewhere - at the shadow distance, or at the point where
             // covering more ground would only coarsen every texel. Ending it abruptly draws a line
-            // across the terrain, so the shadow fades out over the outer margin of the LAST page.
+            // across the terrain, so the shadow fades out first. Faded over VIEW DEPTH, mapbox's
+            // model (_prelude_shadow.fragment.glsl: mix(occlusion, 0.0, smoothstep(u_fade_range.x,
+            // u_fade_range.y, view_depth))), not over the page's own uv edge: a page edge is a
+            // straight line in LIGHT space, which projects to a hard line crossing the map that
+            // swings with the camera. View depth fades it as a ring at the horizon instead.
             // Earlier pages must not fade: a fragment leaving one of those is picked up by the next
             // cascade, and fading there would thin the shadow along every cascade boundary.
             mediump float lastPage = 1.0 / uShadowParams.w - 1.0;
-            if (page >= lastPage - 0.5) {
-                mediump float edge = min(min(pos.x, 1.0 - pos.x), min(pos.y, 1.0 - pos.y));
-                lit = mix(1.0, lit, smoothstep(0.0, 0.08, edge));
+            if (page >= lastPage - 0.5 && uShadowFadeRange.y > 0.0) {
+                // 1 / gl_FragCoord.w is the clip w, i.e. the distance along the view axis - the
+                // same quantity mapbox carries in a varying, without the varying.
+                highp float viewDepth = 1.0 / max(1.0e-9, gl_FragCoord.w);
+                lit = mix(lit, 1.0, smoothstep(uShadowFadeRange.x, uShadowFadeRange.y, viewDepth));
             }
             // A surface turned away from the sun is in its own shadow whatever the map says, and
             // the map cannot say anything useful there anyway: its texels are seen edge-on, so the

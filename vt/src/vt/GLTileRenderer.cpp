@@ -70,15 +70,16 @@ namespace {
 }
 
 namespace massif::vt {
-    // How far shadows reach, as a multiple of the camera-to-focus distance. mapbox's model verbatim
-    // (3d-style/render/shadow_renderer.ts: cameraToCenterDistance * 1.5 * 3.0). A METRIC radius
-    // cannot hold at two zooms - the budget this replaces was 10 m x mapSize, i.e. ~10 km at every
-    // camera, which ended a mountain's shadow one screen away at z12.
-    static constexpr double SHADOW_CUTOUT_DISTANCE_FACTOR = 4.5;
+    // SHADOW_CUTOUT_DISTANCE_FACTOR is in the header - the fade range is derived from it too. A
+    // METRIC radius cannot hold at two zooms: the budget it replaced was 10 m x mapSize, i.e.
+    // ~10 km at every camera, which ended a mountain's shadow one screen away at z12.
     // The cascade ladder steps by this between pages, anchored on the cutout, so two cascades split
     // at cutout/3 - mapbox's cascadeSplitDist = cameraToCenterDistance * 1.5 against a cutout of
     // 4.5x, exactly.
     static constexpr double SHADOW_CASCADE_STEP = 3.0;
+    // mapbox's noShadowCutoff (src/render/draw_fill_extrusion.ts, terrain branch): the opacity
+    // below which a FADING extrusion stops casting rather than casting at full strength.
+    static constexpr float SHADOW_NO_CAST_OPACITY_CUTOFF = 0.65f;
     GLTileRenderer::GLTileRenderer(std::shared_ptr<GLExtensions> glExtensions, std::shared_ptr<const TileTransformer> transformer, float scale) :
         _tileSurfaceBuilder(transformer), _glExtensions(std::move(glExtensions)), _transformer(std::move(transformer)), _scale(scale)
     {
@@ -231,7 +232,7 @@ namespace massif::vt {
         _tileMasks = mode;
     }
 
-    void GLTileRenderer::setTerrainShadowMap(GLuint texture, int mapSize, int cascades, const cglib::vec3<float>& depthBias, const std::array<float, MAX_SHADOW_CASCADES>& depthScales, float strength, float softness, bool depthTexture, bool hardwarePCF, float normalOffset, const cglib::vec3<float>& sunDir, const std::array<cglib::mat4x4<double>, MAX_SHADOW_CASCADES>& lightViewProjs) {
+    void GLTileRenderer::setTerrainShadowMap(GLuint texture, int mapSize, int cascades, const cglib::vec3<float>& depthBias, const std::array<float, MAX_SHADOW_CASCADES>& depthScales, float strength, float softness, bool depthTexture, bool hardwarePCF, float normalOffset, const cglib::vec2<float>& fadeRange, const cglib::vec3<float>& sunDir, const std::array<cglib::mat4x4<double>, MAX_SHADOW_CASCADES>& lightViewProjs) {
         std::lock_guard<std::mutex> lock(_mutex);
 
         _terrainShadowTexture = texture;
@@ -244,6 +245,7 @@ namespace massif::vt {
         _terrainShadowDepthTexture = depthTexture;
         _terrainShadowHardwarePCF = hardwarePCF;
         _terrainShadowNormalOffset = normalOffset;
+        _terrainShadowFadeRange = fadeRange;
         _terrainShadowSunDir = sunDir;
         _terrainShadowViewProjs = lightViewProjs;
         // Pages beyond the cascade count do not exist in the atlas, and the receiver lookup is
@@ -603,6 +605,22 @@ namespace massif::vt {
         return true;
     }
 
+    bool GLTileRenderer::extrusionCastsShadow(const RenderTileLayer& renderLayer) const {
+        // mapbox's rule verbatim: on terrain, a layer whose extrusion opacity is below the cutoff
+        // AND is a zoom-dependent expression does not cast, so a building ramping to nothing over
+        // zoom does not keep a full-strength shadow while it disappears. A CONSTANT translucent
+        // opacity still casts, which is what the null function() test - our ZoomDependentExpression
+        // check, see UnaryFunction - keeps.
+        const FloatFunction& opacityFunc = renderLayer.layer->getOpacityFunc();
+        if (opacityFunc.function() && opacityFunc(_viewState) < SHADOW_NO_CAST_OPACITY_CUTOFF) {
+            return false;
+        }
+        // Ours, on the same threshold: the tile ARRIVAL blend. mapbox has no equivalent - it never
+        // casts from a tile outside the render set - and a caster drawn at full strength while its
+        // building is still fading in is a shadow with no building under it.
+        return renderLayer.blend >= SHADOW_NO_CAST_OPACITY_CUTOFF;
+    }
+
     template <typename Func>
     void GLTileRenderer::forEachVisibleExtrusion(const std::vector<TileId>* coveredBy, Func&& func) const {
         if (!_visibleRenderTiles) {
@@ -699,6 +717,9 @@ namespace massif::vt {
         _shadowCasterViewProj = &lightViewProj;
         _shadowCasterSun = true;
         forEachVisibleExtrusion(&tileIds, [this, &draws](const RenderTileLayer& renderLayer, const std::shared_ptr<TileGeometry>& geometry) {
+            if (!extrusionCastsShadow(renderLayer)) {
+                return true;
+            }
             renderTileGeometry(renderLayer.sourceTileId, renderLayer.targetTileId, renderLayer.blend, 1.0f, renderLayer.tileSize, geometry);
             draws++;
             return true;
@@ -718,7 +739,13 @@ namespace massif::vt {
         // The caster's HEIGHT no longer follows the blend - see buildingHeightScale.
         float signature = 0.0f;
         int count = 0;
-        forEachVisibleExtrusion(coveredBy, [&signature, &count](const RenderTileLayer& renderLayer, const std::shared_ptr<TileGeometry>&) {
+        forEachVisibleExtrusion(coveredBy, [this, &signature, &count](const RenderTileLayer& renderLayer, const std::shared_ptr<TileGeometry>&) {
+            // Only what actually casts, or a layer crossing the no-cast cutoff would change the
+            // caster set without moving the signature - and the map would keep the shadows of
+            // buildings it has just stopped drawing into it.
+            if (!extrusionCastsShadow(renderLayer)) {
+                return false;
+            }
             signature += renderLayer.blend;
             count++;
             return false; // one contribution per layer, not per geometry batch
@@ -2067,6 +2094,15 @@ namespace massif::vt {
         glUniform3f(shaderProgram.uniforms[U_SHADOWSUNDIR], _terrainShadowSunDir(0), _terrainShadowSunDir(1), _terrainShadowSunDir(2));
     }
 
+    void GLTileRenderer::setupShadowFadeRangeUniform(const ShaderProgram& shaderProgram) const {
+        // Zeroed for the orthographic drape bake, for the reason fogFlag() gives: there
+        // gl_FragCoord.w is 1 - a whole world in internal units - so a view-depth fade would put
+        // every baked fragment past the end of the range and BURN a shadowless bake into the
+        // cached drape texture.
+        cglib::vec2<float> fadeRange = _drapeMVPOverride ? cglib::vec2<float>(0.0f, 0.0f) : _terrainShadowFadeRange;
+        glUniform2f(shaderProgram.uniforms[U_SHADOWFADERANGE], fadeRange(0), fadeRange(1));
+    }
+
     cglib::vec4<float> GLTileRenderer::calculateShadowNormalOffsets(const cglib::mat4x4<double>& tileFrame) const {
         // The normal offset is a number of shadow-map TEXELS, and the shader adds it to a
         // tile-local position. One texel is (box width / mapSize) in world units, and the box width
@@ -2121,6 +2157,7 @@ namespace massif::vt {
         glUniform4f(shaderProgram.uniforms[U_SHADOWPARAMS], 1.0f / std::max(1, _terrainShadowMapSize), hasElevation ? _terrainShadowStrength : 0.0f, _terrainShadowSoftness, 1.0f / _terrainShadowCascades);
         glUniform3f(shaderProgram.uniforms[U_SHADOWBIAS], _terrainShadowBias(0), _terrainShadowBias(1), _terrainShadowBias(2));
         glUniform4f(shaderProgram.uniforms[U_SHADOWDEPTHSCALE], _terrainShadowDepthScales[0], _terrainShadowDepthScales[1], _terrainShadowDepthScales[2], _terrainShadowDepthScales[3]);
+        setupShadowFadeRangeUniform(shaderProgram);
     }
 
     void GLTileRenderer::setTerrainShadowMask(GLuint texture, float invScreenWidth, float invScreenHeight) {
@@ -6121,6 +6158,7 @@ namespace massif::vt {
             glUniform4f(shaderProgram.uniforms[U_SHADOWPARAMS], 1.0f / std::max(1, _terrainShadowMapSize), _terrainShadowStrength, _terrainShadowSoftness, 1.0f / _terrainShadowCascades);
             glUniform3f(shaderProgram.uniforms[U_SHADOWBIAS], _terrainShadowBias(0), _terrainShadowBias(1), _terrainShadowBias(2));
         glUniform4f(shaderProgram.uniforms[U_SHADOWDEPTHSCALE], _terrainShadowDepthScales[0], _terrainShadowDepthScales[1], _terrainShadowDepthScales[2], _terrainShadowDepthScales[3]);
+            setupShadowFadeRangeUniform(shaderProgram);
         }
         // The location is -1 on a program built without DRAPE_MASK - a point, or any geometry the
         // mask does not apply to - and binding a texture for it is pure waste.
