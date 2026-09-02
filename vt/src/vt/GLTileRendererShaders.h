@@ -73,6 +73,7 @@ namespace massif::vt {
         U_SHADOWTEXTURE,
         U_SHADOWPARAMS,
         U_SHADOWBIAS,
+        U_SHADOWDEPTHSCALE,
         U_SHADOWNORMALOFFSET,
         U_SHADOWSUNDIR,
         U_SHADOWMASK,
@@ -223,6 +224,7 @@ namespace massif::vt {
         { "uShadowTexture",     U_SHADOWTEXTURE },
         { "uShadowParams",      U_SHADOWPARAMS },
         { "uShadowBias",        U_SHADOWBIAS },
+        { "uShadowDepthScale",  U_SHADOWDEPTHSCALE },
         { "uShadowNormalOffset", U_SHADOWNORMALOFFSET },
         { "uShadowSunDir",      U_SHADOWSUNDIR },
         { "uShadowMask",        U_SHADOWMASK },
@@ -766,7 +768,13 @@ namespace massif::vt {
         uniform sampler2D uShadowTexture;
         #endif
         uniform mediump vec4 uShadowParams; // x = 1/mapSize within one cascade, y = strength, z = PCF radius in texels, w = 1/cascade count
-        uniform mediump vec4 uShadowBias;   // normalised depth bias, per cascade
+        // mapbox's u_shadow_bias SHAPE (3d-style/render/shadow_renderer.ts): x = constant, y = how
+        // fast the bias grows as the surface turns away from the light, z = the CAP on that growth.
+        // In METRES, not their normalised depth: our light box spans hundreds of km even fitted to
+        // the cascade sphere, so their 0.0001 came out as a kilometres-deep bias that erased every
+        // shadow. uShadowDepthScale converts, per cascade, because each box normalises its own depth.
+        uniform mediump vec3 uShadowBias;
+        uniform highp vec4 uShadowDepthScale; // 1 / depth range in metres, per cascade
         varying highp vec3 vShadowPos0;
         #if SHADOW_CASCADES >= 2
         varying highp vec3 vShadowPos1;
@@ -817,62 +825,26 @@ namespace massif::vt {
             mediump float margin = uShadowParams.x * (uShadowParams.z + 1.0);
             highp vec3 pos = vShadowPos0;
             mediump float page = 0.0;
-            mediump float bias = uShadowBias.x;
         #if SHADOW_CASCADES >= 2
             if (outsideShadowPage(pos, margin)) {
                 pos = vShadowPos1;
                 page = 1.0;
-                bias = uShadowBias.y;
             }
         #endif
         #if SHADOW_CASCADES >= 3
             if (outsideShadowPage(pos, margin)) {
                 pos = vShadowPos2;
                 page = 2.0;
-                bias = uShadowBias.z;
             }
         #endif
         #if SHADOW_CASCADES >= 4
             if (outsideShadowPage(pos, margin)) {
                 pos = vShadowPos3;
                 page = 3.0;
-                bias = uShadowBias.w;
             }
         #endif
-            // Derivatives are taken before any early return: a fragment that leaves the function
-            // early would leave its quad neighbours with an undefined gradient.
-            highp vec2 dzduv = vec2(0.0);
             highp float o = uShadowParams.x * uShadowParams.z;
             highp float ref = pos.z;
-        #ifdef DERIVATIVES
-            // Receiver-plane depth bias: how the receiver's own depth changes per unit of shadow
-            // uv, from screen-space derivatives. Each PCF tap then compares against the receiver's
-            // PLANE instead of against one point on it. Without it every off-centre tap needs the
-            // constant bias to cover a whole texel of slope, which is why the acne only cleared at
-            // a bias large enough to detach the shadows.
-            highp vec3 dpdx = dFdx(pos);
-            highp vec3 dpdy = dFdy(pos);
-            highp float det = dpdx.x * dpdy.y - dpdx.y * dpdy.x;
-            if (abs(det) > 1.0e-12) {
-                dzduv.x = ( dpdy.y * dpdx.z - dpdx.y * dpdy.z) / det;
-                dzduv.y = (-dpdy.x * dpdx.z + dpdx.x * dpdy.z) / det;
-                // A near-silhouette texel has an unbounded gradient; clamp it so it cannot invert
-                // the comparison and punch holes in the shadow. The limit is a cap on how much
-                // depth the receiver plane may rise over ONE texel, as a fraction of the box
-                // depth. Derived from the PCF radius instead, it allowed a single texel to be
-                // worth half the whole light box - which does not bias the comparison so much as
-                // delete it, and is what left holes in the shadow on steep ground.
-                highp float limit = 0.02 / max(1.0e-6, uShadowParams.x);
-                dzduv = clamp(dzduv, vec2(-limit), vec2(limit));
-                // The stored depth belongs to the TEXEL CENTRE, up to half a texel away from this
-                // fragment; on a slope lit at a grazing angle that half texel is metres of height,
-                // so the surface shadows itself in regular stripes - the bands seen inside a long
-                // shadow stretched downhill. Subtracting the receiver plane's own rise over half a
-                // texel makes the bias exactly as large as the local slope demands and no larger,
-                // where a constant big enough for the worst slope would detach every shadow.
-                ref -= 0.5 * uShadowParams.x * (abs(dzduv.x) + abs(dzduv.y));
-            }
-        #endif
             mediump float facing = smoothstep(0.0, 0.15, ndl);
             if (pos.x < 0.0 || pos.x > 1.0 || pos.y < 0.0 || pos.y > 1.0 || pos.z < 0.0 || pos.z > 1.0) {
                 // Outside every cascade: unshadowed rather than black - but the back-face rule
@@ -887,13 +859,32 @@ namespace massif::vt {
             if (facing <= 0.0) {
                 return mix(1.0, 0.0, uShadowParams.y);
             }
-            // The constant bias grows as the surface turns away from the light, but only up to a
-            // point: divided by N.L it runs away exactly where the shadows are - the slopes facing
-            // away from the sun - and lifts the reference depth in front of every caster there,
-            // which is the second source of holes. Beyond this the back-face rule below takes over.
-            ref -= bias / max(0.5, ndl);
+            // mapbox's slope-scaled bias, verbatim (_prelude_shadow.fragment.glsl): a constant plus
+            // a term that grows with the angle between the surface and the light, CAPPED. The cap
+            // is what our own model was missing - a receiver-plane bias from screen-space
+            // derivatives, whose clamp allowed one texel to be worth 0.02 of the light box, more
+            // than mapbox's entire bias budget, and darkened every silhouette it touched
+            // (docs/internals/rendering/08-lighting-sky-fog.md).
+            // tan(acos(x)) written as sqrt(1-x*x)/x: the direct form runs to infinity as the
+            // surface turns edge-on to the light, and this block is mediump - the overflow came
+            // back as a NaN that poisoned ref for EVERY fragment, which reads as the shadows
+            // simply not being there. The floor on x caps the ratio at 20, well past the point
+            // where uShadowBias.z clamps it anyway.
+            mediump float ndlBias = clamp(ndl, 0.05, 1.0);
+            mediump float slope = sqrt(1.0 - ndlBias * ndlBias) / ndlBias;
+            highp float depthScale = uShadowDepthScale.x;
+        #if SHADOW_CASCADES >= 2
+            if (page > 0.5) { depthScale = uShadowDepthScale.y; }
+        #endif
+        #if SHADOW_CASCADES >= 3
+            if (page > 1.5) { depthScale = uShadowDepthScale.z; }
+        #endif
+        #if SHADOW_CASCADES >= 4
+            if (page > 2.5) { depthScale = uShadowDepthScale.w; }
+        #endif
+            ref -= (0.5 * uShadowBias.x + clamp(uShadowBias.y * slope, 0.0, uShadowBias.z)) * depthScale;
             // Page space -> atlas space. The offsets stay in page space so the kernel is square in
-            // the map, and the bias terms above stay in the units the derivatives produced.
+            // the map.
             highp vec2 atlasScale = vec2(uShadowParams.w, 1.0);
             highp vec2 atlasBase = vec2(page * uShadowParams.w, 0.0);
             mediump float lit = 0.0;
@@ -907,7 +898,7 @@ namespace massif::vt {
             for (int j = 0; j < 2; j++) {
                 for (int i = 0; i < 2; i++) {
                     highp vec2 offset = vec2(float(i) * 2.0 - 1.0, float(j) * 2.0 - 1.0) * d;
-                    lit += shadowTap(atlasBase + (pos.xy + offset) * atlasScale, ref + dot(offset, dzduv));
+                    lit += shadowTap(atlasBase + (pos.xy + offset) * atlasScale, ref);
                 }
             }
             lit *= 0.25;

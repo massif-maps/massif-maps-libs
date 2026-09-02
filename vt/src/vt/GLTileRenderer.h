@@ -293,7 +293,7 @@ namespace massif::vt {
         void setBackgroundEmissive(float emissive) { _backgroundEmissive = emissive; }
         // The projection's metres-to-internal factor, so shadows do not need a DEM to be fitted.
         void setMetersToInternal(double metersToInternal) { _metersToInternal = metersToInternal; }
-        void setTerrainShadowMap(GLuint texture, int mapSize, int cascades, const std::array<float, MAX_SHADOW_CASCADES>& depthBiases, float strength, float softness, bool depthTexture, bool hardwarePCF, float normalOffset, const cglib::vec3<float>& sunDir, const std::array<cglib::mat4x4<double>, MAX_SHADOW_CASCADES>& lightViewProjs);
+        void setTerrainShadowMap(GLuint texture, int mapSize, int cascades, const cglib::vec3<float>& depthBias, const std::array<float, MAX_SHADOW_CASCADES>& depthScales, float strength, float softness, bool depthTexture, bool hardwarePCF, float normalOffset, const cglib::vec3<float>& sunDir, const std::array<cglib::mat4x4<double>, MAX_SHADOW_CASCADES>& lightViewProjs);
         // Light-space view-projection fitted to the given terrain tiles; false if the set is empty
         // or no elevation is loaded. minHeight/maxHeight bound the shadowed volume - a generous slab
         // is what makes a low sun pixelated, since the box is fitted around it. The box is snapped
@@ -307,7 +307,7 @@ namespace massif::vt {
         int renderTerrainShadowMask(const std::vector<TileId>& tileIds);
         // Moves as the caster geometry does: 3D extrusions fade in by growing, so the sum of
         // their blend factors says how far the shadow map has drifted from what is on screen.
-        float shadowCasterFadeSignature() const;
+        float shadowCasterFadeSignature(const std::vector<TileId>* coveredBy) const;
         // Draws this renderer's shadow casters for one terrain tile into the bound framebuffer.
         // Returns the number of draws issued.
         int renderShadowCasters(const std::vector<TileId>& tileIds, const cglib::mat4x4<double>& lightViewProj, bool castGround);
@@ -912,7 +912,11 @@ namespace massif::vt {
         cglib::vec3<float> _radiance = cglib::vec3<float>(1.0f, 1.0f, 1.0f);
         float _backgroundEmissive = 1.0f;
         int _terrainShadowCascades = 1;
-        std::array<float, MAX_SHADOW_CASCADES> _terrainShadowBiases = { { 0.0f, 0.0f, 0.0f, 0.0f } };
+        // mapbox's u_shadow_bias: constant, slope scale, slope cap - normalised depth, all cascades.
+        cglib::vec3<float> _terrainShadowBias = cglib::vec3<float>(0.0f, 0.0f, 0.0f);
+        // 1 / each cascade's light-box depth in metres: the bias above is metric, the shader compares
+        // in normalised depth, and every box normalises its own.
+        std::array<float, MAX_SHADOW_CASCADES> _terrainShadowDepthScales = { { 0.0f, 0.0f, 0.0f, 0.0f } };
         GLuint _terrainShadowMaskTexture = 0;
         cglib::vec2<float> _terrainShadowMaskScale = cglib::vec2<float>(0.0f, 0.0f);
         bool _terrainShadowMaskPass = false; // the draw that produces the mask, not one that reads it

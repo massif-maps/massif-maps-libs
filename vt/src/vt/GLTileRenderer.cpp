@@ -231,13 +231,14 @@ namespace massif::vt {
         _tileMasks = mode;
     }
 
-    void GLTileRenderer::setTerrainShadowMap(GLuint texture, int mapSize, int cascades, const std::array<float, MAX_SHADOW_CASCADES>& depthBiases, float strength, float softness, bool depthTexture, bool hardwarePCF, float normalOffset, const cglib::vec3<float>& sunDir, const std::array<cglib::mat4x4<double>, MAX_SHADOW_CASCADES>& lightViewProjs) {
+    void GLTileRenderer::setTerrainShadowMap(GLuint texture, int mapSize, int cascades, const cglib::vec3<float>& depthBias, const std::array<float, MAX_SHADOW_CASCADES>& depthScales, float strength, float softness, bool depthTexture, bool hardwarePCF, float normalOffset, const cglib::vec3<float>& sunDir, const std::array<cglib::mat4x4<double>, MAX_SHADOW_CASCADES>& lightViewProjs) {
         std::lock_guard<std::mutex> lock(_mutex);
 
         _terrainShadowTexture = texture;
         _terrainShadowMapSize = mapSize;
         _terrainShadowCascades = std::max(1, std::min(MAX_SHADOW_CASCADES, cascades));
-        _terrainShadowBiases = depthBiases;
+        _terrainShadowBias = depthBias;
+        _terrainShadowDepthScales = depthScales;
         _terrainShadowStrength = strength;
         _terrainShadowSoftness = softness;
         _terrainShadowDepthTexture = depthTexture;
@@ -511,24 +512,19 @@ namespace massif::vt {
         cglib::vec4<double> lightCenter = cglib::transform(cglib::vec4<double>(sphereCenter(0), sphereCenter(1), sphereCenter(2), 1.0), lightView);
         double l = lightCenter(0) - sphereRadius, r = lightCenter(0) + sphereRadius;
         double b = lightCenter(1) - sphereRadius, t = lightCenter(1) + sphereRadius;
-        double n = 0, f = 0;
-        {
-            // The depth range still comes from the slab the receivers live in; the caster loop below
-            // widens it to whatever actually casts into this box.
-            bool fitFirst = true;
-            for (int corner = 0; corner < 4; corner++) {
-                for (int level = 0; level < 2; level++) {
-                    double x = (corner & 1 ? maxX : minX), y = (corner & 2 ? maxY : minY);
-                    cglib::vec4<double> p = cglib::transform(cglib::vec4<double>(x, y, level ? maxZ : minZ, 1.0), lightView);
-                    if (fitFirst) {
-                        n = f = -p(2);
-                        fitFirst = false;
-                    } else {
-                        n = std::min(n, -p(2)); f = std::max(f, -p(2));
-                    }
-                }
-            }
-        }
+        // DEPTH is bounded by the SAME bounding sphere the sides are, plus the room a caster needs
+        // to stand above it - mapbox's lightMatrixNearZ / lightMatrixFarZ, whose far plane is the
+        // sphere radius plus verticalRange / shadowDirection.z.
+        //
+        // Seeded from the drawn tile RECTANGLE instead, and then widened again by every caster
+        // tile's own box, the range became the whole cover projected along a low sun: measured at
+        // 3.0e7 m over Paris. A 24-bit map quantises that to ~1.8 m per step, so a building and the
+        // ground under it stored the same depth and no bias could separate them - which is what the
+        // serrated spikes and the acne that survived every bias value actually were.
+        double casterHeadroom = (casterMaxZ - casterMinZ) / std::max(0.05, dir(2));
+        double centerDepth = -lightCenter(2);
+        double n = centerDepth - sphereRadius - casterHeadroom;
+        double f = centerDepth + sphereRadius + casterHeadroom;
         // Snap the box to a world-anchored lattice of whole shadow texels, and quantise its size so
         // the texel size itself only changes in steps. Fitted exactly, the box breathes with every
         // camera movement: the same piece of ground falls in a different texel each frame, so every
@@ -591,7 +587,6 @@ namespace massif::vt {
             if (tileR < l - marginX || tileL > r + marginX || tileT < b - marginY || tileB > t + marginY) {
                 continue;
             }
-            n = std::min(n, tileN); f = std::max(f, tileF);
             boxCasterTileIds.push_back(tileId);
         }
         snapAxis(n, f, true);
@@ -713,7 +708,7 @@ namespace massif::vt {
         return draws;
     }
 
-    float GLTileRenderer::shadowCasterFadeSignature() const {
+    float GLTileRenderer::shadowCasterFadeSignature(const std::vector<TileId>* coveredBy) const {
         std::lock_guard<std::mutex> lock(_mutex);
 
         // A number that moves exactly as fast as the caster SET does: a tile's blend is how far it
@@ -723,7 +718,7 @@ namespace massif::vt {
         // The caster's HEIGHT no longer follows the blend - see buildingHeightScale.
         float signature = 0.0f;
         int count = 0;
-        forEachVisibleExtrusion(nullptr, [&signature, &count](const RenderTileLayer& renderLayer, const std::shared_ptr<TileGeometry>&) {
+        forEachVisibleExtrusion(coveredBy, [&signature, &count](const RenderTileLayer& renderLayer, const std::shared_ptr<TileGeometry>&) {
             signature += renderLayer.blend;
             count++;
             return false; // one contribution per layer, not per geometry batch
@@ -737,7 +732,14 @@ namespace massif::vt {
         // zoom (Standard, 0 at z15) changes the caster geometry without touching a single tile
         // blend, so the map was never refreshed and the buildings' shadows stayed on an empty map
         // after they had gone.
-        return count > 0 ? _buildingHeightScale * signature / count : 0.0f;
+        // The COUNT as well as the mean, and this is the load-bearing half: extrusions arrive with
+        // their blend already at 1 unless the style asked to fade them in (buildingFadeOnAppear is
+        // off by default), so the mean sits at 1.0 while the caster set grows from nothing to a
+        // city. The map was then never refreshed for the one event it most needs - the buildings
+        // appearing - and it kept casting from ground-only pages until something else moved.
+        // A count change steps the signature by a whole unit, far past SHADOW_MAP_FADE_STEP, while
+        // a fade still only moves the mean fraction it always did.
+        return count > 0 ? _buildingHeightScale * (static_cast<float>(count) + signature / count) : 0.0f;
     }
 
     float GLTileRenderer::groundAOZoomFade(float zoom) {
@@ -2117,7 +2119,8 @@ namespace massif::vt {
         // and it reads as a solid dark block the exact shape of the tile. It has no relief to shadow
         // anyway, so it takes no shadow until its heights are there.
         glUniform4f(shaderProgram.uniforms[U_SHADOWPARAMS], 1.0f / std::max(1, _terrainShadowMapSize), hasElevation ? _terrainShadowStrength : 0.0f, _terrainShadowSoftness, 1.0f / _terrainShadowCascades);
-        glUniform4f(shaderProgram.uniforms[U_SHADOWBIAS], _terrainShadowBiases[0], _terrainShadowBiases[1], _terrainShadowBiases[2], _terrainShadowBiases[3]);
+        glUniform3f(shaderProgram.uniforms[U_SHADOWBIAS], _terrainShadowBias(0), _terrainShadowBias(1), _terrainShadowBias(2));
+        glUniform4f(shaderProgram.uniforms[U_SHADOWDEPTHSCALE], _terrainShadowDepthScales[0], _terrainShadowDepthScales[1], _terrainShadowDepthScales[2], _terrainShadowDepthScales[3]);
     }
 
     void GLTileRenderer::setTerrainShadowMask(GLuint texture, float invScreenWidth, float invScreenHeight) {
@@ -6116,7 +6119,8 @@ namespace massif::vt {
             glUniform1i(shaderProgram.uniforms[U_SHADOWTEXTURE], 2);
             glActiveTexture(GL_TEXTURE0);
             glUniform4f(shaderProgram.uniforms[U_SHADOWPARAMS], 1.0f / std::max(1, _terrainShadowMapSize), _terrainShadowStrength, _terrainShadowSoftness, 1.0f / _terrainShadowCascades);
-            glUniform4f(shaderProgram.uniforms[U_SHADOWBIAS], _terrainShadowBiases[0], _terrainShadowBiases[1], _terrainShadowBiases[2], _terrainShadowBiases[3]);
+            glUniform3f(shaderProgram.uniforms[U_SHADOWBIAS], _terrainShadowBias(0), _terrainShadowBias(1), _terrainShadowBias(2));
+        glUniform4f(shaderProgram.uniforms[U_SHADOWDEPTHSCALE], _terrainShadowDepthScales[0], _terrainShadowDepthScales[1], _terrainShadowDepthScales[2], _terrainShadowDepthScales[3]);
         }
         // The location is -1 on a program built without DRAPE_MASK - a point, or any geometry the
         // mask does not apply to - and binding a texture for it is pure waste.
