@@ -157,7 +157,11 @@ namespace massif::vt {
         // rule draws the two strips of a road casing. Compiled in only where a style asks for it.
         GAPWIDTH_FLAG = 67108864,
         // mapbox's `line-blur`: a widened antialias ramp. Same deal - only where a style asks.
-        BLUR_FLAG = 134217728
+        BLUR_FLAG = 134217728,
+        // The shadow receiver is a 3D EXTRUSION, not the ground. An extrusion defends against acne
+        // with the normal offset; the ground has no normal and defends with the receiver-plane
+        // bias. Each one hurts the other, so the shader has to tell them apart.
+        SHADOW_RECEIVER_3D_FLAG = 268435456
     };
 
     static const std::map<std::string, int> attribMap = {
@@ -255,6 +259,7 @@ namespace massif::vt {
         { OFFSET_FLAG,      "OFFSET" },
         { GAPWIDTH_FLAG,    "GAPWIDTH" },
         { BLUR_FLAG,        "BLUR" },
+        { SHADOW_RECEIVER_3D_FLAG, "SHADOW_RECEIVER_3D" },
         { PATTERN_FLAG,     "PATTERN" },
         { DERIVATIVES_FLAG, "DERIVATIVES" },
         { TERRAIN_FLAG,     "TERRAIN_DEPTH_BIAS" },
@@ -852,6 +857,40 @@ namespace massif::vt {
             highp float o = uShadowParams.x * uShadowParams.z;
             highp float ref = pos.z;
             mediump float facing = smoothstep(0.0, 0.15, ndl);
+            // RECEIVER-PLANE slope, from screen-space derivatives: how this receiver's own depth
+            // changes per unit of shadow uv. The stored depth belongs to the TEXEL CENTRE, up to
+            // half a texel from this fragment, and on ground seen at a grazing sun that half texel
+            // is metres of height - so without this the SURFACE shadows itself in a regular mesh.
+            // mapbox needs no equivalent: their ground receiver is a flat plane at z=0 and terrain
+            // never casts (ground_shadow.vertex.glsl), so their bias never had a self-shadowing
+            // ground to cover. Ours does, which is why this cannot be dropped for their model.
+            // GROUND ONLY. On an extrusion the shadow position is DISCONTINUOUS across the bevel
+            // band at a vertical edge, so a quad straddling it sees a huge derivative and the bias
+            // saturates on some fragments and not others - which is the serrated wedge at a corner.
+            // An extrusion has the normal offset for its acne and needs no plane bias; the ground
+            // has no normal and needs nothing else.
+            // Taken BEFORE any early return: a fragment that returns early leaves its quad
+            // neighbours with an undefined gradient.
+            highp vec2 dzduv = vec2(0.0);
+        #if defined(DERIVATIVES) && !defined(SHADOW_RECEIVER_3D)
+            {
+                highp vec3 dpdx = dFdx(pos);
+                highp vec3 dpdy = dFdy(pos);
+                highp float det = dpdx.x * dpdy.y - dpdx.y * dpdy.x;
+                if (abs(det) > 1.0e-12) {
+                    dzduv.x = ( dpdy.y * dpdx.z - dpdx.y * dpdy.z) / det;
+                    dzduv.y = (-dpdy.x * dpdx.z + dpdx.x * dpdy.z) / det;
+                    // SCALE-FREE cap: how far the receiver may rise over ONE texel, as a fraction
+                    // of the box depth. It has to be scale-free - a metric ceiling collapses to
+                    // nothing in normalised depth as the box grows, so the bias dies at low zoom
+                    // and the mesh comes back, which is what a metres-based cap did here.
+                    // A near-silhouette texel has an unbounded gradient; this is also what stops it
+                    // inverting the comparison and punching holes in the shadow.
+                    highp float limit = 0.02 / max(1.0e-6, uShadowParams.x);
+                    dzduv = clamp(dzduv, vec2(-limit), vec2(limit));
+                }
+            }
+        #endif
             if (pos.x < 0.0 || pos.x > 1.0 || pos.y < 0.0 || pos.y > 1.0 || pos.z < 0.0 || pos.z > 1.0) {
                 // Outside every cascade: unshadowed rather than black - but the back-face rule
                 // below still applies, or the ground would brighten along a hard ring exactly where
@@ -889,6 +928,10 @@ namespace massif::vt {
             if (page > 2.5) { depthScale = uShadowDepthScale.w; }
         #endif
             ref -= (0.5 * uShadowBias.x + clamp(uShadowBias.y * slope, 0.0, uShadowBias.z)) * depthScale;
+            // The receiver plane's own rise over HALF a texel, which is the worst the texel-centre
+            // quantisation can be wrong by. Bounded by the clamp on dzduv above, not by a metric
+            // ceiling: the quantity is a fraction of the light box and its bound has to be one too.
+            ref -= 0.5 * uShadowParams.x * (abs(dzduv.x) + abs(dzduv.y));
             // Page space -> atlas space. The offsets stay in page space so the kernel is square in
             // the map.
             highp vec2 atlasScale = vec2(uShadowParams.w, 1.0);

@@ -5845,7 +5845,7 @@ namespace massif::vt {
             // SHADOW_SINGLE_TAP: an extrusion cannot use the terrain's screen-space mask - that holds
             // the ground's shadow, not its own - so it is the one receiver still running the kernel
             // per fragment, over a wall that is shadowed or lit almost in one piece.
-            shaderProgramPtr = &buildShaderProgram("polygon3d", polygon3DVsh, polygon3DFsh, LightingMode::GEOMETRY3D, RasterFilterMode::NONE, (styleParams.pattern ? PATTERN_FLAG : 0) | (styleParams.translate ? TRANSFORM_FLAG : 0) | (terrainVTF ? TERRAIN_VTF_FLAG | TERRAIN_FLAG : 0) | (shadowReceiver ? shadowReceiverFlags() | SHADOW_SINGLE_TAP_FLAG : 0) | fogFlag());
+            shaderProgramPtr = &buildShaderProgram("polygon3d", polygon3DVsh, polygon3DFsh, LightingMode::GEOMETRY3D, RasterFilterMode::NONE, (styleParams.pattern ? PATTERN_FLAG : 0) | (styleParams.translate ? TRANSFORM_FLAG : 0) | (terrainVTF ? TERRAIN_VTF_FLAG | TERRAIN_FLAG : 0) | (shadowReceiver ? shadowReceiverFlags() | SHADOW_SINGLE_TAP_FLAG | SHADOW_RECEIVER_3D_FLAG : 0) | fogFlag());
             break;
         default:
             return;
