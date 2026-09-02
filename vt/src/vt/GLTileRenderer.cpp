@@ -6383,9 +6383,10 @@ namespace massif::vt {
             glUniformMatrix3fv(shaderProgram.uniforms[U_TILEMATRIX], 1, GL_FALSE, groundTileMatrix.data());
         } else if (geometry->getType() == TileGeometry::Type::POLYGON3D) {
             float heightUnits = 1.0f / vertexGeomLayoutParams.heightScale * vertexGeomLayoutParams.coordScale;
+            bool spanDeck = !geometry->getSpanRecords().empty();
             glUniform1f(shaderProgram.uniforms[U_UVSCALE], 1.0f / vertexGeomLayoutParams.texCoordScale);
-            glUniform1f(shaderProgram.uniforms[U_HEIGHTSCALE], buildingHeightScale(blend) * heightUnits);
-            glUniform1f(shaderProgram.uniforms[U_SHADOWHEIGHTSCALE], casterHeightScale(blend) * heightUnits);
+            glUniform1f(shaderProgram.uniforms[U_HEIGHTSCALE], buildingHeightScale(blend, spanDeck) * heightUnits);
+            glUniform1f(shaderProgram.uniforms[U_SHADOWHEIGHTSCALE], casterHeightScale(blend, spanDeck) * heightUnits);
             cglib::mat3x3<float> tileMatrix = cglib::mat3x3<float>::convert(cglib::inverse(calculateTileMatrix2D(targetTileId)) * calculateTileMatrix2D(sourceTileId));
             if (styleParams.translate) {
                 float zoomScale = std::pow(2.0f, sourceTileId.zoom - _viewState.zoom);

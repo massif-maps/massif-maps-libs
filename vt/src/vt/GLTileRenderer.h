@@ -950,11 +950,22 @@ namespace massif::vt {
         // keep their length. Everything else, the label-occlusion depth included, matches the
         // screen. A style that means "not there yet" uses buildingHeightScale, which the caster
         // does follow: no building, no shadow.
-        float buildingHeightScale(float blend) const {
+        //
+        // A span DECK takes NONE of it. Every one of these multipliers means "this building is not
+        // there yet" or "the view has turned away from it", and a bridge is structure: Standard
+        // ramps extrusions to 0 below z15, which flattened a deck to zero height at every camera a
+        // bridge is actually looked at.
+        float buildingHeightScale(float blend, bool span = false) const {
+            if (span) {
+                return 1.0f;
+            }
             return _shadowCasterSun ? casterHeightScale(blend) : casterHeightScale(blend) * _buildingHeightViewScale;
         }
         // The height the shadow MAP holds, which is what a receiver must look its own depth up at.
-        float casterHeightScale(float blend) const {
+        float casterHeightScale(float blend, bool span = false) const {
+            if (span) {
+                return 1.0f;
+            }
             return _buildingHeightScale * (_buildingGrowOnAppear && !_shadowCasterViewProj ? blend : 1.0f);
         }
 
