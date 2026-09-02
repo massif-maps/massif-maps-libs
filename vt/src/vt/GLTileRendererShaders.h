@@ -2287,7 +2287,10 @@ namespace massif::vt {
             // every target tile derived from it, and each of those draws displaces them with ITS
             // OWN elevation texture - so without this the same footprint casts a second shadow at
             // a neighbouring tile's height, floating beside the right one.
-            if (min(vTilePos.x, vTilePos.y) < -0.01 || max(vTilePos.x, vTilePos.y) > 1.01) {
+            // HALF-OPEN, [0,1), for the reason the wall's own clip gives: a symmetric tolerance
+            // overlaps the plane instead of partitioning it, so both neighbours keep a band either
+            // side of every border and the same skirt is drawn twice.
+            if (vTilePos.x < 0.0 || vTilePos.x >= 1.0 || vTilePos.y < 0.0 || vTilePos.y >= 1.0) {
                 discard;
             }
             // Distance to the footprint SEGMENT, per fragment - not a value interpolated between
@@ -2436,7 +2439,17 @@ namespace massif::vt {
         #endif
 
         void main(void) {
-            if (min(vTilePos.x, vTilePos.y) < -0.01 || max(vTilePos.x, vTilePos.y) > 1.01) {
+            // HALF-OPEN, [0,1): under overzoom every target tile derived from one source tile draws
+            // the whole building, and this is what keeps each fragment to the tile that owns it.
+            // A symmetric tolerance does NOT partition the plane - it overlaps it, so both
+            // neighbours keep a band 0.02 of a tile wide either side of every border and rasterise
+            // the SAME wall twice from two tile origins. The two copies land microns apart and
+            // z-fight, which reads edge-on as a thin vertical fin standing on the roofline, on the
+            // tile grid and scaling with the tile level rather than with anything in the building.
+            // Half-open gives a border fragment to exactly one side: no doubled band, and no gap,
+            // because the two tiles' vTilePos differ by float noise (~1e-7 of a tile) at worst.
+            // Not on the centroid - see the vertex stage for why that was tried and rejected.
+            if (vTilePos.x < 0.0 || vTilePos.x >= 1.0 || vTilePos.y < 0.0 || vTilePos.y >= 1.0) {
                 discard;
             }
             // Extrusions receive as well as cast: a building in the shadow of a ridge, or of a
