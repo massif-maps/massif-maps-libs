@@ -1,4 +1,5 @@
 #include "TileLayerBuilder.h"
+#include "SpanGeometry.h"
 
 #include <array>
 
@@ -428,24 +429,21 @@ namespace massif::vt {
                 // The tiler splits a way where structure/brunnel changes, so a bridge feature's
                 // first and last vertex ARE its portals - no inference from the DEM needed.
                 //
-                // UNLESS the tile cut them: an end on the tile boundary is the clip, and a chord
-                // between two clip points is worse than no chord at all - the deck dives to
-                // whatever the ground does at the cut. A span longer than a tile (Millau is 2.46 km
-                // against ~1.75 km at z14) therefore follows the ground until the zoom holds it
-                // whole. Signalled by a DEGENERATE pair, which the vertex stage reads as "not a
-                // span" and leaves on the terrain.
-                constexpr float CLIP_MARGIN = 0.002f;
+                // UNLESS the tile cut them: an end outside the TILE is the clip, not a portal. Not
+                // the clip box - that is the tile plus OUR 1/8 buffer, while the source clips at
+                // its own (mapbox: 1/64), so every cut end lands well inside it and would read as
+                // a portal. The Millau deck arrives as three tile-cut pieces, and calling their
+                // cuts portals drew each fragment as its own chord: two 30% ramps and a middle.
+                // The same point is inside the NEIGHBOURING tile's copy, which is where its portal
+                // is seen - the renderer joins the pieces back together.
                 const Vertex& p0 = vertices.front();
                 const Vertex& p1 = vertices.back();
-                auto insideTile = [](const Vertex& p) {
-                    return p(0) > CLIP_MARGIN && p(0) < 1.0f - CLIP_MARGIN
-                        && p(1) > CLIP_MARGIN && p(1) < 1.0f - CLIP_MARGIN;
-                };
-                cglib::vec4<float> ends(0, 0, 0, 0);
-                if (insideTile(p0) && insideTile(p1)) {
-                    ends = cglib::vec4<float>(p0(0), p0(1), p1(0), p1(1));
-                }
-                _spanEnds.fill(ends, _coords.size() - _spanEnds.size());
+                SpanVertexInfo info;
+                info.ends = cglib::vec4<float>(p0(0), p0(1), p1(0), p1(1));
+                info.featureId = id;
+                info.portal0 = SpanGeometry::isPortal(p0);
+                info.portal1 = SpanGeometry::isPortal(p1);
+                _spanInfos.fill(info, _coords.size() - _spanInfos.size());
             }
             _ids.fill(id, _indices.size() - _ids.size());
             _geoPosIndexes.fill(0, _indices.size() - _geoPosIndexes.size());
@@ -482,10 +480,14 @@ namespace massif::vt {
         else if (!(_builderParameters.type == TileGeometry::Type::POLYGON || (_builderParameters.type == TileGeometry::Type::LINE && !style.pattern))) { // we can use also line drawing shader but ONLY if pattern is not used for polygons (pattern can be used for lines)
             appendGeometry();
         }
+        else if (_builderParameters.elevationMode != style.elevationMode) {
+            appendGeometry(); // a span leaves the drape bake, so it cannot share a batch with a draped fill
+        }
         else {
             type = _builderParameters.type;
         }
         _builderParameters.type = type;
+        _builderParameters.elevationMode = style.elevationMode;
         // Sticky: a plain fill must not clear the pattern the geometry already carries.
         if (style.pattern || !_builderParameters.pattern) {
             _builderParameters.pattern = style.pattern;
@@ -516,6 +518,36 @@ namespace massif::vt {
         return [type, style, transform, styleIndex, this](long long id, const VerticesList& verticesList) {
             std::size_t i0 = _coords.size();
             tesselatePolygon(verticesList, static_cast<std::int8_t>(styleIndex), style);
+            if (style.elevationMode != LineElevationMode::DRAPE && !verticesList.empty() && !verticesList.front().empty()) {
+                // A bed has no two ENDS, so its span is its longest axis: the two vertices farthest
+                // apart, which for a deck-shaped ring is exactly where it meets the ground. Found
+                // the usual two-pass way - farthest from the centroid, then farthest from that.
+                const Vertices& ring = verticesList.front();
+                cglib::vec2<float> centroid(0, 0);
+                for (const Vertex& v : ring) {
+                    centroid = centroid + cglib::vec2<float>(v(0), v(1)) * (1.0f / ring.size());
+                }
+                auto farthestFrom = [&ring](const cglib::vec2<float>& from) {
+                    const Vertex* best = &ring.front();
+                    float bestDist = -1;
+                    for (const Vertex& v : ring) {
+                        float dist = cglib::norm(cglib::vec2<float>(v(0), v(1)) - from);
+                        if (dist > bestDist) {
+                            bestDist = dist;
+                            best = &v;
+                        }
+                    }
+                    return *best;
+                };
+                const Vertex& p0 = farthestFrom(centroid);
+                const Vertex& p1 = farthestFrom(cglib::vec2<float>(p0(0), p0(1)));
+                SpanVertexInfo info;
+                info.ends = cglib::vec4<float>(p0(0), p0(1), p1(0), p1(1));
+                info.featureId = id;
+                info.portal0 = SpanGeometry::isPortal(p0);
+                info.portal1 = SpanGeometry::isPortal(p1);
+                _spanInfos.fill(info, _coords.size() - _spanInfos.size());
+            }
             _ids.fill(id, _indices.size() - _ids.size());
             _geoPosIndexes.fill(0, _indices.size() - _geoPosIndexes.size());
             if (type == TileGeometry::Type::LINE) {
@@ -870,7 +902,7 @@ namespace massif::vt {
             }
             offset += count;
 
-            packGeometry(TileGeometry::Type::POLYGON3DGROUND, 3, coordScale, binormalScale, texCoordScale, heightScale, remappedCoords, remappedTexCoords, remappedNormals, remappedBinormals, remappedHeights, remappedAttribs, VertexArray<cglib::vec4<float>>(), remappedIndices, remappedIds, geoPosIndexes, styleParameters, std::vector<TileGeometry::FeatureStyleRange>(), geometryList);
+            packGeometry(TileGeometry::Type::POLYGON3DGROUND, 3, coordScale, binormalScale, texCoordScale, heightScale, remappedCoords, remappedTexCoords, remappedNormals, remappedBinormals, remappedHeights, remappedAttribs, VertexArray<SpanVertexInfo>(), remappedIndices, remappedIds, geoPosIndexes, styleParameters, std::vector<TileGeometry::FeatureStyleRange>(), geometryList);
         }
     }
 
@@ -939,7 +971,7 @@ namespace massif::vt {
         _binormals.clear();
         _heights.clear();
         _attribs.clear();
-        _spanEnds.clear();
+        _spanInfos.clear();
         _indices.clear();
         _ids.clear();
         _geoPosIndexes.clear();
@@ -1009,13 +1041,15 @@ namespace massif::vt {
 
         // A span's two ends go through the SAME transform as the coords beside them - calculatePoint
         // flips y - so the renderer can convert either with one tile matrix.
-        VertexArray<cglib::vec4<float>> spanEnds;
-        if (!_spanEnds.empty()) {
-            spanEnds.reserve(_spanEnds.size());
-            for (std::size_t i = 0; i < _spanEnds.size(); i++) {
-                cglib::vec3<float> p0 = _transformer->calculatePoint(cglib::vec2<float>(_spanEnds[i](0), _spanEnds[i](1)));
-                cglib::vec3<float> p1 = _transformer->calculatePoint(cglib::vec2<float>(_spanEnds[i](2), _spanEnds[i](3)));
-                spanEnds.append(cglib::vec4<float>(p0(0), p0(1), p1(0), p1(1)));
+        VertexArray<SpanVertexInfo> spanInfos;
+        if (!_spanInfos.empty()) {
+            spanInfos.reserve(_spanInfos.size());
+            for (std::size_t i = 0; i < _spanInfos.size(); i++) {
+                SpanVertexInfo info = _spanInfos[i];
+                cglib::vec3<float> p0 = _transformer->calculatePoint(cglib::vec2<float>(info.ends(0), info.ends(1)));
+                cglib::vec3<float> p1 = _transformer->calculatePoint(cglib::vec2<float>(info.ends(2), info.ends(3)));
+                info.ends = cglib::vec4<float>(p0(0), p0(1), p1(0), p1(1));
+                spanInfos.append(info);
             }
         }
 
@@ -1094,8 +1128,8 @@ namespace massif::vt {
             remappedBinormals.reserve(binormals.size());
             VertexArray<float> remappedHeights;
             remappedHeights.reserve(heights.size());
-            VertexArray<cglib::vec4<float>> remappedSpanEnds;
-            remappedSpanEnds.reserve(spanEnds.size());
+            VertexArray<SpanVertexInfo> remappedSpanInfos;
+            remappedSpanInfos.reserve(spanInfos.size());
             VertexArray<std::size_t> remappedIndices;
             remappedIndices.reserve(count);
             VertexArray<long long> remappedIds;
@@ -1127,8 +1161,8 @@ namespace massif::vt {
                     if (!heights.empty()) {
                         remappedHeights.append(heights[index]);
                     }
-                    if (!spanEnds.empty()) {
-                        remappedSpanEnds.append(spanEnds[index]);
+                    if (!spanInfos.empty()) {
+                        remappedSpanInfos.append(spanInfos[index]);
                     }
                     if (int variant = vertexVariants.empty() ? -1 : vertexVariants[index]; variant >= 0) {
                         // The vertices arrive in first-touch order, so a variant is a run here as
@@ -1150,13 +1184,13 @@ namespace massif::vt {
                 remappedGeoPosIndexes.append(_geoPosIndexes[offset + i]);
             }
 
-            packGeometry(_builderParameters.type, dimensions, coordScale, binormalScale, texCoordScale, heightScale, remappedCoords, remappedTexCoords, remappedNormals, remappedBinormals, remappedHeights, remappedAttribs, remappedSpanEnds, remappedIndices, remappedIds, remappedGeoPosIndexes, styleParameters, std::move(remappedStyleRanges), geometryList);
+            packGeometry(_builderParameters.type, dimensions, coordScale, binormalScale, texCoordScale, heightScale, remappedCoords, remappedTexCoords, remappedNormals, remappedBinormals, remappedHeights, remappedAttribs, remappedSpanInfos, remappedIndices, remappedIds, remappedGeoPosIndexes, styleParameters, std::move(remappedStyleRanges), geometryList);
 
             offset += count;
         }
     }
 
-    void TileLayerBuilder::packGeometry(TileGeometry::Type type, int dimensions, float coordScale, float binormalScale, float texCoordScale, float heightScale, const VertexArray<cglib::vec3<float>>& coords, const VertexArray<cglib::vec2<float>>& texCoords, const VertexArray<cglib::vec3<float>>& normals, const VertexArray<cglib::vec3<float>>& binormals, const VertexArray<float>& heights, const VertexArray<cglib::vec4<std::int8_t>>& attribs, const VertexArray<cglib::vec4<float>>& spanEnds, const VertexArray<std::size_t>& indices, const VertexArray<long long>& ids, const VertexArray<std::uint16_t>& geoPosIndexes, const TileGeometry::StyleParameters& styleParameters, std::vector<TileGeometry::FeatureStyleRange> featureStyleRanges, std::vector<std::shared_ptr<TileGeometry>>& geometryList) const {
+    void TileLayerBuilder::packGeometry(TileGeometry::Type type, int dimensions, float coordScale, float binormalScale, float texCoordScale, float heightScale, const VertexArray<cglib::vec3<float>>& coords, const VertexArray<cglib::vec2<float>>& texCoords, const VertexArray<cglib::vec3<float>>& normals, const VertexArray<cglib::vec3<float>>& binormals, const VertexArray<float>& heights, const VertexArray<cglib::vec4<std::int8_t>>& attribs, const VertexArray<SpanVertexInfo>& spanInfos, const VertexArray<std::size_t>& indices, const VertexArray<long long>& ids, const VertexArray<std::uint16_t>& geoPosIndexes, const TileGeometry::StyleParameters& styleParameters, std::vector<TileGeometry::FeatureStyleRange> featureStyleRanges, std::vector<std::shared_ptr<TileGeometry>>& geometryList) const {
         if (indices.empty()) {
             return;
         }
@@ -1199,15 +1233,9 @@ namespace massif::vt {
         // The ground an extrusion stands on, resolved on the CPU after the fact and patched into
         // the uploaded vertices. A full float: it is written per building rather than per tile, so
         // a shared int16 scale would have to be chosen before any of them are known.
-        if (type == TileGeometry::Type::POLYGON3D || !spanEnds.empty()) {
+        if (type == TileGeometry::Type::POLYGON3D || !spanInfos.empty()) {
             vertexGeomLayoutParams.baseOffset = vertexGeomLayoutParams.vertexSize;
             vertexGeomLayoutParams.vertexSize += sizeof(float);
-            vertexGeomLayoutParams.vertexSize = (vertexGeomLayoutParams.vertexSize + 3) & ~3;
-        }
-
-        if (!spanEnds.empty()) {
-            vertexGeomLayoutParams.spanOffset = vertexGeomLayoutParams.vertexSize;
-            vertexGeomLayoutParams.vertexSize += 4 * sizeof(std::int16_t);
             vertexGeomLayoutParams.vertexSize = (vertexGeomLayoutParams.vertexSize + 3) & ~3;
         }
 
@@ -1240,14 +1268,6 @@ namespace massif::vt {
             if (vertexGeomLayoutParams.baseOffset >= 0) {
                 float unresolved = TileGeometry::UNRESOLVED_BASE;
                 std::memcpy(baseCompressedPtr + vertexGeomLayoutParams.baseOffset, &unresolved, sizeof(float));
-            }
-
-            if (vertexGeomLayoutParams.spanOffset >= 0) {
-                const cglib::vec4<float>& span = spanEnds[i];
-                std::int16_t* compressedSpanPtr = reinterpret_cast<std::int16_t*>(baseCompressedPtr + vertexGeomLayoutParams.spanOffset);
-                for (int j = 0; j < 4; j++) {
-                    compressedSpanPtr[j] = static_cast<std::int16_t>(span(j) * coordScale);
-                }
             }
 
             if (!texCoords.empty()) {
@@ -1321,6 +1341,29 @@ namespace massif::vt {
         auto geometry = std::make_shared<TileGeometry>(type, _geomScale, styleParameters, vertexGeomLayoutParams, std::move(compressedVertexGeometry), std::move(compressedIndices), std::move(compressedIds), std::move(compressedGeoPosIndexes));
         if (!featureStyleRanges.empty()) {
             geometry->setFeatureStyleRanges(std::move(featureStyleRanges), _styleState, _stateKey);
+        }
+        // One record per span piece: the vertices arrive grouped by feature, so a run of equal
+        // info IS a piece.
+        if (!spanInfos.empty()) {
+            std::vector<TileGeometry::SpanRecord> spanRecords;
+            for (std::size_t i = 0; i < spanInfos.size(); ) {
+                std::size_t j = i;
+                while (j < spanInfos.size() && spanInfos[j] == spanInfos[i]) {
+                    j++;
+                }
+                const SpanVertexInfo& info = spanInfos[i];
+                TileGeometry::SpanRecord record;
+                record.featureId = info.featureId;
+                record.p0 = cglib::vec2<float>(info.ends(0), info.ends(1));
+                record.p1 = cglib::vec2<float>(info.ends(2), info.ends(3));
+                record.portal0 = info.portal0;
+                record.portal1 = info.portal1;
+                record.vertexOffset = i;
+                record.vertexCount = j - i;
+                spanRecords.push_back(record);
+                i = j;
+            }
+            geometry->setSpanRecords(std::move(spanRecords));
         }
         geometryList.push_back(std::move(geometry));
     }

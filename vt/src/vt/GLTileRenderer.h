@@ -385,6 +385,12 @@ namespace massif::vt {
         void setDebugSurfacePrefill(bool enabled);
         void setTerrainBackgroundColor(const Color& color);
         void setLabelElevationProvider(std::function<double(const cglib::vec3<double>&)> provider);
+        /**
+         * What multiplies a LABEL anchor position to get vt's normalized map coordinates. Label
+         * geometry arrives in the SDK's internal space (WORLD_SIZE wide), unlike everything else
+         * here, so the span chords cannot be compared against it without this.
+         */
+        void setLabelPositionScale(double scale) { _labelPositionScale = scale; }
         // Ask for labels to be re-anchored onto the terrain on the next frame. Re-anchoring
         // samples the elevation once per label vertex, so it is driven by what actually
         // changed: the tileIds overload only marks the labels whose geometry lies over one of
@@ -393,12 +399,57 @@ namespace massif::vt {
         void invalidateLabelElevation();
         void invalidateLabelElevation(const std::vector<TileId>& tileIds);
         // The same for the extrusion bases (see resolveExtrusionBases): new elevation data means
-        // every building's ground has to be asked for again.
+        // every building's ground has to be asked for again. The tileIds overload re-resolves only
+        // the extrusions standing OVER those elevation tiles - a building's centroid is inside its
+        // own tile, so that scoping is exact, and buildings outnumber bridges by orders of
+        // magnitude. Spans keep the global path: a chord samples its PORTALS, which are routinely
+        // in another tile than the geometry.
         void invalidateExtrusionBases();
+        void invalidateExtrusionBases(const std::vector<TileId>& tileIds);
+        // Which PIECE a union belongs to. A feature id is a whole OSM way and carries several
+        // disjoint bridges, so the id alone spans the gaps between them - measured 7.1 km against
+        // a 3.8 km bridge. The pieces are grouped by connectivity first, and each group is keyed
+        // back to the piece that asks for it.
+        struct SpanPieceKey {
+            TileId tileId = TileId(0, 0, 0);
+            long long featureId = 0;
+            std::size_t vertexOffset = 0;
+            bool operator == (const SpanPieceKey& other) const {
+                return tileId == other.tileId && featureId == other.featureId && vertexOffset == other.vertexOffset;
+            }
+            bool operator < (const SpanPieceKey& other) const {
+                if (!(tileId == other.tileId)) return tileId < other.tileId;
+                if (featureId != other.featureId) return featureId < other.featureId;
+                return vertexOffset < other.vertexOffset;
+            }
+        };
+
+        /**
+         * The two PORTALS a span feature runs between, in world coordinates, unioned over every
+         * visible tile holding a piece of it. The tile grid cuts a long bridge into pieces and no
+         * single one holds both ends - Millau is 3.7 km of bridge against ~3.5 km at z13 - so the
+         * portals are collected by feature id, which mapbox tiles keep stable across tiles.
+         */
+        struct SpanUnion {
+            cglib::vec2<double> portal0, portal1;
+            bool have0 = false, have1 = false;
+            // The chord's resolved ground heights, kept so a LABEL over the deck can be anchored
+            // to it without paying the elevation queries again.
+            double height0 = 0, height1 = 0;
+            bool haveHeights = false;
+            int zoom = 0; // the tile zoom the pieces came from, for the elevation query
+            bool operator == (const SpanUnion& other) const {
+                return have0 == other.have0 && have1 == other.have1 && portal0 == other.portal0 && portal1 == other.portal1;
+            }
+        };
+        // Written in setVisibleTiles under _mutex, read by the resolve during the frame - the same
+        // build-then-consume pattern the render tiles use.
+        mutable std::map<SpanPieceKey, SpanUnion> _spanUnions; // heights filled by the resolve
+        std::atomic<unsigned int> _spanUnionVersion { 0 };
         // The ground under an extrusion, in internal z units. Unlike the label provider this one
         // REPORTS whether there was data: a base is baked into the vertices, so guessing 0 where
         // the ground is 215 m puts the whole prism under the terrain.
-        void setExtrusionElevationProvider(std::function<bool(const cglib::vec3<double>&, double&)> provider);
+        void setExtrusionElevationProvider(std::function<bool(const cglib::vec3<double>&, int, double&)> provider);
         void setLabelOcclusionTest(std::function<bool(const cglib::vec3<double>&)> occlusionTest);
         void setLayerBlendingSpeed(float speed);
         void setLabelBlendingSpeed(float speed);
@@ -710,6 +761,27 @@ namespace massif::vt {
          * is exactly the case when spans come from a coarser tile than the base map.
          */
         bool resolveLineSpanBases(const TileId& sourceTileId, const std::shared_ptr<TileGeometry>& geometry) const;
+        // Rebuilt whenever the visible set changes: a neighbouring tile arriving can complete a
+        // bridge whose chord was unresolvable before, so the version bump re-resolves the pieces.
+        void buildSpanUnions(const std::map<TileId, std::shared_ptr<const Tile>>& tiles);
+        // A chord that was resolved once, kept after the tiles that proved it left the view. A
+        // bridge's portals are a property of the WORLD, not of what is on screen: zooming into one
+        // end drops the far piece from the visible set, and without this the chord shortens to
+        // whatever is still loaded and the deck visibly changes angle.
+        struct CachedChord {
+            cglib::vec2<double> portal0, portal1;
+            std::uint64_t stamp = 0;
+        };
+        std::vector<CachedChord> _spanChordCache;
+        std::uint64_t _spanChordClock = 0;
+        /**
+         * The DECK height over a point standing on a span, for anything anchored to the ground
+         * that belongs to the bridge rather than to the terrain under it - a road name, a POI, a
+         * one-way arrow. Without it they sit on the ground the bridge flies over.
+         *
+         * @return False when the point is not on a resolved span.
+         */
+        bool spanHeightAt(const cglib::vec2<double>& pos, double& height) const;
         void renderTileMask(const TileId& tileId);
         void renderStencilDebugOverlay();
         // Bakes the DEM-derived paint of one target tile into the currently bound drape
@@ -950,9 +1022,11 @@ namespace massif::vt {
         std::vector<std::pair<TileId, GLint>> _debugOrderedTileMasks;
         TerrainTextureProvider _terrainTextureProvider;
         std::function<double(const cglib::vec3<double>&)> _labelElevationProvider;
-        std::function<bool(const cglib::vec3<double>&, double&)> _extrusionElevationProvider;
+        std::function<bool(const cglib::vec3<double>&, int, double&)> _extrusionElevationProvider;
         std::atomic<unsigned int> _extrusionBaseVersion { 1 }; // bumped by invalidateExtrusionBases
         std::vector<TileId> _pendingLabelElevationTiles; // elevation tiles whose labels must be re-anchored
+        double _labelPositionScale = 1.0; // label anchors are in internal coordinates, not vt's
+        std::vector<TileId> _pendingExtrusionBaseTiles;  // ...and whose extrusion bases must be re-resolved
         bool _pendingLabelElevationAll = false;
         std::function<bool(const cglib::vec3<double>&)> _labelOcclusionTest;
         float _layerBlendingSpeed = 1.0f;

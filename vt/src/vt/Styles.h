@@ -210,8 +210,10 @@ namespace massif::vt {
         FloatFunction emissiveFunc;
         std::shared_ptr<const BitmapPattern> pattern;
         std::optional<Transform> transform;
+        // A bridge BED is a polygon, and it has to leave the ground with the deck it belongs to.
+        LineElevationMode elevationMode;
 
-        explicit PolygonStyle(CompOp compOp, ColorFunction colorFunc, std::shared_ptr<const BitmapPattern> pattern, const std::optional<Transform>& transform, FloatFunction emissiveFunc = FloatFunction(1.0f)) : compOp(compOp), colorFunc(std::move(colorFunc)), emissiveFunc(std::move(emissiveFunc)), pattern(std::move(pattern)), transform(transform) { }
+        explicit PolygonStyle(CompOp compOp, ColorFunction colorFunc, std::shared_ptr<const BitmapPattern> pattern, const std::optional<Transform>& transform, FloatFunction emissiveFunc = FloatFunction(1.0f), LineElevationMode elevationMode = LineElevationMode::DRAPE) : compOp(compOp), colorFunc(std::move(colorFunc)), emissiveFunc(std::move(emissiveFunc)), pattern(std::move(pattern)), transform(transform), elevationMode(elevationMode) { }
     };
 
     // How an extrusion is capped. FLAT is one polygon at the top, as every extrusion has always

@@ -82,6 +82,20 @@ namespace massif::vt {
         // Any value a real ground could take would be indistinguishable from a resolved base.
         static constexpr float UNRESOLVED_BASE = -1.0e30f;
 
+        /**
+         * One span feature's piece INSIDE this tile: its own two ends and how much of the line
+         * they are. A long bridge is cut by the tile grid, so a piece rarely holds both portals -
+         * `portal0`/`portal1` say which end is a real portal and which is a cut, and the renderer
+         * unions the pieces by `featureId` across tiles to recover the two the deck spans between.
+         * CPU-side on purpose: no shader reads this, only the chord height it produces.
+         */
+        struct SpanRecord {
+            long long featureId = 0;
+            cglib::vec2<float> p0, p1;                 // in packed vertex space
+            bool portal0 = false, portal1 = false;     // an end the tile did NOT cut
+            std::size_t vertexOffset = 0, vertexCount = 0;
+        };
+
         struct VertexGeometryLayoutParameters {
             int vertexSize;
             int dimensions;
@@ -99,15 +113,12 @@ namespace massif::vt {
             // the ground under this vertex" - the pre-CPU behaviour, so a building whose elevation
             // never resolves is drawn slightly wrong rather than not at all.
             int baseOffset;
-            // SPAN/UNDERGROUND lines only: the feature's own two ends, (p0, p1) at coordScale, so
-            // the CPU pass can resolve the ground there and interpolate along the chord.
-            int spanOffset;
             float coordScale;
             float texCoordScale;
             float binormalScale;
             float heightScale;
 
-            VertexGeometryLayoutParameters() : vertexSize(0), dimensions(2), coordOffset(-1), attribsOffset(-1), texCoordOffset(-1), normalOffset(-1), binormalOffset(-1), heightOffset(-1), baseOffset(-1), spanOffset(-1), coordScale(0), texCoordScale(0), binormalScale(0), heightScale(0) { }
+            VertexGeometryLayoutParameters() : vertexSize(0), dimensions(2), coordOffset(-1), attribsOffset(-1), texCoordOffset(-1), normalOffset(-1), binormalOffset(-1), heightOffset(-1), baseOffset(-1), coordScale(0), texCoordScale(0), binormalScale(0), heightScale(0) { }
         };
 
         explicit TileGeometry(Type type, float geomScale, const StyleParameters& styleParameters, const VertexGeometryLayoutParameters& vertexGeometryLayoutParameters, VertexArray<std::uint8_t> vertexGeometry, VertexArray<std::uint16_t> indices, std::vector<std::pair<std::size_t, long long>> ids, std::vector<std::pair<std::size_t, std::uint16_t>> geoPosIndexes) : _type(type), _geomScale(geomScale), _styleParameters(styleParameters), _vertexGeometryLayoutParameters(vertexGeometryLayoutParameters), _indicesCount(static_cast<unsigned int>(indices.size())), _vertexGeometry(std::move(vertexGeometry)), _indices(std::move(indices)), _ids(std::move(ids)), _geoPosIndexes(std::move(geoPosIndexes)), _geoPosIndexesCount(static_cast<unsigned int>(indices.size())) { }
@@ -203,6 +214,16 @@ namespace massif::vt {
         unsigned int getBaseElevationVersion() const { return _baseElevationVersion; }
         void setBaseElevationVersion(unsigned int version) { _baseElevationVersion = version; }
 
+        /** The span pieces of this tile, empty for anything that is not a SPAN/UNDERGROUND line. */
+        const std::vector<SpanRecord>& getSpanRecords() const { return _spanRecords; }
+        void setSpanRecords(std::vector<SpanRecord> spanRecords) { _spanRecords = std::move(spanRecords); }
+
+        /** The cross-tile span union version the chords were resolved against - a neighbouring
+         *  tile arriving completes a bridge and must redo them.
+         */
+        unsigned int getBaseSpanVersion() const { return _baseSpanVersion; }
+        void setBaseSpanVersion(unsigned int version) { _baseSpanVersion = version; }
+
         const std::optional<std::pair<std::size_t, std::size_t>>& getDirtyVertexBytes() const { return _dirtyVertexBytes; }
 
         void clearDirtyVertexBytes() { _dirtyVertexBytes.reset(); }
@@ -254,6 +275,8 @@ namespace massif::vt {
         std::optional<std::pair<std::size_t, std::size_t>> _dirtyVertexBytes; // byte range to re-upload
         bool _baseResolved = false;          // extrusions: the CPU ground pass has run at least once
         unsigned int _baseElevationVersion = 0; // ...against this elevation data version
+        unsigned int _baseSpanVersion = 0;   // ...and this cross-tile span union version
+        std::vector<SpanRecord> _spanRecords; // span lines: one entry per feature piece in this tile
 
         VertexArray<std::uint8_t> _vertexGeometry;
         VertexArray<std::uint16_t> _indices;
