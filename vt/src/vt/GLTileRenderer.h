@@ -760,7 +760,7 @@ namespace massif::vt {
          * elevation texture of the tile being drawn cannot answer for a portal outside it, which
          * is exactly the case when spans come from a coarser tile than the base map.
          */
-        bool resolveLineSpanBases(const TileId& sourceTileId, const std::shared_ptr<TileGeometry>& geometry) const;
+        bool resolveSpanBases(const TileId& sourceTileId, const std::shared_ptr<TileGeometry>& geometry) const;
         // Rebuilt whenever the visible set changes: a neighbouring tile arriving can complete a
         // bridge whose chord was unresolvable before, so the version bump re-resolves the pieces.
         void buildSpanUnions(const std::map<TileId, std::shared_ptr<const Tile>>& tiles);

@@ -519,34 +519,7 @@ namespace massif::vt {
             std::size_t i0 = _coords.size();
             tesselatePolygon(verticesList, static_cast<std::int8_t>(styleIndex), style);
             if (style.elevationMode != LineElevationMode::DRAPE && !verticesList.empty() && !verticesList.front().empty()) {
-                // A bed has no two ENDS, so its span is its longest axis: the two vertices farthest
-                // apart, which for a deck-shaped ring is exactly where it meets the ground. Found
-                // the usual two-pass way - farthest from the centroid, then farthest from that.
-                const Vertices& ring = verticesList.front();
-                cglib::vec2<float> centroid(0, 0);
-                for (const Vertex& v : ring) {
-                    centroid = centroid + cglib::vec2<float>(v(0), v(1)) * (1.0f / ring.size());
-                }
-                auto farthestFrom = [&ring](const cglib::vec2<float>& from) {
-                    const Vertex* best = &ring.front();
-                    float bestDist = -1;
-                    for (const Vertex& v : ring) {
-                        float dist = cglib::norm(cglib::vec2<float>(v(0), v(1)) - from);
-                        if (dist > bestDist) {
-                            bestDist = dist;
-                            best = &v;
-                        }
-                    }
-                    return *best;
-                };
-                const Vertex& p0 = farthestFrom(centroid);
-                const Vertex& p1 = farthestFrom(cglib::vec2<float>(p0(0), p0(1)));
-                SpanVertexInfo info;
-                info.ends = cglib::vec4<float>(p0(0), p0(1), p1(0), p1(1));
-                info.featureId = id;
-                info.portal0 = SpanGeometry::isPortal(p0);
-                info.portal1 = SpanGeometry::isPortal(p1);
-                _spanInfos.fill(info, _coords.size() - _spanInfos.size());
+                _spanInfos.fill(spanInfoForRing(verticesList.front(), id), _coords.size() - _spanInfos.size());
             }
             _ids.fill(id, _indices.size() - _ids.size());
             _geoPosIndexes.fill(0, _indices.size() - _geoPosIndexes.size());
@@ -561,6 +534,18 @@ namespace massif::vt {
         };
     }
 
+    TileLayerBuilder::SpanVertexInfo TileLayerBuilder::spanInfoForRing(const Vertices& ring, long long id) {
+        auto ends = SpanGeometry::farthestPair(ring);
+        const Vertex& p0 = ends.first;
+        const Vertex& p1 = ends.second;
+        SpanVertexInfo info;
+        info.ends = cglib::vec4<float>(p0(0), p0(1), p1(0), p1(1));
+        info.featureId = id;
+        info.portal0 = SpanGeometry::isPortal(p0);
+        info.portal1 = SpanGeometry::isPortal(p1);
+        return info;
+    }
+
     TileLayerBuilder::Polygon3DProcessor TileLayerBuilder::createPolygon3DProcessor(const Polygon3DStyle& style) {
         cglib::vec2<float> translate(0, 0);
         std::optional<cglib::mat2x2<float>> transform;
@@ -573,10 +558,12 @@ namespace massif::vt {
             }
         }
 
-        if (_builderParameters.type != TileGeometry::Type::POLYGON3D || _builderParameters.translate != translate || _builderParameters.parameterCount >= TileGeometry::StyleParameters::MAX_PARAMETERS) {
-            appendGeometry();
+        if (_builderParameters.type != TileGeometry::Type::POLYGON3D || _builderParameters.translate != translate || _builderParameters.parameterCount >= TileGeometry::StyleParameters::MAX_PARAMETERS
+         || _builderParameters.elevationMode != style.elevationMode) {
+            appendGeometry(); // a deck resolves its base from the chord, a building from the ground
         }
         _builderParameters.type = TileGeometry::Type::POLYGON3D;
+        _builderParameters.elevationMode = style.elevationMode;
         _builderParameters.translate = translate;
         int styleIndex = _builderParameters.parameterCount;
         while (--styleIndex >= 0) {
@@ -592,6 +579,11 @@ namespace massif::vt {
         return [style, transform, invTransTransform, styleIndex, this](long long id, const VerticesList& verticesList, float minHeight, float maxHeight) {
             std::size_t i0 = _coords.size();
             tesselatePolygon3D(verticesList, minHeight, maxHeight, static_cast<std::int8_t>(styleIndex), style);
+            if (style.elevationMode != LineElevationMode::DRAPE && !verticesList.empty() && !verticesList.front().empty()) {
+                // A deck stands on its chord, so min-height/height are measured from that rather
+                // than from the ground the prism would otherwise sit on.
+                _spanInfos.fill(spanInfoForRing(verticesList.front(), id), _coords.size() - _spanInfos.size());
+            }
             _ids.fill(id, _indices.size() - _ids.size());
             _groundIds.fill(id, _groundIndices.size() - _groundIds.size());
             _geoPosIndexes.fill(0, _indices.size() - _geoPosIndexes.size());

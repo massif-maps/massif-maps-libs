@@ -3243,7 +3243,7 @@ namespace massif::vt {
                         // the ground and must not be pulled towards it.
                         bool span = !geometry->getSpanRecords().empty();
                         if (span) {
-                            resolveLineSpanBases(renderLayer->sourceTileId, geometry);
+                            resolveSpanBases(renderLayer->sourceTileId, geometry);
                         }
                         bool decal = terrainVTF && !span && (geometry->getType() == TileGeometry::Type::LINE || geometry->getType() == TileGeometry::Type::POINT);
                         if (decal) {
@@ -4046,6 +4046,12 @@ namespace massif::vt {
 
     bool GLTileRenderer::resolveExtrusionBases(const TileId& sourceTileId, const TileId& targetTileId, const std::shared_ptr<TileGeometry>& geometry) const {
         const TileGeometry::VertexGeometryLayoutParameters& params = geometry->getVertexGeometryLayoutParameters();
+        // A DECK stands on its own chord, not on the ground under it, so its base comes from the
+        // span union per vertex - the same resolve a draped span line takes. Its min-height and
+        // height are then a thickness measured from the deck, not a height above the terrain.
+        if (!geometry->getSpanRecords().empty()) {
+            return resolveSpanBases(sourceTileId, geometry);
+        }
         if (params.baseOffset < 0 || params.texCoordOffset < 0 || !_extrusionElevationProvider) {
             return true; // not an extrusion, or no elevation at all - the ground is the base
         }
@@ -4370,7 +4376,7 @@ namespace massif::vt {
         return false;
     }
 
-    bool GLTileRenderer::resolveLineSpanBases(const TileId& sourceTileId, const std::shared_ptr<TileGeometry>& geometry) const {
+    bool GLTileRenderer::resolveSpanBases(const TileId& sourceTileId, const std::shared_ptr<TileGeometry>& geometry) const {
         const TileGeometry::VertexGeometryLayoutParameters& params = geometry->getVertexGeometryLayoutParameters();
         const std::vector<TileGeometry::SpanRecord>& spanRecords = geometry->getSpanRecords();
         if (params.baseOffset < 0 || spanRecords.empty() || !_extrusionElevationProvider) {

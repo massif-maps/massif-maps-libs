@@ -890,6 +890,7 @@ namespace massif::css {
         { "building-height", "height" },
         { "building-min-height", "min-height" },
         { "building-geometry-transform", "geometry-transform" },
+        { "building-elevation-mode", "elevation-mode" },
         // NOTE: comp-op not supported for building symbolizer
 
         // Config symbolizers for external data sources (CompositeVectorTileLayer).

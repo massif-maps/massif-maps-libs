@@ -9,6 +9,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <utility>
+#include <vector>
 
 #include <cglib/vec.h>
 
@@ -80,6 +82,36 @@ namespace massif::vt {
             }
             double allowance = matchAllowance(std::sqrt(length2));
             return cglib::norm(pos - (portal0 + chord * t)) <= allowance * allowance;
+        }
+
+        /**
+         * The two vertices of a filled ring FARTHEST APART. A bed has no two ends, so its span is
+         * its longest axis, which for a deck-shaped ring is exactly where it meets the ground.
+         * Two passes - farthest from the centroid, then farthest from that - which is exact for a
+         * long thin ring and never worse than the true diameter by more than its width.
+         */
+        static std::pair<cglib::vec2<float>, cglib::vec2<float>> farthestPair(const std::vector<cglib::vec2<float>>& ring) {
+            if (ring.empty()) {
+                return std::pair<cglib::vec2<float>, cglib::vec2<float>>();
+            }
+            cglib::vec2<float> centroid(0, 0);
+            for (const cglib::vec2<float>& v : ring) {
+                centroid = centroid + v * (1.0f / ring.size());
+            }
+            auto farthestFrom = [&ring](const cglib::vec2<float>& from) {
+                const cglib::vec2<float>* best = &ring.front();
+                float bestDist = -1;
+                for (const cglib::vec2<float>& v : ring) {
+                    float dist = cglib::norm(v - from);
+                    if (dist > bestDist) {
+                        bestDist = dist;
+                        best = &v;
+                    }
+                }
+                return *best;
+            };
+            cglib::vec2<float> p0 = farthestFrom(centroid);
+            return std::make_pair(p0, farthestFrom(p0));
         }
 
         /**

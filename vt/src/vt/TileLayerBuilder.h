@@ -141,6 +141,10 @@ namespace massif::vt {
             }
         };
 
+        // The span a filled ring stands on: its two vertices FARTHEST APART, which for a
+        // deck-shaped ring are its ends. Shared by the flat bed and the extruded deck.
+        static SpanVertexInfo spanInfoForRing(const Vertices& ring, long long id);
+
         void packGeometry(std::vector<std::shared_ptr<TileGeometry>>& geometryList) const;
         // The skirt stream, packed once per layer into its own POLYGON3DGROUND geometry.
         void packGroundSkirt(std::vector<std::shared_ptr<TileGeometry>>& geometryList) const;

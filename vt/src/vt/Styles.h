@@ -227,9 +227,12 @@ namespace massif::vt {
         std::optional<Transform> transform;
         RoofShape roofShape = RoofShape::FLAT;
         float roofHeight = 0.0f; // metres above the wall top; 0 leaves the roof flat whatever the shape
+        // See LineElevationMode. A building stands on the ground (DRAPE); a bridge DECK stands on
+        // its own chord, so min-height/height are measured from that instead.
+        LineElevationMode elevationMode = LineElevationMode::DRAPE;
 
         explicit Polygon3DStyle(ColorFunction colorFunc, const std::optional<Transform>& transform) : colorFunc(std::move(colorFunc)), transform(transform) { }
-        explicit Polygon3DStyle(ColorFunction colorFunc, const std::optional<Transform>& transform, RoofShape roofShape, float roofHeight) : colorFunc(std::move(colorFunc)), transform(transform), roofShape(roofShape), roofHeight(roofHeight) { }
+        explicit Polygon3DStyle(ColorFunction colorFunc, const std::optional<Transform>& transform, RoofShape roofShape, float roofHeight, LineElevationMode elevationMode = LineElevationMode::DRAPE) : colorFunc(std::move(colorFunc)), transform(transform), roofShape(roofShape), roofHeight(roofHeight), elevationMode(elevationMode) { }
     };
 
     struct PointLabelStyle final {
