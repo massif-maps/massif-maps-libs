@@ -1382,7 +1382,25 @@ namespace massif::vt {
                     return 0.0f; // the two edges double back on each other
                 }
                 bisector = bisector * (1.0f / bisectorLen);
-                insetList[ring][i] = points[i] - bisector * (radius * std::min(4.0f, 1.0f / cosHalfAngle));
+                // A DIVERGENCE FROM MAPBOX, deliberately. Theirs is
+                // `edgeRadius * Math.min(4, 1 / cosHalfAngle)` with no edge-length term
+                // (fill_extrusion_bucket, the top-ring loop), and everything else here matches them:
+                // same miter cap, same metres, and the tile-unit radius agrees to five figures on
+                // the same tile. We fold anyway. On a real Mapbox footprint an edge of 1.4 extent
+                // units meets an inset of 4.1, so BOTH its ends are pulled past each other, the roof
+                // ring turns inside out and chamfer vertices land outside the building - a wedge at
+                // the corner. Rounding the ring as mapbox does cannot absorb it: the overshoot is
+                // 1.2 extent units and rounding moves a point by at most 0.5.
+                //
+                // So this bound is ours. A third of the shorter adjacent edge is not invented
+                // either - it is what extrusionCornerCutback already imposes on the WALL at the same
+                // corner, so the roof ring now obeys the rule its own walls do. A third rather than
+                // a half leaves the band width rather than collapsing it to a point.
+                //
+                // UNRESOLVED: why mapbox does not show this with the same formula on the same data.
+                // See tests/vt/ExtrusionBevelTest.cpp for the two footprints this is measured on.
+                float maxInset = std::min(lenPrev, lenNext) / 3.0f;
+                insetList[ring][i] = points[i] - bisector * std::min(radius * std::min(4.0f, 1.0f / cosHalfAngle), maxInset);
                 any = true;
             }
         }
