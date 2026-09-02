@@ -3378,7 +3378,13 @@ namespace massif::vt {
                         // it stands on anyway. A span deck's base is its chord, hundreds of metres
                         // up: mixing resolved and sentinel vertices stretches a wall between the two
                         // and the deck fans out across the valley. Wait for the whole piece instead.
-                        if (!baseResolved && !geometry->getSpanRecords().empty()) {
+                        //
+                        // And a deck is a 3D THING ON TERRAIN: with the map flat, or before the DEM
+                        // has arrived, there is no chord for it to stand on and a bridge drawn as a
+                        // box over a flat map is simply wrong. Both cases are one test - no terrain,
+                        // or a base that has not resolved - and both mean "not yet", not "draw it
+                        // somewhere plausible".
+                        if (!geometry->getSpanRecords().empty() && (!_terrainMode || !baseResolved)) {
                             continue;
                         }
                         // NOTE: geometry comp op is not supported for 3D polygons. Blending is disabled, setGLBlendState not needed
@@ -4834,6 +4840,87 @@ namespace massif::vt {
         return bakeDrapeUnits(targetTileId, std::numeric_limits<int>::min());
     }
 
+    void GLTileRenderer::setSpanDrapeTextures(const std::map<TileId, GLuint>& textures) {
+        std::lock_guard<std::mutex> lock(_mutex);
+
+        _spanDrapeTextures = textures;
+    }
+
+    bool GLTileRenderer::resolveSpanDrape(const TileId& targetTileId, GLuint& texture, cglib::vec4<float>& uvTransform) const {
+        if (_spanDrapeTextures.empty()) {
+            return false; // no bridge anywhere in the view - the ordinary case, and it costs one test
+        }
+        // The deck's tile, or the ancestor that holds its drape: the same sub-rect rule the
+        // coverage masks use, since a drape tile can be coarser than the geometry drawn on it.
+        for (TileId tileId = targetTileId; true; tileId = tileId.getParent()) {
+            auto it = _spanDrapeTextures.find(tileId);
+            if (it != _spanDrapeTextures.end()) {
+                float scale = 1.0f / (1 << (targetTileId.zoom - tileId.zoom));
+                float u = (targetTileId.x - (tileId.x << (targetTileId.zoom - tileId.zoom))) * scale;
+                float v = (targetTileId.y - (tileId.y << (targetTileId.zoom - tileId.zoom))) * scale;
+                texture = it->second;
+                uvTransform = cglib::vec4<float>(u, v, scale, scale);
+                return true;
+            }
+            if (tileId.zoom <= 0) {
+                return false;
+            }
+        }
+    }
+
+    int GLTileRenderer::bakeSpanDrapeTile(const TileId& targetTileId) {
+        std::lock_guard<std::mutex> lock(_mutex);
+
+        resetProgramState();
+
+        if (_terrainPaint.enabled) {
+            return 0; // a paint shades the ground; a deck is not the ground
+        }
+        return bakeDrapeUnits(targetTileId, std::numeric_limits<int>::min(), true);
+    }
+
+    void GLTileRenderer::collectSpanDrapeTiles(std::map<TileId, std::size_t>& spanTiles) const {
+        std::lock_guard<std::mutex> lock(_mutex);
+
+        if (_terrainPaint.enabled || !_visibleRenderTiles) {
+            return;
+        }
+        // ONLY the tiles that actually carry a bridge or a tunnel. A map with no span anywhere
+        // returns nothing here, so it pays for no texture, no bake and no cache entry.
+        for (const RenderTile& renderTile : *_visibleRenderTiles) {
+            if (!renderTile.visible) {
+                continue;
+            }
+            for (auto it = renderTile.renderLayers.begin(); it != renderTile.renderLayers.end(); it++) {
+                const RenderTileLayer& renderLayer = it->second;
+                if (!hasSpanContent(renderLayer)) {
+                    continue;
+                }
+                std::size_t& fingerprint = spanTiles[renderTile.targetTileId];
+                for (const std::shared_ptr<TileGeometry>& geometry : renderLayer.layer->getGeometries()) {
+                    if (!geometry->getSpanRecords().empty()) {
+                        fingerprint ^= reinterpret_cast<std::size_t>(geometry.get()) + 0x9e3779b9 + (fingerprint << 6) + (fingerprint >> 2);
+                    }
+                }
+            }
+        }
+    }
+
+    bool GLTileRenderer::hasSpanContent(const RenderTileLayer& renderLayer) const {
+        if (!renderLayer.layer || !isLayerDraped(renderLayer.layer)) {
+            return false;
+        }
+        if (!renderLayer.layer->hasSpanGeometry()) {
+            return false; // the cheap per-layer test, so an ordinary tile stops here
+        }
+        for (const std::shared_ptr<TileGeometry>& geometry : renderLayer.layer->getGeometries()) {
+            if (!geometry->getSpanRecords().empty()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     int GLTileRenderer::bakeDrapeCoverage(const TileId& targetTileId, int fromStyleLayerIdx) {
         std::lock_guard<std::mutex> lock(_mutex);
 
@@ -4851,7 +4938,7 @@ namespace massif::vt {
         return baked;
     }
 
-    int GLTileRenderer::bakeDrapeUnits(const TileId& targetTileId, int fromStyleLayerIdx) {
+    int GLTileRenderer::bakeDrapeUnits(const TileId& targetTileId, int fromStyleLayerIdx, bool spanOnly) {
         if (!_visibleRenderTiles) {
             return 0;
         }
@@ -4894,7 +4981,7 @@ namespace massif::vt {
             const RenderTile& renderTile = *renderTilePtr;
             for (auto it = renderTile.renderLayers.begin(); it != renderTile.renderLayers.end(); it++) {
                 const RenderTileLayer& renderLayer = it->second;
-                if (!hasDrapeableContent(renderLayer)) {
+                if (!(spanOnly ? hasSpanContent(renderLayer) : hasDrapeableContent(renderLayer))) {
                     continue;
                 }
                 // A coverage bake starts part-way up the style stack: only the units ABOVE the live
@@ -4916,17 +5003,23 @@ namespace massif::vt {
                 // each case.
                 float geometryOpacity = calculateDrapeOpacity(renderLayer);
                 drapeOrtho = calculateDrapeMVPMatrix(renderLayer.targetTileId, targetTileId);
-                for (const std::shared_ptr<TileBackground>& background : renderLayer.layer->getBackgrounds()) {
+                for (const std::shared_ptr<TileBackground>& background : (spanOnly ? std::vector<std::shared_ptr<TileBackground>>() : renderLayer.layer->getBackgrounds())) {
                     renderTileBackground(renderLayer.targetTileId, 1.0f, geometryOpacity, renderLayer.tileSize, background);
                     bakedPrimitives++;
                 }
-                for (const std::shared_ptr<TileBitmap>& bitmap : renderLayer.layer->getBitmaps()) {
+                for (const std::shared_ptr<TileBitmap>& bitmap : (spanOnly ? std::vector<std::shared_ptr<TileBitmap>>() : renderLayer.layer->getBitmaps())) {
                     renderTileBitmap(renderLayer.sourceTileId, renderLayer.targetTileId, 1.0f, geometryOpacity, bitmap);
                     bakedPrimitives++;
                 }
                 drapeOrtho = calculateDrapeMVPMatrix(renderLayer.sourceTileId, targetTileId);
                 for (const std::shared_ptr<TileGeometry>& geometry : renderLayer.layer->getGeometries()) {
-                    if (isDrapeableGeometry(geometry) && isLayerDraped(renderLayer.layer)) {
+                    // A span leaves the GROUND's bake by construction (isDrapeableGeometry) because
+                    // a baked pixel IS the ground. The deck's own drape is the exact complement: the
+                    // span content and nothing else, so the road lands on the deck carrying it and
+                    // not on the valley floor beside it.
+                    bool span = !geometry->getSpanRecords().empty();
+                    bool wanted = spanOnly ? span : isDrapeableGeometry(geometry);
+                    if (wanted && isLayerDraped(renderLayer.layer)) {
                         renderTileGeometry(renderLayer.sourceTileId, renderLayer.targetTileId, 1.0f, geometryOpacity, renderLayer.tileSize, geometry);
                         bakedPrimitives++;
                     }
@@ -6239,7 +6332,14 @@ namespace massif::vt {
             // SHADOW_SINGLE_TAP: an extrusion cannot use the terrain's screen-space mask - that holds
             // the ground's shadow, not its own - so it is the one receiver still running the kernel
             // per fragment, over a wall that is shadowed or lit almost in one piece.
-            shaderProgramPtr = &buildShaderProgram("polygon3d", polygon3DVsh, polygon3DFsh, LightingMode::GEOMETRY3D, RasterFilterMode::NONE, (styleParams.pattern ? PATTERN_FLAG : 0) | (styleParams.translate ? TRANSFORM_FLAG : 0) | (terrainVTF ? TERRAIN_VTF_FLAG | TERRAIN_FLAG : 0) | (shadowReceiver ? shadowReceiverFlags() | SHADOW_SINGLE_TAP_FLAG : 0) | fogFlag());
+            {
+                GLuint spanDrapeTexture = 0;
+                cglib::vec4<float> spanDrapeTransform(0, 0, 1, 1);
+                bool spanDrape = !geometry->getSpanRecords().empty() && resolveSpanDrape(targetTileId, spanDrapeTexture, spanDrapeTransform);
+                shaderProgramPtr = &buildShaderProgram("polygon3d", polygon3DVsh, polygon3DFsh, LightingMode::GEOMETRY3D, RasterFilterMode::NONE, (styleParams.pattern ? PATTERN_FLAG : 0) | (styleParams.translate ? TRANSFORM_FLAG : 0) | (terrainVTF ? TERRAIN_VTF_FLAG | TERRAIN_FLAG : 0) | (shadowReceiver ? shadowReceiverFlags() | SHADOW_SINGLE_TAP_FLAG : 0) | (spanDrape ? SPAN_DRAPE_FLAG : 0) | fogFlag());
+                _pendingSpanDrape = spanDrape ? spanDrapeTexture : 0;
+                _pendingSpanDrapeTransform = spanDrapeTransform;
+            }
             break;
         default:
             return;
@@ -6416,6 +6516,13 @@ namespace massif::vt {
             glUniform1f(shaderProgram.uniforms[U_HEIGHTSCALE], buildingHeightScale(blend, spanDeck) * heightUnits);
             glUniform1f(shaderProgram.uniforms[U_SHADOWHEIGHTSCALE], casterHeightScale(blend, spanDeck) * heightUnits);
             glUniform1f(shaderProgram.uniforms[U_FLOATINGBASE], spanDeck ? 1.0f : 0.0f);
+            if (_pendingSpanDrape != 0) {
+                glActiveTexture(GL_TEXTURE4);
+                glBindTexture(GL_TEXTURE_2D, _pendingSpanDrape);
+                glUniform1i(shaderProgram.uniforms[U_SPANDRAPETEXTURE], 4); // units 0-3 are taken (see renderTileGeometry)
+                glUniform4fv(shaderProgram.uniforms[U_SPANDRAPETRANSFORM], 1, _pendingSpanDrapeTransform.data());
+                glActiveTexture(GL_TEXTURE0);
+            }
             cglib::mat3x3<float> tileMatrix = cglib::mat3x3<float>::convert(cglib::inverse(calculateTileMatrix2D(targetTileId)) * calculateTileMatrix2D(sourceTileId));
             if (styleParams.translate) {
                 float zoomScale = std::pow(2.0f, sourceTileId.zoom - _viewState.zoom);
