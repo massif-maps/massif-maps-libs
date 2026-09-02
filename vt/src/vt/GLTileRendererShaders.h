@@ -15,8 +15,7 @@ namespace massif::vt {
         A_VERTEXBINORMAL,
         A_VERTEXHEIGHT,
         A_VERTEXBASE,
-        A_VERTEXSPAN,
-        A_VERTEXCOLOR,
+                A_VERTEXCOLOR,
         A_VERTEXATTRIBS,
         A_VERTEXOFFSET
     };
@@ -169,7 +168,6 @@ namespace massif::vt {
         { "aVertexBinormal", A_VERTEXBINORMAL },
         { "aVertexHeight",   A_VERTEXHEIGHT },
         { "aVertexBase",     A_VERTEXBASE },
-        { "aVertexSpan",     A_VERTEXSPAN },
         { "aVertexColor",    A_VERTEXCOLOR },
         { "aVertexAttribs",  A_VERTEXATTRIBS },
         { "aVertexOffset",   A_VERTEXOFFSET }
@@ -579,8 +577,17 @@ namespace massif::vt {
             highp float slopeMY = uElevationScale.y + pos.y * uElevationScale.z;
             vElevCosh = 0.5 * (exp(slopeMY) + exp(-slopeMY));
         }
+        // A span is NOT on the ground, so it must not take the ground's normal: the deck would be
+        // shaded by the valley wall under it and step in tone where it meets its own draped
+        // approach. Zeroing the stretch flattens the gradient terrainNdl() builds, which is the
+        // horizontal normal a deck actually has.
+        void setSpanFlatShading() {
+            vElevCosh = 0.0;
+        }
         #else
         void setTerrainSlopeVaryings(highp vec3 pos) {
+        }
+        void setSpanFlatShading() {
         }
         #endif
     )GLSL";
@@ -1892,12 +1899,6 @@ namespace massif::vt {
         // deck is the chord between the ground at those two points, so the ground in between - a
         // DSM spike off the deck included - never lifts it.
         //
-        // Sampled HERE rather than on the CPU: the CPU grid cache is a different cache from the
-        // elevation textures, and at a deep zoom the grid for a point is routinely not resident
-        // while the texture is, so a CPU query answered "no data" for every span. Both ends are
-        // inside this tile by construction - a span clipped by the tile border falls back to
-        // draped - so the tile's own texture answers both, and the two agree by construction.
-        attribute vec4 aVertexSpan;
         // The chord height for THIS vertex, resolved on the CPU (resolveLineSpanBases) in internal
         // z units. The sentinel means unresolved - a span the tile cut, or elevation not in yet -
         // and the line stays on the terrain, which is what it did before.
@@ -2026,6 +2027,7 @@ namespace massif::vt {
             // line, not across it, so the edge takes the SAME height as its centre.
             if (spanResolved) {
                 edgePos.z = spanZ;
+                setSpanFlatShading();
             }
         #endif
             highp vec4 edgeClip = uMVPMatrix * vec4(edgePos, 1.0);
@@ -2164,6 +2166,14 @@ namespace massif::vt {
         // polygon only needs it to look the drape mask up. uTileUnit* come from commonVsh.
         varying mediump vec2 vTileUnit;
         #endif
+        #if defined(SPAN) && defined(TERRAIN)
+        // A bridge BED, lifted onto the deck's chord: the height resolved on the CPU, in internal
+        // z units. The sentinel means unresolved and the fill stays on the terrain. Only under
+        // TERRAIN - uElevationScale, which converts it, does not exist otherwise, and a bed has
+        // nothing to be lifted off without a terrain anyway.
+        attribute float aVertexBase;
+        uniform float uBaseScale;
+        #endif
 
         void main(void) {
             int styleIndex = int(aVertexAttribs[0]);
@@ -2188,6 +2198,12 @@ namespace massif::vt {
         #endif
             setTerrainSlopeVaryings(pos);
             highp vec3 terrainPos = applyTerrain(pos);
+        #if defined(SPAN) && defined(TERRAIN)
+            if (aVertexBase > -1.0e29) {
+                terrainPos.z = aVertexBase * uBaseScale + uElevationScale.w;
+                setSpanFlatShading();
+            }
+        #endif
             applyShadowPos(terrainPos);
             gl_Position = applyDepthBias(uMVPMatrix * vec4(terrainPos, 1.0));
         }
