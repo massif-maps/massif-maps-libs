@@ -29,6 +29,8 @@ namespace massif::vt {
         static constexpr double MATCH_CURVE_FRACTION = 0.02;
         /** cos of the angle two pieces may differ by and still be one structure (~25 degrees). */
         static constexpr double MIN_PARALLEL = 0.9;
+        /** How much of its own pieces a chord must reach across to count as the whole structure. */
+        static constexpr double MIN_CHORD_SPAN = 0.95;
 
         /**
          * Whether an end is the FEATURE's own or just where the tile cut it. Tested against the
@@ -78,6 +80,16 @@ namespace massif::vt {
             }
             double allowance = matchAllowance(std::sqrt(length2));
             return cglib::norm(pos - (portal0 + chord * t)) <= allowance * allowance;
+        }
+
+        /**
+         * Whether a chord actually spans the pieces it was collected from. Two portals found on the
+         * SAME abutment - one structure's end seen in two neighbouring tiles - give a chord of a few
+         * tens of metres over a kilometre of deck, and it passes every other test here. Both lengths
+         * are SQUARED, as cglib::norm returns them.
+         */
+        static bool chordSpansGroup(double chordLength2, double groupDiameter2) {
+            return chordLength2 >= groupDiameter2 * (MIN_CHORD_SPAN * MIN_CHORD_SPAN);
         }
 
         /**

@@ -4208,6 +4208,7 @@ namespace massif::vt {
             }
 
             std::map<std::size_t, SpanUnion> groupUnions;
+            std::map<std::size_t, std::vector<cglib::vec2<double>>> groupEnds;
             for (std::size_t i = 0; i < pieces.size(); i++) {
                 if (pieces[i].portal0) {
                     addPortal(groupUnions[root(i)], pieces[i].e0);
@@ -4215,12 +4216,34 @@ namespace massif::vt {
                 if (pieces[i].portal1) {
                     addPortal(groupUnions[root(i)], pieces[i].e1);
                 }
+                std::vector<cglib::vec2<double>>& ends = groupEnds[root(i)];
+                ends.push_back(pieces[i].e0);
+                ends.push_back(pieces[i].e1);
+            }
+            // How far the group's own geometry reaches, which is what its chord has to span.
+            std::map<std::size_t, double> groupDiameters2;
+            for (auto endsIt = groupEnds.begin(); endsIt != groupEnds.end(); endsIt++) {
+                const std::vector<cglib::vec2<double>>& ends = endsIt->second;
+                double diameter2 = 0;
+                for (std::size_t a = 0; a < ends.size(); a++) {
+                    for (std::size_t b = a + 1; b < ends.size(); b++) {
+                        diameter2 = std::max(diameter2, cglib::norm(ends[a] - ends[b]));
+                    }
+                }
+                groupDiameters2[endsIt->first] = diameter2;
             }
             for (std::size_t i = 0; i < pieces.size(); i++) {
                 auto groupIt = groupUnions.find(root(i));
                 SpanUnion span;
                 if (groupIt != groupUnions.end()) {
                     span = groupIt->second;
+                }
+                // Both ends of ONE abutment, seen in two neighbouring tiles, read as two portals -
+                // and their 45 m chord passed the have0/have1 test, so the far portal being off
+                // screen looked resolved and sank a 1.3 km deck instead of borrowing its chord.
+                if (span.have0 && span.have1
+                 && !SpanGeometry::chordSpansGroup(cglib::norm(span.portal1 - span.portal0), groupDiameters2[root(i)])) {
+                    span = SpanUnion();
                 }
                 if (!span.have0 || !span.have1) {
                     // Lend it a chord resolved earlier. Probed with the piece's own MIDPOINT, not
