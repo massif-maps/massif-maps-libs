@@ -3373,7 +3373,14 @@ namespace massif::vt {
                     if (geometry->getType() == TileGeometry::Type::POLYGON3D) {
                         // Always drawn: an extrusion whose ground has not resolved yet keeps the
                         // sentinel and the shader falls back to the ground under each vertex.
-                        resolveExtrusionBases(renderLayer->sourceTileId, renderLayer->targetTileId, geometry);
+                        bool baseResolved = resolveExtrusionBases(renderLayer->sourceTileId, renderLayer->targetTileId, geometry);
+                        // ...but that fallback is only safe for a BUILDING, whose base is the ground
+                        // it stands on anyway. A span deck's base is its chord, hundreds of metres
+                        // up: mixing resolved and sentinel vertices stretches a wall between the two
+                        // and the deck fans out across the valley. Wait for the whole piece instead.
+                        if (!baseResolved && !geometry->getSpanRecords().empty()) {
+                            continue;
+                        }
                         // NOTE: geometry comp op is not supported for 3D polygons. Blending is disabled, setGLBlendState not needed
                         renderTileGeometry(renderLayer->sourceTileId, renderLayer->targetTileId, renderLayer->blend, pass.geometryOpacity, renderLayer->tileSize, geometry);
                     }
@@ -4398,6 +4405,13 @@ namespace massif::vt {
         cglib::mat3x3<double> tileMatrix = calculateTileMatrix2D(sourceTileId, 1.0f);
         std::size_t vertexCount = vertexGeometry.size() / params.vertexSize;
         bool allResolved = true;
+        // Every vertex or none. A record covers the run of vertices that carried the same span
+        // info, and an EXTRUSION has vertices that no record reaches - the walls and the ground
+        // skirt are emitted around the ring, not with it. Those kept the sentinel and were drawn
+        // on the ground while the rest stood on the chord, which stretches a wall from the deck
+        // down to the valley floor: the deck fans out across half the screen. A line has no such
+        // vertices, so this only ever widens the patch for a deck.
+        std::vector<bool> patched(vertexCount, false);
         for (const TileGeometry::SpanRecord& record : spanRecords) {
             auto it = _spanUnions.find(SpanPieceKey { sourceTileId, record.featureId, record.vertexOffset, geometry->getType() });
             // Both portals or nothing: a chord to a tile CUT dives to whatever the ground does
@@ -4429,7 +4443,21 @@ namespace massif::vt {
                 const std::int16_t* pos = reinterpret_cast<const std::int16_t*>(vertex + params.coordOffset);
                 cglib::vec2<double> p(pos[0] / static_cast<double>(params.coordScale), pos[1] / static_cast<double>(params.coordScale));
                 cglib::vec2<double> w = cglib::transform_point(cglib::vec2<double>(p(0), 1.0 - p(1)), tileMatrix);
-                geometry->setVertexBase(i, static_cast<float>(SpanGeometry::chordHeight(h0, h1, SpanGeometry::chordParam(w, w0, w1))));
+                geometry->setVertexBase(i, static_cast<float>(SpanGeometry::chordHeight(h0, h1, SpanGeometry::chordParam(w, w0, w1))) + record.baseOffset);
+                patched[i] = true;
+            }
+            // ...and the same chord for whatever the records did not reach. One geometry holds one
+            // structure here, so the first resolved chord is the right one for all of it.
+            for (std::size_t i = 0; i < vertexCount; i++) {
+                if (patched[i]) {
+                    continue;
+                }
+                const std::uint8_t* vertex = vertexGeometry.data() + i * params.vertexSize;
+                const std::int16_t* pos = reinterpret_cast<const std::int16_t*>(vertex + params.coordOffset);
+                cglib::vec2<double> p(pos[0] / static_cast<double>(params.coordScale), pos[1] / static_cast<double>(params.coordScale));
+                cglib::vec2<double> w = cglib::transform_point(cglib::vec2<double>(p(0), 1.0 - p(1)), tileMatrix);
+                geometry->setVertexBase(i, static_cast<float>(SpanGeometry::chordHeight(h0, h1, SpanGeometry::chordParam(w, w0, w1))) + record.baseOffset);
+                patched[i] = true;
             }
         }
         if (!allResolved) {
@@ -6387,6 +6415,7 @@ namespace massif::vt {
             glUniform1f(shaderProgram.uniforms[U_UVSCALE], 1.0f / vertexGeomLayoutParams.texCoordScale);
             glUniform1f(shaderProgram.uniforms[U_HEIGHTSCALE], buildingHeightScale(blend, spanDeck) * heightUnits);
             glUniform1f(shaderProgram.uniforms[U_SHADOWHEIGHTSCALE], casterHeightScale(blend, spanDeck) * heightUnits);
+            glUniform1f(shaderProgram.uniforms[U_FLOATINGBASE], spanDeck ? 1.0f : 0.0f);
             cglib::mat3x3<float> tileMatrix = cglib::mat3x3<float>::convert(cglib::inverse(calculateTileMatrix2D(targetTileId)) * calculateTileMatrix2D(sourceTileId));
             if (styleParams.translate) {
                 float zoomScale = std::pow(2.0f, sourceTileId.zoom - _viewState.zoom);

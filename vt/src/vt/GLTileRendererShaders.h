@@ -33,6 +33,7 @@ namespace massif::vt {
         U_UVSCALE,
         U_HEIGHTSCALE,
         U_BASESCALE,
+        U_FLOATINGBASE,
         U_SHADOWHEIGHTSCALE,
         U_COLORTABLE,
         U_WIDTHTABLE,
@@ -186,6 +187,7 @@ namespace massif::vt {
         { "uUVScale",          U_UVSCALE },
         { "uHeightScale",      U_HEIGHTSCALE },
         { "uBaseScale",        U_BASESCALE },
+        { "uFloatingBase",     U_FLOATINGBASE },
         { "uShadowHeightScale", U_SHADOWHEIGHTSCALE },
         { "uColorTable",       U_COLORTABLE },
         { "uWidthTable",       U_WIDTHTABLE },
@@ -2348,6 +2350,11 @@ namespace massif::vt {
         uniform float uHeightScale;
         #ifdef TERRAIN
         uniform float uBaseScale;   // internal z units -> this vertex frame (1 / frameScaleZ)
+        // A building's base ring belongs on the GROUND it stands on, so the resolved base is used
+        // only where the extrusion rises. A bridge DECK stands on nothing: its underside belongs on
+        // the chord like the rest of it, and leaving it on the terrain stretches the walls from the
+        // valley floor up to the deck. 1 = every vertex takes the base, whatever its height.
+        uniform float uFloatingBase;
         #endif
         // The height the SHADOW MAP was baked at. Equal to uHeightScale unless the style flattens
         // its buildings for the camera (building-height-view-scale), which the caster ignores: the
@@ -2401,7 +2408,7 @@ namespace massif::vt {
             // tile has not arrived) falls back to the ground under this vertex. That is the
             // pre-CPU behaviour: a roof that shears down the slope, which is wrong but visible -
             // skipping the draw instead loses the building entirely, and a base of 0 buries it.
-            if (aVertexHeight > 0.0 && aVertexBase > -1.0e29) {
+            if ((aVertexHeight > 0.0 || uFloatingBase > 0.5) && aVertexBase > -1.0e29) {
                 baseZ = aVertexBase * uBaseScale + uElevationScale.w;
             }
         #endif

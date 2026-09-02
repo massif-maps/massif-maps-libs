@@ -534,7 +534,7 @@ namespace massif::vt {
         };
     }
 
-    TileLayerBuilder::SpanVertexInfo TileLayerBuilder::spanInfoForRing(const Vertices& ring, long long id) {
+    TileLayerBuilder::SpanVertexInfo TileLayerBuilder::spanInfoForRing(const Vertices& ring, long long id, float baseOffset) {
         auto ends = SpanGeometry::farthestPair(ring);
         const Vertex& p0 = ends.first;
         const Vertex& p1 = ends.second;
@@ -543,6 +543,7 @@ namespace massif::vt {
         info.featureId = id;
         info.portal0 = SpanGeometry::isPortal(p0);
         info.portal1 = SpanGeometry::isPortal(p1);
+        info.baseOffset = baseOffset;
         return info;
     }
 
@@ -577,12 +578,23 @@ namespace massif::vt {
         }
 
         return [style, transform, invTransTransform, styleIndex, this](long long id, const VerticesList& verticesList, float minHeight, float maxHeight) {
+            bool span = style.elevationMode != LineElevationMode::DRAPE && !verticesList.empty() && !verticesList.front().empty();
+            // A deck HANGS under the road it carries, so its min-height is negative - and a negative
+            // vertex height cannot be drawn: polygon3DVsh takes the resolved base only where the
+            // height is positive, so a negative one leaves the vertex on the terrain. Move the whole
+            // prism by shifting its BASE instead, and hand the tesselator a positive thickness.
+            float spanBaseOffset = 0.0f;
+            if (span) {
+                spanBaseOffset = _transformer->calculateHeight(verticesList.front().front(), minHeight);
+                maxHeight -= minHeight;
+                minHeight = 0.0f;
+            }
             std::size_t i0 = _coords.size();
             tesselatePolygon3D(verticesList, minHeight, maxHeight, static_cast<std::int8_t>(styleIndex), style);
-            if (style.elevationMode != LineElevationMode::DRAPE && !verticesList.empty() && !verticesList.front().empty()) {
+            if (span) {
                 // A deck stands on its chord, so min-height/height are measured from that rather
                 // than from the ground the prism would otherwise sit on.
-                _spanInfos.fill(spanInfoForRing(verticesList.front(), id), _coords.size() - _spanInfos.size());
+                _spanInfos.fill(spanInfoForRing(verticesList.front(), id, spanBaseOffset), _coords.size() - _spanInfos.size());
             }
             _ids.fill(id, _indices.size() - _ids.size());
             _groundIds.fill(id, _groundIndices.size() - _groundIds.size());
@@ -1350,6 +1362,7 @@ namespace massif::vt {
                 record.p1 = cglib::vec2<float>(info.ends(2), info.ends(3));
                 record.portal0 = info.portal0;
                 record.portal1 = info.portal1;
+                record.baseOffset = info.baseOffset;
                 record.vertexOffset = i;
                 record.vertexCount = j - i;
                 spanRecords.push_back(record);

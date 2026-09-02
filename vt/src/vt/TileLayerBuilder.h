@@ -135,15 +135,16 @@ namespace massif::vt {
             cglib::vec4<float> ends = cglib::vec4<float>(0, 0, 0, 0);
             long long featureId = 0;
             bool portal0 = false, portal1 = false;
+            float baseOffset = 0.0f; // see TileGeometry::SpanRecord::baseOffset
             bool operator == (const SpanVertexInfo& other) const {
-                return featureId == other.featureId && portal0 == other.portal0 && portal1 == other.portal1
+                return featureId == other.featureId && portal0 == other.portal0 && portal1 == other.portal1 && baseOffset == other.baseOffset
                     && ends(0) == other.ends(0) && ends(1) == other.ends(1) && ends(2) == other.ends(2) && ends(3) == other.ends(3);
             }
         };
 
         // The span a filled ring stands on: its two vertices FARTHEST APART, which for a
         // deck-shaped ring are its ends. Shared by the flat bed and the extruded deck.
-        static SpanVertexInfo spanInfoForRing(const Vertices& ring, long long id);
+        static SpanVertexInfo spanInfoForRing(const Vertices& ring, long long id, float baseOffset = 0.0f);
 
         void packGeometry(std::vector<std::shared_ptr<TileGeometry>>& geometryList) const;
         // The skirt stream, packed once per layer into its own POLYGON3DGROUND geometry.
