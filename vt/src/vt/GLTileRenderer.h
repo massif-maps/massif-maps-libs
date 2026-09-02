@@ -414,13 +414,21 @@ namespace massif::vt {
             TileId tileId = TileId(0, 0, 0);
             long long featureId = 0;
             std::size_t vertexOffset = 0;
+            // One structure is several GEOMETRIES of the same feature in the same tile - a bridge
+            // is a bed polygon, an extruded deck and the road lines on it - and they all start at
+            // vertexOffset 0, so without the type they share a key and overwrite each other's
+            // union. They must not: a ring's two ends (farthest apart) are not a line's two ends,
+            // so the survivor resolved the others against the wrong chord and the deck broke back
+            // into per-tile pieces.
+            TileGeometry::Type type = TileGeometry::Type::NONE;
             bool operator == (const SpanPieceKey& other) const {
-                return tileId == other.tileId && featureId == other.featureId && vertexOffset == other.vertexOffset;
+                return tileId == other.tileId && featureId == other.featureId && vertexOffset == other.vertexOffset && type == other.type;
             }
             bool operator < (const SpanPieceKey& other) const {
                 if (!(tileId == other.tileId)) return tileId < other.tileId;
                 if (featureId != other.featureId) return featureId < other.featureId;
-                return vertexOffset < other.vertexOffset;
+                if (vertexOffset != other.vertexOffset) return vertexOffset < other.vertexOffset;
+                return type < other.type;
             }
         };
 

@@ -4150,7 +4150,7 @@ namespace massif::vt {
                         piece.e1 = cglib::transform_point(cglib::vec2<double>(record.p1(0), 1.0 - record.p1(1)), tileMatrix);
                         piece.portal0 = record.portal0;
                         piece.portal1 = record.portal1;
-                        piece.key = SpanPieceKey { tile->getTileId(), record.featureId, record.vertexOffset };
+                        piece.key = SpanPieceKey { tile->getTileId(), record.featureId, record.vertexOffset, geometry->getType() };
                         piecesByZoom[tile->getTileId().zoom].push_back(piece);
                     }
                 }
@@ -4399,7 +4399,7 @@ namespace massif::vt {
         std::size_t vertexCount = vertexGeometry.size() / params.vertexSize;
         bool allResolved = true;
         for (const TileGeometry::SpanRecord& record : spanRecords) {
-            auto it = _spanUnions.find(SpanPieceKey { sourceTileId, record.featureId, record.vertexOffset });
+            auto it = _spanUnions.find(SpanPieceKey { sourceTileId, record.featureId, record.vertexOffset, geometry->getType() });
             // Both portals or nothing: a chord to a tile CUT dives to whatever the ground does
             // there, which is worse than draping. Missing pieces resolve on a later frame.
             if (it == _spanUnions.end() || !it->second.have0 || !it->second.have1) {
