@@ -61,6 +61,9 @@ namespace massif::vt {
         U_ELEVATIONSCALE,
         U_ELEVATIONTEXELSIZE,
         U_ELEVATIONLATTICECELL,
+        U_ELEVATIONNODETEXTURE,
+        U_ELEVATIONNODEUV,
+        U_ELEVATIONNODETEXELSIZE,
         U_TERRAINEDGECOARSENING,
         U_LAYERDEPTHOFFSET,
         U_DEPTHSHIFT,
@@ -221,6 +224,9 @@ namespace massif::vt {
         { "uElevationScale",   U_ELEVATIONSCALE },
         { "uElevationTexelSize", U_ELEVATIONTEXELSIZE },
         { "uElevationLatticeCell", U_ELEVATIONLATTICECELL },
+        { "uElevationNodeTexture", U_ELEVATIONNODETEXTURE },
+        { "uElevationNodeUV",      U_ELEVATIONNODEUV },
+        { "uElevationNodeTexelSize", U_ELEVATIONNODETEXELSIZE },
         { "uTerrainEdgeCoarsening", U_TERRAINEDGECOARSENING },
         { "uLayerDepthOffset",  U_LAYERDEPTHOFFSET },
         { "uDepthShift",        U_DEPTHSHIFT },
@@ -480,50 +486,57 @@ namespace massif::vt {
         uniform float uElevationOffset;      // the constant term: a 2-channel texture has no free channel to carry it
         uniform highp vec4 uElevationScale;  // x: meters to vertex z units (equator), y/z: mercator y = y + pos.y * z, w: vertex frame z offset
         uniform highp vec4 uElevationTexelSize; // xy: texture size in texels, zw: 1 / size
-        uniform highp vec2 uElevationLatticeCell; // regular-grid surface cell size in elevation-uv units (0 = off = sample the full DEM detail)
+        uniform highp vec2 uElevationLatticeCell; // regular-grid surface cell size in NODE-uv units (0 = off = plain node sample)
         uniform highp vec4 uTerrainEdgeCoarsening; // lattice cell scale (2^k, 1 = off) on the west/east/south/north tile edge
+        // The NODE texture: the same DEM box-filtered to the surface lattice, one texel per mesh
+        // node. The vertex stage displaces from THIS, never from uElevationTexture: a lattice
+        // sampling a lidar-grade DEM point by point aliases every relief finer than its cell
+        // (a road's cut under a 6.7 m cell came out as a sawtooth at a grazing tilt), and the
+        // box filter is what removes it. The full texture stays the FRAGMENT stage's, for the
+        // shading and contours that resolve more than the mesh can.
+        uniform highp sampler2D uElevationNodeTexture;
+        uniform highp vec4 uElevationNodeUV;        // node texture uv = uv.xy + pos.xy * uv.zw
+        uniform highp vec4 uElevationNodeTexelSize; // xy: texture size in texels, zw: 1 / size
 
-        // GPU draping: the vertex z is REPLACED with the height sampled from the elevation
-        // texture, the same texture for every layer, so all of them agree exactly.
+        // GPU draping: the vertex z is REPLACED with the height sampled from the node texture,
+        // the same texture for every layer, so all of them agree exactly.
         // The bilinear filter is MANUAL - 4 samples at exact texel centres plus mix - because
         // several mobile GPUs filter VERTEX-stage fetches as NEAREST whatever is requested, and
         // that deviates from the depth-writing surface by up to a full texel step (tens of metres
         // on a cliff). At texel centres both filters return the same texel, so this is identical
-        // everywhere, and it matches ElevationTileGrid::sampleHeight on the CPU side.
-        float sampleElevation(highp vec2 uv) {
-            // The elevation texture is LUMINANCE_ALPHA: the height's high byte arrives in .rgb and
-            // its low byte in .a, so the decode is linear in both and the constant term needs a
-            // uniform of its own (RGBA had a spare channel pinned to 1 to carry it).
-            return dot(texture2D(uElevationTexture, uv), uElevationDecode) + uElevationOffset;
+        // everywhere, and it matches ElevationTileGrid::sampleNodeHeight on the CPU side.
+        float sampleNode(highp vec2 uv) {
+            return dot(texture2D(uElevationNodeTexture, uv), uElevationDecode) + uElevationOffset;
         }
-        // Full DEM detail: manual bilinear of the elevation texture at uv (4 texel-center taps).
+        // Manual bilinear of the node texture at uv (4 texel-center taps). At the nominal zoom a
+        // surface vertex IS a node, so all four taps read one texel and the height is exact.
         // DEM_HW_FILTER collapses it to ONE hardware-filtered fetch, which is what tangram's
         // terrain vertex does. It exists because some mobile GPUs ignore LINEAR for vertex texture
         // fetch and return NEAREST, which shows as terraced geometry - so it is a measurement
         // switch, not a default, until a device says the filtering is honoured.
         #ifdef DEM_HW_FILTER
-        float demMeters(highp vec2 uv) {
-            return sampleElevation(uv);
+        float nodeMeters(highp vec2 uv) {
+            return sampleNode(uv);
         }
         #else
-        float demMeters(highp vec2 uv) {
-            highp vec2 texelPos = uv * uElevationTexelSize.xy - 0.5;
+        float nodeMeters(highp vec2 uv) {
+            highp vec2 texelPos = uv * uElevationNodeTexelSize.xy - 0.5;
             highp vec2 texelBase = floor(texelPos);
             highp vec2 f = texelPos - texelBase;
-            highp vec2 uv00 = (texelBase + 0.5) * uElevationTexelSize.zw;
-            float h00 = sampleElevation(uv00);
-            float h10 = sampleElevation(uv00 + vec2(uElevationTexelSize.z, 0.0));
-            float h01 = sampleElevation(uv00 + vec2(0.0, uElevationTexelSize.w));
-            float h11 = sampleElevation(uv00 + uElevationTexelSize.zw);
+            highp vec2 uv00 = (texelBase + 0.5) * uElevationNodeTexelSize.zw;
+            float h00 = sampleNode(uv00);
+            float h10 = sampleNode(uv00 + vec2(uElevationNodeTexelSize.z, 0.0));
+            float h01 = sampleNode(uv00 + vec2(0.0, uElevationNodeTexelSize.w));
+            float h11 = sampleNode(uv00 + uElevationNodeTexelSize.zw);
             return mix(mix(h00, h10, f.x), mix(h01, h11, f.x), f.y);
         }
         #endif
         vec3 applyTerrain(vec3 pos) {
-            highp vec2 uv = uElevationUV.xy + pos.xy * uElevationUV.zw;
+            highp vec2 uv = uElevationNodeUV.xy + pos.xy * uElevationNodeUV.zw;
             float meters;
             if (uElevationLatticeCell.x != 0.0) {
-                // LATTICE CLAMP: take the 4 surrounding grid-corner heights (each a full DEM
-                // bilinear) and interpolate them with the SAME two-triangle split the surface mesh
+                // LATTICE CLAMP: take the 4 surrounding grid-corner heights (each a node sample)
+                // and interpolate them with the SAME two-triangle split the surface mesh
                 // uses, so draped geometry follows the surface everywhere, not only at the nodes.
                 // A bilinear blend instead leaves an in-cell twist that exceeds the (near zero)
                 // painter-order slack at large cells and cracks draped lines.
@@ -541,14 +554,14 @@ namespace massif::vt {
                 else if (unitPos.x > 0.99999) cell.y *= uTerrainEdgeCoarsening.y;  // east edge
                 if (unitPos.y < 0.00001) cell.x *= uTerrainEdgeCoarsening.z;       // south edge
                 else if (unitPos.y > 0.99999) cell.x *= uTerrainEdgeCoarsening.w;  // north edge
-                highp vec2 rel = (uv - uElevationUV.xy) / cell;
+                highp vec2 rel = (uv - uElevationNodeUV.xy) / cell;
                 highp vec2 gi = floor(rel);
                 highp vec2 fg = rel - gi;
-                highp vec2 uv00 = uElevationUV.xy + gi * cell;
-                float H00 = demMeters(uv00);
-                float H10 = demMeters(uv00 + vec2(cell.x, 0.0));
-                float H01 = demMeters(uv00 + vec2(0.0, cell.y));
-                float H11 = demMeters(uv00 + cell);
+                highp vec2 uv00 = uElevationNodeUV.xy + gi * cell;
+                float H00 = nodeMeters(uv00);
+                float H10 = nodeMeters(uv00 + vec2(cell.x, 0.0));
+                float H01 = nodeMeters(uv00 + vec2(0.0, cell.y));
+                float H11 = nodeMeters(uv00 + cell);
                 if (fg.x + fg.y <= 1.0) {
                     // lower-left triangle (H00, H10, H01)
                     meters = H00 + (H10 - H00) * fg.x + (H01 - H00) * fg.y;
@@ -557,7 +570,7 @@ namespace massif::vt {
                     meters = H10 * (1.0 - fg.y) + H01 * (1.0 - fg.x) + H11 * (fg.x + fg.y - 1.0);
                 }
             } else {
-                meters = demMeters(uv);
+                meters = nodeMeters(uv);
             }
             highp float my = uElevationScale.y + pos.y * uElevationScale.z;
             float coshMY = 0.5 * (exp(my) + exp(-my));
