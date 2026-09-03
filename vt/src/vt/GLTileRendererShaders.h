@@ -2395,6 +2395,10 @@ namespace massif::vt {
         // exists when the lighting runs per fragment - the shadow needs it either way.
         varying mediump vec3 vShadowNormal;
         #endif
+        #ifdef SPAN_DRAPE
+        // 1 on the deck's roof, 0 on its walls: only the roof wears the road (see polygon3DFsh).
+        varying lowp float vSpanRoof;
+        #endif
 
         void main(void) {
             int styleIndex = int(aVertexAttribs[0]);
@@ -2462,6 +2466,9 @@ namespace massif::vt {
             vWallT = wallT;
             vSideVertex = sideVertex;
         #endif
+        #ifdef SPAN_DRAPE
+            vSpanRoof = 1.0 - sideVertex;
+        #endif
             gl_Position = applyDepthBias(uMVPMatrix * vec4(pos, 1.0));
         }
     )GLSL";
@@ -2474,6 +2481,7 @@ namespace massif::vt {
         // tile position into it, the same sub-rect an ancestor drape tile needs elsewhere.
         uniform sampler2D uSpanDrapeTexture;
         uniform mediump vec4 uSpanDrapeTransform;
+        varying lowp float vSpanRoof;
         #endif
         #ifdef TERRAIN_SHADOW
         varying mediump vec3 vShadowNormal;
@@ -2506,14 +2514,16 @@ namespace massif::vt {
         #endif
             lowp vec4 surfaceColor = vColor;
         #ifdef SPAN_DRAPE
-            // The deck's ROOF wears the road; its walls keep the structure's own colour. vTilePos
-            // is this geometry's tile position, which is also where the span drape baked the road,
+            // The deck's ROOF wears the road; its walls keep the structure's own colour - by
+            // vSpanRoof, since a wall's tile position runs along the deck's edge and would
+            // otherwise smear whatever the road's edge holds down the whole face. vTilePos is
+            // this geometry's tile position, which is also where the span drape baked the road,
             // so the two line up without any projection of their own.
             // vTilePos carries the extrusion's own 1-y flip (see polygon3DVsh); the drape was
             // baked in the surface's unflipped tile parametrization, so flip back to meet it.
             highp_opt vec2 spanUV = vec2(vTilePos.x, 1.0 - vTilePos.y);
             lowp vec4 draped = texture2D(uSpanDrapeTexture, spanUV * uSpanDrapeTransform.zw + uSpanDrapeTransform.xy);
-            surfaceColor = vec4(mix(surfaceColor.rgb, draped.rgb, draped.a), surfaceColor.a);
+            surfaceColor = vec4(mix(surfaceColor.rgb, draped.rgb, draped.a * vSpanRoof), surfaceColor.a);
         #endif
         #ifdef LIGHTING_FSH
             // The shadow goes INTO the lighting, where it dims the sun alone. Multiplied over the

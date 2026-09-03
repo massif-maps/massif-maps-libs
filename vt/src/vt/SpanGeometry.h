@@ -13,6 +13,7 @@
 #include <vector>
 
 #include <cglib/vec.h>
+#include <cglib/mat.h>
 
 namespace massif::vt {
     /**
@@ -144,6 +145,58 @@ namespace massif::vt {
             }
             return (!aPortal0 && ((!bPortal0 && cglib::norm(a0 - b0) < tolerance2) || (!bPortal1 && cglib::norm(a0 - b1) < tolerance2)))
                 || (!aPortal1 && ((!bPortal0 && cglib::norm(a1 - b0) < tolerance2) || (!bPortal1 && cglib::norm(a1 - b1) < tolerance2)));
+        }
+
+        /** How far past a cut end the point that names the next tile is placed, as a fraction of the tile. */
+        static constexpr double CUT_STEP_FRACTION = 0.05;
+
+        /**
+         * A point just past the cut end of a piece, along the piece: the source's buffer puts the
+         * cut itself INSIDE the neighbouring copy's overlap, so the end alone can name the wrong
+         * tile. A twentieth of a tile at the piece's zoom clears any buffer a source uses.
+         */
+        static cglib::vec2<double> beyondCutEnd(const cglib::vec2<double>& end, const cglib::vec2<double>& other, int zoom) {
+            cglib::vec2<double> dir = end - other;
+            double length = std::sqrt(cglib::dot_product(dir, dir));
+            if (!(length > 0)) {
+                return end;
+            }
+            return end + dir * (CUT_STEP_FRACTION / (1 << zoom) / length);
+        }
+
+        /**
+         * Drape bounds (u0, v0, u1, v1) grown by a margin on every side and clamped to the tile:
+         * the deck has a width its two ends do not carry, and a line its stroke.
+         */
+        static cglib::vec4<float> expandBounds(const cglib::vec4<float>& bounds, float margin) {
+            return cglib::vec4<float>(std::max(0.0f, bounds(0) - margin), std::max(0.0f, bounds(1) - margin),
+                                      std::min(1.0f, bounds(2) + margin), std::min(1.0f, bounds(3) + margin));
+        }
+
+        /**
+         * The sampling transform (offset.xy, scale.zw: uv' = uv * scale + offset) of a span drape
+         * that was baked over `bounds` of its tile only: what mapped into the tile now maps into
+         * the bounds' share of it.
+         */
+        static cglib::vec4<float> drapeTransformInBounds(const cglib::vec4<float>& transform, const cglib::vec4<float>& bounds) {
+            float w = std::max(1.0e-6f, bounds(2) - bounds(0));
+            float h = std::max(1.0e-6f, bounds(3) - bounds(1));
+            return cglib::vec4<float>((transform(0) - bounds(0)) / w, (transform(1) - bounds(1)) / h, transform(2) / w, transform(3) / h);
+        }
+
+        /**
+         * The clip-space zoom that puts `bounds` of a tile (uv, y up as the texture's) onto the
+         * whole [-1, 1] square, for a bake that covers the bounds alone.
+         */
+        static cglib::mat4x4<float> clipZoomToBounds(const cglib::vec4<float>& bounds) {
+            float w = std::max(1.0e-6f, bounds(2) - bounds(0));
+            float h = std::max(1.0e-6f, bounds(3) - bounds(1));
+            cglib::mat4x4<float> zoom = cglib::mat4x4<float>::identity();
+            zoom(0, 0) = 1.0f / w;
+            zoom(1, 1) = 1.0f / h;
+            zoom(0, 3) = -(bounds(0) + bounds(2) - 1.0f) / w; // the bounds' centre, in clip units, to 0
+            zoom(1, 3) = -(bounds(1) + bounds(3) - 1.0f) / h;
+            return zoom;
         }
     };
 }

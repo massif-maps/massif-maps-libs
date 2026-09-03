@@ -583,9 +583,13 @@ namespace massif::vt {
             // vertex height cannot be drawn: polygon3DVsh takes the resolved base only where the
             // height is positive, so a negative one leaves the vertex on the terrain. Move the whole
             // prism by shifting its BASE instead, and hand the tesselator a positive thickness.
+            // In METRES: the base it shifts is resolved in internal z units by resolveSpanBases,
+            // which converts there. Handing it tile units (calculateHeight) made the -7 m offset a
+            // rounding error against a chord in internal units, so the prism stood ON the chord and
+            // its thickness rose above the road instead of hanging under it.
             float spanBaseOffset = 0.0f;
             if (span) {
-                spanBaseOffset = _transformer->calculateHeight(verticesList.front().front(), minHeight);
+                spanBaseOffset = minHeight;
                 maxHeight -= minHeight;
                 minHeight = 0.0f;
             }

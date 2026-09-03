@@ -355,6 +355,12 @@ namespace massif::vt {
         // The tiles that carry a bridge or a tunnel, with a fingerprint of what would be baked.
         // Empty for a map with no spans, which is what keeps this free for everyone else.
         void collectSpanDrapeTiles(std::map<TileId, std::size_t>& spanTiles) const;
+        // The cut ends of the span pieces that could not be given a chord - their far portal is in
+        // no tile the renderer holds - each stepped just past the cut, with the zoom of the piece.
+        // The owner fetches the (coarser) tile each point lands in, unseen, so its piece can
+        // resolve and lend its chord: a map opened in the middle of a bridge otherwise drapes the
+        // deck onto the valley until the abutments are scrolled into view.
+        void collectUnresolvedSpanEnds(std::vector<std::pair<int, cglib::vec2<double>>>& ends) const;
         // The baked span drape per tile, handed back by the owner after baking. Empty = no bridge
         // in view, which is the only cost a map without spans pays.
         void setSpanDrapeTextures(const std::map<TileId, GLuint>& textures);
@@ -695,12 +701,19 @@ namespace massif::vt {
         bool hasSpanContent(const RenderTileLayer& renderLayer) const;
         bool resolveSpanDrape(const TileId& targetTileId, GLuint& texture, cglib::vec4<float>& uvTransform) const;
         std::map<TileId, GLuint> _spanDrapeTextures;
+        // The part of each span drape tile the bake covers, in drape uv (u0, v0, u1, v1): the deck's
+        // own extent rather than the whole tile, so a narrow deck gets the texture's full width
+        // across itself. Collected with the tiles, read by the bake and by the sampling transform.
+        mutable std::map<TileId, cglib::vec4<float>> _spanDrapeBounds;
+        std::vector<std::pair<int, cglib::vec2<double>>> _unresolvedSpanEnds; // see collectUnresolvedSpanEnds
         GLuint _pendingSpanDrape = 0;
         cglib::vec4<float> _pendingSpanDrapeTransform = cglib::vec4<float>(0, 0, 1, 1);
         // The body shared by bakeDrapeTile and bakeDrapeCoverage: the same covering tiles, the same
         // transforms, restricted to the style layers at or after fromStyleLayerIdx. Caller holds the
         // mutex and has already handled the terrain-paint case.
-        int bakeDrapeUnits(const TileId& targetTileId, int fromStyleLayerIdx, bool spanOnly = false);
+        // clipZoom, when given, is premultiplied onto the bake matrix: the span drape bakes only the
+        // deck's bounds (see _spanDrapeBounds), scaled up to the whole texture.
+        int bakeDrapeUnits(const TileId& targetTileId, int fromStyleLayerIdx, bool spanOnly = false, const cglib::mat4x4<float>* clipZoom = nullptr);
         // The mask a live style layer is occluded by over one target tile, and the transform taking
         // target-tile units to that mask tile's. False when there is no mask, or when the drape tile
         // is FINER than the target tile - one draw cannot sample several masks, so it draws as it
