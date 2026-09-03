@@ -2513,15 +2513,27 @@ namespace massif::vt {
             shadow = shadowFactorSlopeParts(max(0.0, dot(normalize(vShadowNormal), uSunDir)), skyShadow);
         #endif
             lowp vec4 surfaceColor = vColor;
+        #if defined(SPAN) || defined(SPAN_DRAPE)
+            // vTilePos is this geometry's tile position, which is also where the span drape baked
+            // the road, so the two line up without any projection of their own. It carries the
+            // extrusion's own 1-y flip (see polygon3DVsh); the drape was baked in the surface's
+            // unflipped tile parametrization, so flip back to meet it.
+            highp_opt vec2 spanUV = vec2(vTilePos.x, 1.0 - vTilePos.y);
+            // This tile's share of the deck alone, drape or no drape. A roof triangle is emitted
+            // whole into every target tile it touches (TileLayerBuilder::appendPolygon3D), so
+            // past the tile edge a neighbour's copy of the same deck can win the depth test -
+            // with a drape that stops at ITS tile, a plain strip of roof along every cut; with
+            // no drape yet, a whole uncut roof whose walls exist only near its own tile, so the
+            // deck's side goes missing wherever that copy wins. mapbox tiles its extrusions
+            // exactly the same way, by cutting at the tile.
+            if (spanUV.x < 0.0 || spanUV.x > 1.0 || spanUV.y < 0.0 || spanUV.y > 1.0) {
+                discard;
+            }
+        #endif
         #ifdef SPAN_DRAPE
             // The deck's ROOF wears the road; its walls keep the structure's own colour - by
             // vSpanRoof, since a wall's tile position runs along the deck's edge and would
-            // otherwise smear whatever the road's edge holds down the whole face. vTilePos is
-            // this geometry's tile position, which is also where the span drape baked the road,
-            // so the two line up without any projection of their own.
-            // vTilePos carries the extrusion's own 1-y flip (see polygon3DVsh); the drape was
-            // baked in the surface's unflipped tile parametrization, so flip back to meet it.
-            highp_opt vec2 spanUV = vec2(vTilePos.x, 1.0 - vTilePos.y);
+            // otherwise smear whatever the road's edge holds down the whole face.
             highp_opt vec2 drapeUV = spanUV * uSpanDrapeTransform.zw + uSpanDrapeTransform.xy;
             lowp vec4 draped = texture2D(uSpanDrapeTexture, drapeUV);
             // Past the baked bounds there is no road: nothing, not the clamped edge texel.

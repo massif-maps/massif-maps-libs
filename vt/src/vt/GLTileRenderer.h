@@ -415,6 +415,9 @@ namespace massif::vt {
          * here, so the span chords cannot be compared against it without this.
          */
         void setLabelPositionScale(double scale) { _labelPositionScale = scale; }
+        // Measurement switch (TileRenderer reads debug.massif.labelanchor): 0 anchors every label
+        // in the frame as before, 1 samples a new tile set's labels on the cull thread.
+        void setLabelAnchorOnCull(bool enabled) { _labelAnchorOnCull = enabled; }
         // Ask for labels to be re-anchored onto the terrain on the next frame. Re-anchoring
         // samples the elevation once per label vertex, so it is driven by what actually
         // changed: the tileIds overload only marks the labels whose geometry lies over one of
@@ -477,6 +480,19 @@ namespace massif::vt {
         // Written in setVisibleTiles under _mutex, read by the resolve during the frame - the same
         // build-then-consume pattern the render tiles use.
         mutable std::map<SpanPieceKey, SpanUnion> _spanUnions; // heights filled by the resolve
+        // The DISTINCT resolved chords of _spanUnions with their bounds: a label anchor asks
+        // "is this vertex on a deck" per vertex, and against the unions that was one chord test
+        // per piece - hundreds in a city, most of them the same chord - for every vertex of every
+        // label. Rebuilt wherever the unions gain a chord or a height; a sampler takes a COPY,
+        // so the cull thread can anchor labels with the renderer's lock released.
+        struct SpanChord {
+            cglib::vec2<double> portal0, portal1;
+            double height0 = 0, height1 = 0;
+            cglib::vec2<double> boundsMin, boundsMax;
+        };
+        mutable std::vector<SpanChord> _spanChords;
+        void rebuildSpanChords() const;
+        static bool chordHeightAt(const std::vector<SpanChord>& chords, const cglib::vec2<double>& pos, double& height);
         std::atomic<unsigned int> _spanUnionVersion { 0 };
         // The ground under an extrusion, in internal z units. Unlike the label provider this one
         // REPORTS whether there was data: a base is baked into the vertices, so guessing 0 where
@@ -501,7 +517,10 @@ namespace massif::vt {
         void setClickHandlerLayerFilter(const std::optional<std::regex>& filter);
         void setViewState(const ViewState& viewState);
         void setLineAntialiasScale(float scale);
-        void setVisibleTiles(const std::map<TileId, std::shared_ptr<const Tile>>& tiles);
+        // `spanReferenceTiles`: tiles fetched UNSEEN for the chord of a stranded bridge piece
+        // (collectUnresolvedSpanEnds). They join the span unions and nothing else - not drawn,
+        // no labels - so a reference that overlaps the view does not double its geometry.
+        void setVisibleTiles(const std::map<TileId, std::shared_ptr<const Tile>>& tiles, const std::vector<std::shared_ptr<const Tile>>& spanReferenceTiles = {});
         void teleportVisibleTiles(int dx, int dy);
 
         void initializeRenderer();
@@ -706,6 +725,7 @@ namespace massif::vt {
         // across itself. Collected with the tiles, read by the bake and by the sampling transform.
         mutable std::map<TileId, cglib::vec4<float>> _spanDrapeBounds;
         std::vector<std::pair<int, cglib::vec2<double>>> _unresolvedSpanEnds; // see collectUnresolvedSpanEnds
+        bool _labelAnchorOnCull = true;
         GLuint _pendingSpanDrape = 0;
         cglib::vec4<float> _pendingSpanDrapeTransform = cglib::vec4<float>(0, 0, 1, 1);
         // The body shared by bakeDrapeTile and bakeDrapeCoverage: the same covering tiles, the same
@@ -807,7 +827,7 @@ namespace massif::vt {
         bool resolveSpanBases(const TileId& sourceTileId, const std::shared_ptr<TileGeometry>& geometry) const;
         // Rebuilt whenever the visible set changes: a neighbouring tile arriving can complete a
         // bridge whose chord was unresolvable before, so the version bump re-resolves the pieces.
-        void buildSpanUnions(const std::map<TileId, std::shared_ptr<const Tile>>& tiles);
+        void buildSpanUnions(const std::map<TileId, std::shared_ptr<const Tile>>& tiles, const std::vector<std::shared_ptr<const Tile>>& spanReferenceTiles);
         // A chord that was resolved once, kept after the tiles that proved it left the view. A
         // bridge's portals are a property of the WORLD, not of what is on screen: zooming into one
         // end drops the far piece from the visible set, and without this the chord shortens to
@@ -825,6 +845,9 @@ namespace massif::vt {
          *
          * @return False when the point is not on a resolved span.
          */
+        void markPendingLabelsDirty();
+        std::function<double(const cglib::vec3<double>&)> labelHeightFunc() const;
+        bool anchorDirtyLabels();
         bool spanHeightAt(const cglib::vec2<double>& pos, double& height) const;
         void renderTileMask(const TileId& tileId);
         void renderStencilDebugOverlay();

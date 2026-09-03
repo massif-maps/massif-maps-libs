@@ -9,6 +9,7 @@
 #include "RenderStats.h"
 
 #include <cassert>
+#include <unordered_map>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -1116,7 +1117,7 @@ namespace massif::vt {
         return _colorFuncCache.emplace(key, std::make_pair(func.function(), value)).first->second.second;
     }
     
-    void GLTileRenderer::setVisibleTiles(const std::map<TileId, std::shared_ptr<const Tile>>& tiles) {
+    void GLTileRenderer::setVisibleTiles(const std::map<TileId, std::shared_ptr<const Tile>>& tiles, const std::vector<std::shared_ptr<const Tile>>& spanReferenceTiles) {
         using TilePair = std::pair<TileId, std::shared_ptr<const Tile>>;
 
         // Clear the 'visible' label list for now (used only for culling)
@@ -1145,6 +1146,9 @@ namespace massif::vt {
 
         // All other operations must be synchronized
         VT_STAT_CLOCK(visibleClock);
+        std::vector<std::shared_ptr<Label>> dirtyLabels;
+        std::function<double(const cglib::vec3<double>&)> heightFunc;
+        {
         std::lock_guard<std::mutex> lock(_mutex);
         VT_STAT_SPLIT(setVisibleTilesLockNs, visibleClock);
 
@@ -1158,7 +1162,41 @@ namespace massif::vt {
         VT_STAT_SPLIT(labelMapsNs, visibleClock);
         buildRenderTiles(tiles);
         VT_STAT_SPLIT(renderTilesNs, visibleClock);
-        buildSpanUnions(tiles);
+        buildSpanUnions(tiles, spanReferenceTiles);
+        VT_STAT_SPLIT(spanUnionsNs, visibleClock);
+        // The labels this tile set brought, and the whole screen when a deck resolved: named
+        // here, sampled below OFF the lock, applied under it again.
+        if (_labelElevationProvider && _labelAnchorOnCull) {
+            markPendingLabelsDirty();
+            for (const std::shared_ptr<Label>& label : _labels) {
+                if (label->isElevationDirty()) {
+                    dirtyLabels.push_back(label);
+                }
+            }
+            heightFunc = labelHeightFunc();
+        }
+        }
+
+        // Anchoring the new labels onto the terrain used to wait for the next frame, on the
+        // render thread: a tile set that brought 300 labels was a 50-75 ms frame at ~233 us
+        // each. Sampled here on the cull thread with the lock RELEASED - the frame keeps
+        // drawing the labels at their old height meanwhile - and written back under it. A
+        // sample reads the geometry's x,y only, which nothing changes after a label is built;
+        // the z it writes belongs to this thread and the frame's own re-anchor, both locked.
+        if (!dirtyLabels.empty()) {
+            std::vector<std::vector<double>> heights(dirtyLabels.size());
+            for (std::size_t i = 0; i < dirtyLabels.size(); i++) {
+                heights[i] = dirtyLabels[i]->sampleElevation(heightFunc);
+            }
+            std::lock_guard<std::mutex> lock(_mutex);
+            for (std::size_t i = 0; i < dirtyLabels.size(); i++) {
+                if (dirtyLabels[i]->isElevationDirty()) {
+                    dirtyLabels[i]->applyElevation(heights[i]);
+                    dirtyLabels[i]->setElevationDirty(false);
+                }
+            }
+            VT_STAT_SPLIT(labelAnchorNs, visibleClock);
+        }
     }
 
     const std::set<TileId>& GLTileRenderer::terrainSurfaceTileIds() const {
@@ -1391,57 +1429,12 @@ namespace massif::vt {
         }
         VT_STAT_SPLIT(prepTileBlendNs, prepClock);
         
-        // Re-anchor labels onto the terrain. Label geometry is built flat when its tile is
-        // decoded, so a newly built label is always anchored here; an existing one only when
-        // the elevation under one of its tiles changed. Anchoring costs an elevation sample
-        // per label vertex - doing it for every label whenever any elevation tile decodes (or
-        // whenever the visible tile set changes, which rebuilds the label list) resamples the
-        // whole screen several times a second while panning.
+        // Re-anchor labels onto the terrain - here only for the elevation tiles that landed since
+        // the last frame. A NEW label is anchored where the tile set is built (setVisibleTiles,
+        // on the cull thread): built flat when its tile decodes, it used to wait for this frame,
+        // and a tile-set change that brought 300 labels was a 50-75 ms frame at ~233 us each.
         if (_labelElevationProvider) {
-            if (_pendingLabelElevationAll || !_pendingLabelElevationTiles.empty()) {
-                for (const std::shared_ptr<Label>& label : _labels) {
-                    if (label->isElevationDirty()) {
-                        continue;
-                    }
-                    if (_pendingLabelElevationAll) {
-                        label->setElevationDirty(true);
-                        continue;
-                    }
-                    for (const TileId& tileId : _pendingLabelElevationTiles) {
-                        if (label->hasGeometryOverTile(tileId)) {
-                            label->setElevationDirty(true);
-                            break;
-                        }
-                    }
-                }
-                _pendingLabelElevationAll = false;
-                _pendingLabelElevationTiles.clear();
-            }
-            VT_STAT_SPLIT(prepElevDirtyNs, prepClock);
-            // Re-anchoring costs one elevation sample per label vertex (~233 us a label) and a
-            // whole screen of labels goes dirty at once while elevation tiles stream in, so
-            // this loop is 2.5-4.1 ms of a frame. It still has to run to completion: a label
-            // left dirty is drawn, and culled, at the height it had before the elevation
-            // arrived - which reads as labels popping in at the wrong place and then settling.
-            // A label ON a bridge belongs to the deck, not to the ground under it - road names,
-            // POIs and one-way arrows are all symbols, so they all come through here.
-            std::function<double(const cglib::vec3<double>&)> elevationProvider = _labelElevationProvider;
-            if (!_spanUnions.empty()) {
-                elevationProvider = [this](const cglib::vec3<double>& pos) {
-                    double deck = 0;
-                    if (spanHeightAt(cglib::vec2<double>(pos(0) * _labelPositionScale, pos(1) * _labelPositionScale), deck)) {
-                        return deck;
-                    }
-                    return _labelElevationProvider(pos);
-                };
-            }
-            for (const std::shared_ptr<Label>& label : _labels) {
-                if (label->isElevationDirty()) {
-                    label->updateElevation(elevationProvider);
-                    label->setElevationDirty(false);
-                    refresh = true;
-                }
-            }
+            refresh = anchorDirtyLabels() || refresh;
             VT_STAT_SPLIT(prepElevUpdateNs, prepClock);
         }
 
@@ -4152,7 +4145,7 @@ namespace massif::vt {
         return true;
     }
 
-    void GLTileRenderer::buildSpanUnions(const std::map<TileId, std::shared_ptr<const Tile>>& tiles) {
+    void GLTileRenderer::buildSpanUnions(const std::map<TileId, std::shared_ptr<const Tile>>& tiles, const std::vector<std::shared_ptr<const Tile>>& spanReferenceTiles) {
         // One piece of one span, in world coordinates. `portalN` marks an end the tile did NOT cut.
         struct SpanPiece {
             cglib::vec2<double> e0, e1;
@@ -4168,8 +4161,14 @@ namespace massif::vt {
         // gives a different chord per geometry.
         std::map<int, std::vector<SpanPiece>> piecesByZoom;
         std::set<const Tile*> visited;
+        // The reference tiles first: at the source's max zoom they hold a piece UNCUT by the
+        // overzoomed targets on screen, and the visited set then skips a visible tile that is
+        // the same object.
+        std::vector<std::shared_ptr<const Tile>> spanTiles(spanReferenceTiles);
         for (auto it = tiles.begin(); it != tiles.end(); it++) {
-            const std::shared_ptr<const Tile>& tile = it->second;
+            spanTiles.push_back(it->second);
+        }
+        for (const std::shared_ptr<const Tile>& tile : spanTiles) {
             if (!tile || !visited.insert(tile.get()).second) {
                 continue;
             }
@@ -4230,7 +4229,9 @@ namespace massif::vt {
         // or was never in it: the coarser reference tiles the owner fetches for a stranded piece
         // (collectUnresolvedSpanEnds) resolve here too, and the zoom groups below run coarsest
         // first, so their chord is in the cache by the time the fine pieces look for one.
-        constexpr std::size_t MAX_CACHED_CHORDS = 64;
+        // 512: a city view holds a chord per structure per zoom group, and at 64 the cache
+        // evicted chords the pieces on screen still borrowed, so they went stranded again.
+        constexpr std::size_t MAX_CACHED_CHORDS = 512;
         auto rememberChord = [this](const cglib::vec2<double>& portal0, const cglib::vec2<double>& portal1) {
             for (CachedChord& chord : _spanChordCache) {
                 if (chord.portal0 == portal0 && chord.portal1 == portal1) {
@@ -4261,11 +4262,35 @@ namespace massif::vt {
             std::function<std::size_t(std::size_t)> root = [&group, &root](std::size_t i) {
                 return group[i] == i ? i : (group[i] = root(group[i]));
             };
-            // A handful of pieces per way - the quadratic pass is cheaper than an index.
+            // Bucketed by end, a cell per tolerance: two pieces can only meet when an end of one
+            // lies within the tolerance of an end of the other, so the candidates are the pieces
+            // with an end in the 3x3 cells around each of this one's. The quadratic pass this
+            // replaces was fine for a handful of pieces per way and took a second per build once
+            // the reference tiles brought a city's every bridge at z14 - thousands of pieces.
+            auto cellKey = [tolerance](const cglib::vec2<double>& p, int dx, int dy) -> long long {
+                long long cx = static_cast<long long>(std::floor(p(0) / tolerance)) + dx;
+                long long cy = static_cast<long long>(std::floor(p(1) / tolerance)) + dy;
+                return (cx << 32) ^ (cy & 0xffffffffLL);
+            };
+            std::unordered_map<long long, std::vector<std::size_t>> cells;
             for (std::size_t i = 0; i < pieces.size(); i++) {
-                for (std::size_t j = i + 1; j < pieces.size(); j++) {
-                    if (meets(pieces[i], pieces[j], tolerance2)) {
-                        group[root(i)] = root(j);
+                cells[cellKey(pieces[i].e0, 0, 0)].push_back(i);
+                cells[cellKey(pieces[i].e1, 0, 0)].push_back(i);
+            }
+            for (std::size_t i = 0; i < pieces.size(); i++) {
+                for (const cglib::vec2<double>& end : { pieces[i].e0, pieces[i].e1 }) {
+                    for (int dy = -1; dy <= 1; dy++) {
+                        for (int dx = -1; dx <= 1; dx++) {
+                            auto cellIt = cells.find(cellKey(end, dx, dy));
+                            if (cellIt == cells.end()) {
+                                continue;
+                            }
+                            for (std::size_t j : cellIt->second) {
+                                if (j > i && meets(pieces[i], pieces[j], tolerance2)) {
+                                    group[root(i)] = root(j);
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -4401,6 +4426,7 @@ namespace massif::vt {
 
         if (spanUnions != _spanUnions) {
             _spanUnions = std::move(spanUnions);
+            rebuildSpanChords();
             _spanUnionVersion.fetch_add(1, std::memory_order_relaxed);
         }
         if (gainedHeights) {
@@ -4408,14 +4434,120 @@ namespace massif::vt {
         }
     }
 
-    bool GLTileRenderer::spanHeightAt(const cglib::vec2<double>& pos, double& height) const {
-        for (auto it = _spanUnions.begin(); it != _spanUnions.end(); it++) {
-            const SpanUnion& span = it->second;
-            if (!span.haveHeights || !SpanGeometry::isOnChord(pos, span.portal0, span.portal1)) {
+    void GLTileRenderer::markPendingLabelsDirty() {
+        // Label geometry is built flat when its tile is decoded, so a newly built label is
+        // always dirty; an existing one only when the elevation under one of its tiles changed.
+        // Doing it for every label whenever any elevation tile decodes (or whenever the visible
+        // tile set changes, which rebuilds the label list) resamples the whole screen several
+        // times a second while panning.
+        if (!_pendingLabelElevationAll && _pendingLabelElevationTiles.empty()) {
+            return;
+        }
+        for (const std::shared_ptr<Label>& label : _labels) {
+            if (label->isElevationDirty()) {
                 continue;
             }
-            height = SpanGeometry::chordHeight(span.height0, span.height1,
-                                               SpanGeometry::chordParam(pos, span.portal0, span.portal1));
+            if (_pendingLabelElevationAll) {
+                label->setElevationDirty(true);
+                continue;
+            }
+            for (const TileId& tileId : _pendingLabelElevationTiles) {
+                if (label->hasGeometryOverTile(tileId)) {
+                    label->setElevationDirty(true);
+                    break;
+                }
+            }
+        }
+        _pendingLabelElevationAll = false;
+        _pendingLabelElevationTiles.clear();
+    }
+
+    std::function<double(const cglib::vec3<double>&)> GLTileRenderer::labelHeightFunc() const {
+        // A label ON a bridge belongs to the deck, not to the ground under it - road names,
+        // POIs and one-way arrows are all symbols, so they all come through here.
+        if (_spanChords.empty()) {
+            return _labelElevationProvider;
+        }
+        // A copy of the chords and the provider: the sampler outlives the lock it was made under.
+        std::vector<SpanChord> chords = _spanChords;
+        std::function<double(const cglib::vec3<double>&)> provider = _labelElevationProvider;
+        double scale = _labelPositionScale;
+        return [chords, provider, scale](const cglib::vec3<double>& pos) {
+            double deck = 0;
+            if (chordHeightAt(chords, cglib::vec2<double>(pos(0) * scale, pos(1) * scale), deck)) {
+                return deck;
+            }
+            return provider(pos);
+        };
+    }
+
+    bool GLTileRenderer::anchorDirtyLabels() {
+        // Under the lock, in the frame: for the elevation tiles that landed since the last one,
+        // a few labels. Re-anchoring costs one elevation sample per label vertex (~233 us a
+        // label) and has to run to completion: a label left dirty is drawn, and culled, at the
+        // height it had before the elevation arrived - which reads as labels popping in at the
+        // wrong place and then settling. The bulk - every label a new tile set brings - is
+        // sampled off the lock in setVisibleTiles.
+        VT_STAT_CLOCK(anchorClock);
+        markPendingLabelsDirty();
+        VT_STAT_SPLIT(prepElevDirtyNs, anchorClock);
+        std::function<double(const cglib::vec3<double>&)> heightFunc = labelHeightFunc();
+        bool anchored = false;
+        for (const std::shared_ptr<Label>& label : _labels) {
+            if (label->isElevationDirty()) {
+                label->updateElevation(heightFunc);
+                label->setElevationDirty(false);
+                anchored = true;
+            }
+        }
+        return anchored;
+    }
+
+    bool GLTileRenderer::spanHeightAt(const cglib::vec2<double>& pos, double& height) const {
+        return chordHeightAt(_spanChords, pos, height);
+    }
+
+    void GLTileRenderer::rebuildSpanChords() const {
+        _spanChords.clear();
+        for (auto it = _spanUnions.begin(); it != _spanUnions.end(); it++) {
+            const SpanUnion& span = it->second;
+            if (!span.haveHeights) {
+                continue;
+            }
+            bool known = false;
+            for (const SpanChord& chord : _spanChords) {
+                if (chord.portal0 == span.portal0 && chord.portal1 == span.portal1) {
+                    known = true;
+                    break;
+                }
+            }
+            if (known) {
+                continue;
+            }
+            SpanChord chord;
+            chord.portal0 = span.portal0;
+            chord.portal1 = span.portal1;
+            chord.height0 = span.height0;
+            chord.height1 = span.height1;
+            // The bounds isOnChord could ever accept: the portals, out by the match allowance.
+            double allowance = SpanGeometry::matchAllowance(cglib::length(span.portal1 - span.portal0));
+            cglib::vec2<double> margin(allowance, allowance);
+            chord.boundsMin = cglib::vec2<double>(std::min(span.portal0(0), span.portal1(0)), std::min(span.portal0(1), span.portal1(1))) - margin;
+            chord.boundsMax = cglib::vec2<double>(std::max(span.portal0(0), span.portal1(0)), std::max(span.portal0(1), span.portal1(1))) + margin;
+            _spanChords.push_back(chord);
+        }
+    }
+
+    bool GLTileRenderer::chordHeightAt(const std::vector<SpanChord>& chords, const cglib::vec2<double>& pos, double& height) {
+        for (const SpanChord& chord : chords) {
+            if (pos(0) < chord.boundsMin(0) || pos(0) > chord.boundsMax(0) || pos(1) < chord.boundsMin(1) || pos(1) > chord.boundsMax(1)) {
+                continue;
+            }
+            if (!SpanGeometry::isOnChord(pos, chord.portal0, chord.portal1)) {
+                continue;
+            }
+            height = SpanGeometry::chordHeight(chord.height0, chord.height1,
+                                               SpanGeometry::chordParam(pos, chord.portal0, chord.portal1));
             return true;
         }
         return false;
@@ -4488,6 +4620,7 @@ namespace massif::vt {
                 it->second.height0 = h0;
                 it->second.height1 = h1;
                 it->second.haveHeights = true;
+                rebuildSpanChords();
             }
             std::size_t last = std::min(vertexCount, record.vertexOffset + record.vertexCount);
             for (std::size_t i = record.vertexOffset; i < last; i++) {
@@ -6456,7 +6589,7 @@ namespace massif::vt {
                 GLuint spanDrapeTexture = 0;
                 cglib::vec4<float> spanDrapeTransform(0, 0, 1, 1);
                 bool spanDrape = !geometry->getSpanRecords().empty() && resolveSpanDrape(targetTileId, spanDrapeTexture, spanDrapeTransform);
-                shaderProgramPtr = &buildShaderProgram("polygon3d", polygon3DVsh, polygon3DFsh, LightingMode::GEOMETRY3D, RasterFilterMode::NONE, (styleParams.pattern ? PATTERN_FLAG : 0) | (styleParams.translate ? TRANSFORM_FLAG : 0) | (terrainVTF ? TERRAIN_VTF_FLAG | TERRAIN_FLAG : 0) | (shadowReceiver ? shadowReceiverFlags() | SHADOW_SINGLE_TAP_FLAG : 0) | (spanDrape ? SPAN_DRAPE_FLAG : 0) | fogFlag());
+                shaderProgramPtr = &buildShaderProgram("polygon3d", polygon3DVsh, polygon3DFsh, LightingMode::GEOMETRY3D, RasterFilterMode::NONE, (styleParams.pattern ? PATTERN_FLAG : 0) | (styleParams.translate ? TRANSFORM_FLAG : 0) | (terrainVTF ? TERRAIN_VTF_FLAG | TERRAIN_FLAG : 0) | (shadowReceiver ? shadowReceiverFlags() | SHADOW_SINGLE_TAP_FLAG : 0) | (!geometry->getSpanRecords().empty() ? SPAN_FLAG : 0) | (spanDrape ? SPAN_DRAPE_FLAG : 0) | fogFlag());
                 _pendingSpanDrape = spanDrape ? spanDrapeTexture : 0;
                 _pendingSpanDrapeTransform = spanDrapeTransform;
             }
