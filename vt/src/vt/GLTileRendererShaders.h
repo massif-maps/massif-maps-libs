@@ -1142,6 +1142,26 @@ namespace massif::vt {
         }
     )GLSL";
 
+    // The extrusion caster: the same depth packing, behind the same half-open tile clip the drawn
+    // extrusion applies (polygon3DFsh). Under overzoom every target tile holds the whole source
+    // geometry, and a buffer-margin copy from the neighbouring source tile holds it again - drawn
+    // unclipped, a copy whose base has not resolved yet stands above the drawn one and shadows
+    // its whole roof. mapbox draws the same bucket in both passes, so its clip is the same too.
+    static const std::string polygon3DShadowCasterFsh = R"GLSL(
+        varying highp_opt vec2 vTilePos;
+
+        void main(void) {
+            if (vTilePos.x < 0.0 || vTilePos.x >= 1.0 || vTilePos.y < 0.0 || vTilePos.y >= 1.0) {
+                discard;
+            }
+            highp float depth = gl_FragCoord.z;
+            highp vec3 enc = vec3(1.0, 255.0, 65025.0) * depth;
+            enc = fract(enc);
+            enc -= enc.yzz * vec3(1.0 / 255.0, 1.0 / 255.0, 0.0);
+            glFragColor = vec4(enc, 1.0);
+        }
+    )GLSL";
+
     // The terrain normal at this fragment and the sun that lights it. Prepended to every fragment
     // shader that lights draped content - commonFsh cannot hold it, the terrain-paint path declares
     // the same names for itself and one name declared twice in a stage does not compile.

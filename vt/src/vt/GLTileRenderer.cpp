@@ -6362,7 +6362,7 @@ namespace massif::vt {
             if (_shadowCasterViewProj) {
                 // Caster pass: same vertex shader (so the extrusion is identical to the drawn
                 // one), depth-packing fragment shader, no lighting.
-                shaderProgramPtr = &buildShaderProgram("polygon3dshadow", polygon3DVsh, shadowCasterFsh, LightingMode::NONE, RasterFilterMode::NONE, (styleParams.translate ? TRANSFORM_FLAG : 0) | (terrainVTF ? TERRAIN_VTF_FLAG : 0));
+                shaderProgramPtr = &buildShaderProgram("polygon3dshadow", polygon3DVsh, polygon3DShadowCasterFsh, LightingMode::NONE, RasterFilterMode::NONE, (styleParams.translate ? TRANSFORM_FLAG : 0) | (terrainVTF ? TERRAIN_VTF_FLAG : 0));
                 break;
             }
             // TERRAIN_FLAG (depth bias) too: in terrain mode the extrusions are depth-tested
