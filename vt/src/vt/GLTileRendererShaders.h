@@ -15,7 +15,7 @@ namespace massif::vt {
         A_VERTEXBINORMAL,
         A_VERTEXHEIGHT,
         A_VERTEXBASE,
-        A_VERTEXCOLOR,
+                A_VERTEXCOLOR,
         A_VERTEXATTRIBS,
         A_VERTEXOFFSET
     };
@@ -33,6 +33,9 @@ namespace massif::vt {
         U_UVSCALE,
         U_HEIGHTSCALE,
         U_BASESCALE,
+        U_FLOATINGBASE,
+        U_SPANDRAPETEXTURE,
+        U_SPANDRAPETRANSFORM,
         U_SHADOWHEIGHTSCALE,
         U_COLORTABLE,
         U_WIDTHTABLE,
@@ -150,6 +153,9 @@ namespace massif::vt {
         // accumulate the alpha of the draped units above a no-drape layer into its occlusion mask
         // (docs/internals/rendering/04-terrain.md).
         COVERAGE_FLAG = 16777216,
+        // The line carries a CPU-resolved chord height per vertex (a bridge or tunnel deck) rather
+        // than sampling the ground - see LineElevationMode.
+        SPAN_FLAG = 33554432,
         // ... and the other end: a live no-drape layer scales its alpha by 1 - mask, so the draped
         // layers that come AFTER it in the style order win where they paint.
         DRAPE_MASK_FLAG = 33554432,
@@ -158,10 +164,14 @@ namespace massif::vt {
         GAPWIDTH_FLAG = 67108864,
         // mapbox's `line-blur`: a widened antialias ramp. Same deal - only where a style asks.
         BLUR_FLAG = 134217728,
+        // A bridge DECK samples its own drape - the span content of its tile, baked apart from the
+        // ground's (bakeSpanDrapeTile) - so the road it carries lands on the deck rather than on
+        // the valley floor beside it. Only compiled in for a tile that has a span drape.
+        SPAN_DRAPE_FLAG = 268435456,
         // The shadow receiver is a 3D EXTRUSION, not the ground. An extrusion defends against acne
         // with the normal offset; the ground has no normal and defends with the receiver-plane
         // bias. Each one hurts the other, so the shader has to tell them apart.
-        SHADOW_RECEIVER_3D_FLAG = 268435456
+        SHADOW_RECEIVER_3D_FLAG = 536870912
     };
 
     static const std::map<std::string, int> attribMap = {
@@ -189,6 +199,9 @@ namespace massif::vt {
         { "uUVScale",          U_UVSCALE },
         { "uHeightScale",      U_HEIGHTSCALE },
         { "uBaseScale",        U_BASESCALE },
+        { "uSpanDrapeTexture", U_SPANDRAPETEXTURE },
+        { "uSpanDrapeTransform", U_SPANDRAPETRANSFORM },
+        { "uFloatingBase",     U_FLOATINGBASE },
         { "uShadowHeightScale", U_SHADOWHEIGHTSCALE },
         { "uColorTable",       U_COLORTABLE },
         { "uWidthTable",       U_WIDTHTABLE },
@@ -283,7 +296,9 @@ namespace massif::vt {
         { SHADOW_HW_FLAG, "SHADOW_HW" },
         { GEOMETRY_LIGHT_FLAG, "GEOMETRY_LIGHT" },
         { COVERAGE_FLAG, "COVERAGE" },
-        { DRAPE_MASK_FLAG, "DRAPE_MASK" }
+        { SPAN_FLAG, "SPAN" },
+        { DRAPE_MASK_FLAG, "DRAPE_MASK" },
+        { SPAN_DRAPE_FLAG, "SPAN_DRAPE" }
     };
 
     static const std::string textureFiltersFsh = R"GLSL(
@@ -582,8 +597,17 @@ namespace massif::vt {
             highp float slopeMY = uElevationScale.y + pos.y * uElevationScale.z;
             vElevCosh = 0.5 * (exp(slopeMY) + exp(-slopeMY));
         }
+        // A span is NOT on the ground, so it must not take the ground's normal: the deck would be
+        // shaded by the valley wall under it and step in tone where it meets its own draped
+        // approach. Zeroing the stretch flattens the gradient terrainNdl() builds, which is the
+        // horizontal normal a deck actually has.
+        void setSpanFlatShading() {
+            vElevCosh = 0.0;
+        }
         #else
         void setTerrainSlopeVaryings(highp vec3 pos) {
+        }
+        void setSpanFlatShading() {
         }
         #endif
     )GLSL";
@@ -1927,6 +1951,17 @@ namespace massif::vt {
 
     static const std::string lineVsh = R"GLSL(
         attribute vec3 aVertexPosition;
+        #if defined(TERRAIN) && defined(SPAN)
+        // A bridge or tunnel deck: the feature's OWN two ends, (p0, p1) in this vertex frame. The
+        // deck is the chord between the ground at those two points, so the ground in between - a
+        // DSM spike off the deck included - never lifts it.
+        //
+        // The chord height for THIS vertex, resolved on the CPU (resolveLineSpanBases) in internal
+        // z units. The sentinel means unresolved - a span the tile cut, or elevation not in yet -
+        // and the line stays on the terrain, which is what it did before.
+        attribute float aVertexBase;
+        uniform float uBaseScale;
+        #endif
         #if defined(LIGHTING_FSH) || defined(LIGHTING_VSH)
         attribute vec3 aVertexNormal;
         #endif
@@ -2027,9 +2062,32 @@ namespace massif::vt {
             setTerrainSlopeVaryings(pos);
             vTileUnit = pos.xy * uTileUnitScale + uTileUnitOffset;
             highp vec3 centerPos = applyTerrain(pos);
+        #ifdef SPAN
+            // A degenerate pair is the builder saying this span was CLIPPED by the tile, so its
+            // ends are not its portals - it stays on the terrain, which centerPos already holds.
+            highp float spanZ = aVertexBase * uBaseScale + uElevationScale.w;
+            bool spanResolved = aVertexBase > -1.0e29;
+            if (spanResolved) {
+                centerPos.z = spanZ;
+            }
+        #endif
             applyShadowPos(centerPos);
             highp vec4 centerClip = uMVPMatrix * vec4(centerPos, 1.0);
-            highp vec4 edgeClip = uMVPMatrix * vec4(applyTerrain(pos + delta), 1.0);
+            highp vec3 edgePos = applyTerrain(pos + delta);
+        #ifdef SPAN
+            // The OUTER edge belongs to the deck too. Leaving it on the terrain hung the far side
+            // of every quad down on the ground while its centre stayed up on the chord - a ribbon
+            // twisted on its long axis, which reads as a wedge at the span and inflates edgeLen
+            // enough to trip the ceiling below, so the deck came out the wrong width as well.
+            // The outer edge belongs to the deck too - left on the terrain it hangs the far side
+            // of every quad down on the ground and twists the ribbon. The chord varies along the
+            // line, not across it, so the edge takes the SAME height as its centre.
+            if (spanResolved) {
+                edgePos.z = spanZ;
+                setSpanFlatShading();
+            }
+        #endif
+            highp vec4 edgeClip = uMVPMatrix * vec4(edgePos, 1.0);
             highp vec2 edgeDir = edgeClip.xy / edgeClip.w - centerClip.xy / centerClip.w;
             edgeDir = vec2(edgeDir.x * uScreenScale.x, edgeDir.y); // NDC is anisotropic, work in height units
             highp float edgeLen = length(edgeDir);
@@ -2039,7 +2097,6 @@ namespace massif::vt {
             // is PACKED (int16, per-geometry scale), so its length only means widths once scaled -
             // raw it is ~32768 and the ceiling never engages at all.
             highp float nominalLen = roundedWidth * length(aVertexBinormal * uBinormalUnitScale) * uScreenScale.y;
-            highp vec3 edgePos = applyTerrain(pos + delta);
             if (edgeLen > nominalLen && nominalLen > 0.0) {
                 highp float shrink = nominalLen / edgeLen;
                 edgeDir = edgeDir * shrink;
@@ -2166,6 +2223,14 @@ namespace massif::vt {
         // polygon only needs it to look the drape mask up. uTileUnit* come from commonVsh.
         varying mediump vec2 vTileUnit;
         #endif
+        #if defined(SPAN) && defined(TERRAIN)
+        // A bridge BED, lifted onto the deck's chord: the height resolved on the CPU, in internal
+        // z units. The sentinel means unresolved and the fill stays on the terrain. Only under
+        // TERRAIN - uElevationScale, which converts it, does not exist otherwise, and a bed has
+        // nothing to be lifted off without a terrain anyway.
+        attribute float aVertexBase;
+        uniform float uBaseScale;
+        #endif
 
         void main(void) {
             int styleIndex = int(aVertexAttribs[0]);
@@ -2190,6 +2255,12 @@ namespace massif::vt {
         #endif
             setTerrainSlopeVaryings(pos);
             highp vec3 terrainPos = applyTerrain(pos);
+        #if defined(SPAN) && defined(TERRAIN)
+            if (aVertexBase > -1.0e29) {
+                terrainPos.z = aVertexBase * uBaseScale + uElevationScale.w;
+                setSpanFlatShading();
+            }
+        #endif
             applyShadowPos(terrainPos);
             gl_Position = applyDepthBias(uMVPMatrix * vec4(terrainPos, 1.0));
         }
@@ -2337,6 +2408,11 @@ namespace massif::vt {
         uniform float uHeightScale;
         #ifdef TERRAIN
         uniform float uBaseScale;   // internal z units -> this vertex frame (1 / frameScaleZ)
+        // A building's base ring belongs on the GROUND it stands on, so the resolved base is used
+        // only where the extrusion rises. A bridge DECK stands on nothing: its underside belongs on
+        // the chord like the rest of it, and leaving it on the terrain stretches the walls from the
+        // valley floor up to the deck. 1 = every vertex takes the base, whatever its height.
+        uniform float uFloatingBase;
         #endif
         // The height the SHADOW MAP was baked at. Equal to uHeightScale unless the style flattens
         // its buildings for the camera (building-height-view-scale), which the caster ignores: the
@@ -2390,7 +2466,7 @@ namespace massif::vt {
             // tile has not arrived) falls back to the ground under this vertex. That is the
             // pre-CPU behaviour: a roof that shears down the slope, which is wrong but visible -
             // skipping the draw instead loses the building entirely, and a base of 0 buries it.
-            if (aVertexHeight > 0.0 && aVertexBase > -1.0e29) {
+            if ((aVertexHeight > 0.0 || uFloatingBase > 0.5) && aVertexBase > -1.0e29) {
                 baseZ = aVertexBase * uBaseScale + uElevationScale.w;
             }
         #endif
@@ -2429,6 +2505,12 @@ namespace massif::vt {
     static const std::string polygon3DFsh = R"GLSL(
         varying highp_opt vec2 vTilePos;
         varying lowp vec4 vColor;
+        #ifdef SPAN_DRAPE
+        // The deck's own drape, in the DRAPE tile's uv: uSpanDrapeTransform maps this geometry's
+        // tile position into it, the same sub-rect an ancestor drape tile needs elsewhere.
+        uniform sampler2D uSpanDrapeTexture;
+        uniform mediump vec4 uSpanDrapeTransform;
+        #endif
         #ifdef TERRAIN_SHADOW
         varying mediump vec3 vShadowNormal;
         #endif
@@ -2468,14 +2550,25 @@ namespace massif::vt {
         #ifdef TERRAIN_SHADOW
             shadow = shadowFactorSlopeParts(max(0.0, dot(normalize(vShadowNormal), uSunDir)), skyShadow);
         #endif
+            lowp vec4 surfaceColor = vColor;
+        #ifdef SPAN_DRAPE
+            // The deck's ROOF wears the road; its walls keep the structure's own colour. vTilePos
+            // is this geometry's tile position, which is also where the span drape baked the road,
+            // so the two line up without any projection of their own.
+            // vTilePos carries the extrusion's own 1-y flip (see polygon3DVsh); the drape was
+            // baked in the surface's unflipped tile parametrization, so flip back to meet it.
+            highp_opt vec2 spanUV = vec2(vTilePos.x, 1.0 - vTilePos.y);
+            lowp vec4 draped = texture2D(uSpanDrapeTexture, spanUV * uSpanDrapeTransform.zw + uSpanDrapeTransform.xy);
+            surfaceColor = vec4(mix(surfaceColor.rgb, draped.rgb, draped.a), surfaceColor.a);
+        #endif
         #ifdef LIGHTING_FSH
             // The shadow goes INTO the lighting, where it dims the sun alone. Multiplied over the
             // finished colour instead it took the ambient with it, and since a wall facing away
             // from the sun is fully shadowed by the back-face rule above, every such wall went
             // black - the whole reason facades did not match mapbox.
-            glFragColor = applyFog(applyLighting3D(vColor, normalize(vNormal), vWallT, vSideVertex, shadow, skyShadow));
+            glFragColor = applyFog(applyLighting3D(surfaceColor, normalize(vNormal), vWallT, vSideVertex, shadow, skyShadow));
         #else
-            glFragColor = applyFog(vColor);
+            glFragColor = applyFog(surfaceColor);
             glFragColor.rgb *= shadow;
         #endif
         }
