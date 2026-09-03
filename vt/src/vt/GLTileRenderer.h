@@ -103,6 +103,14 @@ namespace massif::vt {
             float metersToInternal = 0.0f; // meters -> world z units at the equator (exaggeration included)
             float mercatorYScale = 0.0f;   // world y -> mercator angle (for the per-vertex 1/cos(latitude) factor)
             float metersPerTexel = 0.0f;   // ground meters per texel at the equator (the 1/cos(latitude) stretch is per fragment)
+            // The NODE texture: the same DEM box-filtered to the surface lattice, one texel per
+            // mesh node, which is what the VERTEX stage displaces from (the fragment stage keeps
+            // the full texture above). 0 when the provider has none; the vertex stage then
+            // samples the full texture, which aliases relief finer than a cell.
+            GLuint nodeTextureId = 0;
+            cglib::vec2<int> nodeTextureSize = cglib::vec2<int>(0, 0);
+            cglib::vec2<double> nodeOrigin = cglib::vec2<double>(0, 0); // world position of node uv (0,0)
+            cglib::vec2<double> nodeSize = cglib::vec2<double>(0, 0);   // world size covered by node uv [0,1]
         };
 
         using TerrainTextureProvider = std::function<bool(const TileId&, TerrainTexture&)>;
