@@ -3969,6 +3969,9 @@ namespace massif::vt {
             glUniform1f(shaderProgram.uniforms[U_BASESCALE], 0.0f);
             glUniform4f(shaderProgram.uniforms[U_ELEVATIONTEXELSIZE], 1.0f, 1.0f, 1.0f, 1.0f);
             glUniform2f(shaderProgram.uniforms[U_ELEVATIONLATTICECELL], 0.0f, 0.0f);
+            glUniform1i(shaderProgram.uniforms[U_ELEVATIONNODETEXTURE], 1);
+            glUniform4f(shaderProgram.uniforms[U_ELEVATIONNODEUV], 0.0f, 0.0f, 0.0f, 0.0f);
+            glUniform4f(shaderProgram.uniforms[U_ELEVATIONNODETEXELSIZE], 1.0f, 1.0f, 1.0f, 1.0f);
             glUniform2f(shaderProgram.uniforms[U_TILEUNITSCALE], 0.0f, 0.0f); // no tile clipping without elevation
             glUniform2f(shaderProgram.uniforms[U_TILEUNITOFFSET], 0.0f, 0.0f);
             glUniform1f(shaderProgram.uniforms[U_LAYERDEPTHOFFSET], 0.0f);
@@ -3979,12 +3982,31 @@ namespace massif::vt {
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, terrainTexture.textureId);
         glUniform1i(shaderProgram.uniforms[U_ELEVATIONTEXTURE], 1);
+        // The node texture, which the VERTEX stage displaces from (see commonVsh). A provider
+        // without one hands the full texture over in its place, and the vertex stage samples the
+        // DEM point by point as it used to.
+        bool nodes = terrainTexture.nodeTextureId != 0 && terrainTexture.nodeTextureSize(0) > 0 && terrainTexture.nodeTextureSize(1) > 0
+                  && terrainTexture.nodeSize(0) > 0 && terrainTexture.nodeSize(1) > 0;
+                glActiveTexture(GL_TEXTURE5);
+        glBindTexture(GL_TEXTURE_2D, nodes ? terrainTexture.nodeTextureId : terrainTexture.textureId);
+        glUniform1i(shaderProgram.uniforms[U_ELEVATIONNODETEXTURE], 5);
         glActiveTexture(GL_TEXTURE0);
 
         cglib::vec2<double> frameOrigin(vertexFrameMatrix(0, 3), vertexFrameMatrix(1, 3));
         cglib::vec2<double> frameScale(vertexFrameMatrix(0, 0), vertexFrameMatrix(1, 1));
         double invSizeX = 1.0 / terrainTexture.internalSize(0);
         double invSizeY = 1.0 / terrainTexture.internalSize(1);
+        const cglib::vec2<double>& nodeOrigin = nodes ? terrainTexture.nodeOrigin : terrainTexture.internalOrigin;
+        double invNodeSizeX = 1.0 / (nodes ? terrainTexture.nodeSize(0) : terrainTexture.internalSize(0));
+        double invNodeSizeY = 1.0 / (nodes ? terrainTexture.nodeSize(1) : terrainTexture.internalSize(1));
+        glUniform4f(shaderProgram.uniforms[U_ELEVATIONNODEUV],
+            static_cast<float>((frameOrigin(0) - nodeOrigin(0)) * invNodeSizeX),
+            static_cast<float>((frameOrigin(1) - nodeOrigin(1)) * invNodeSizeY),
+            static_cast<float>(frameScale(0) * invNodeSizeX),
+            static_cast<float>(frameScale(1) * invNodeSizeY));
+        float nodeTexelSizeX = static_cast<float>(std::max(1, nodes ? terrainTexture.nodeTextureSize(0) : terrainTexture.textureSize(0)));
+        float nodeTexelSizeY = static_cast<float>(std::max(1, nodes ? terrainTexture.nodeTextureSize(1) : terrainTexture.textureSize(1)));
+        glUniform4f(shaderProgram.uniforms[U_ELEVATIONNODETEXELSIZE], nodeTexelSizeX, nodeTexelSizeY, 1.0f / nodeTexelSizeX, 1.0f / nodeTexelSizeY);
         glUniform4f(shaderProgram.uniforms[U_ELEVATIONUV],
             static_cast<float>((frameOrigin(0) - terrainTexture.internalOrigin(0)) * invSizeX),
             static_cast<float>((frameOrigin(1) - terrainTexture.internalOrigin(1)) * invSizeY),
@@ -3997,15 +4019,15 @@ namespace massif::vt {
         glUniform4f(shaderProgram.uniforms[U_ELEVATIONTEXELSIZE], texelSizeX, texelSizeY, 1.0f / texelSizeX, 1.0f / texelSizeY);
         // Lattice clamp: draped geometry snaps its height to the same regular grid the surface is
         // built from. The cell size is a property of the tile+texture, identical for the surface and
-        // every draped layer whatever their frame; 0 in adaptive mode.
+        // every draped layer whatever their frame, in NODE-uv units; 0 in adaptive mode.
         // THE SURFACE DOES NOT NEED IT - its vertices ARE the nodes, so the clamp returns the same
         // height for 16 texture fetches a vertex instead of one. Except on a stitched edge, where
         // the clamp is what bends the outermost cell onto the coarse neighbour's chords.
         bool latticeNodes = gridSurface && edgeCoarsening == cglib::vec4<float>(1, 1, 1, 1);
         if (_terrainRegularGrid && _terrainRegularGridResolution > 0 && _terrainDemTaps >= 16 && !latticeNodes) {
             double worldTileSize = std::abs(_transformer->calculateTileMatrix(tileId, 1.0f)(0, 0));
-            float latticeCellX = static_cast<float>(worldTileSize * invSizeX / _terrainRegularGridResolution);
-            float latticeCellY = static_cast<float>(worldTileSize * invSizeY / _terrainRegularGridResolution);
+            float latticeCellX = static_cast<float>(worldTileSize * invNodeSizeX / _terrainRegularGridResolution);
+            float latticeCellY = static_cast<float>(worldTileSize * invNodeSizeY / _terrainRegularGridResolution);
             glUniform2f(shaderProgram.uniforms[U_ELEVATIONLATTICECELL], latticeCellX, latticeCellY);
         } else {
             glUniform2f(shaderProgram.uniforms[U_ELEVATIONLATTICECELL], 0.0f, 0.0f);
