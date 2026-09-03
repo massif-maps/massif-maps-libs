@@ -1911,7 +1911,10 @@ namespace massif::vt {
         // Only for a footprint that is actually EXTRUDED and STANDS ON THE GROUND: a flat one was
         // casting a full ring onto open ground with nothing above it, and a building:part starting
         // at 20 m - a bridge deck, a tunnel roof - does not touch the ground it was shadowing.
-        if (minHeight <= 0.0f && maxHeight > minHeight) {
+        // ...and only for an extrusion that stands on the GROUND at all. A SPAN one hangs from its
+        // own chord - a bridge deck, metres above the valley - so a contact shadow under it is a
+        // halo on ground it never touches, sliding about as the camera moves.
+        if (style.elevationMode == LineElevationMode::DRAPE && minHeight <= 0.0f && maxHeight > minHeight) {
             for (std::size_t ring = 0; ring < pointsList.size(); ring++) {
                 appendGroundSkirt(pointsList[ring], 0.0f, ring > 0, styleIndex);
             }

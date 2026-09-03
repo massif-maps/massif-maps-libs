@@ -2522,8 +2522,16 @@ namespace massif::vt {
             // vTilePos carries the extrusion's own 1-y flip (see polygon3DVsh); the drape was
             // baked in the surface's unflipped tile parametrization, so flip back to meet it.
             highp_opt vec2 spanUV = vec2(vTilePos.x, 1.0 - vTilePos.y);
-            lowp vec4 draped = texture2D(uSpanDrapeTexture, spanUV * uSpanDrapeTransform.zw + uSpanDrapeTransform.xy);
-            surfaceColor = vec4(mix(surfaceColor.rgb, draped.rgb, draped.a * vSpanRoof), surfaceColor.a);
+            highp_opt vec2 drapeUV = spanUV * uSpanDrapeTransform.zw + uSpanDrapeTransform.xy;
+            lowp vec4 draped = texture2D(uSpanDrapeTexture, drapeUV);
+            // Past the baked bounds there is no road: nothing, not the clamped edge texel.
+            draped *= step(0.0, drapeUV.x) * step(drapeUV.x, 1.0) * step(0.0, drapeUV.y) * step(drapeUV.y, 1.0);
+            // PREMULTIPLIED, like every other bake this renderer samples (see the pattern composite
+            // in the surface shader): the bake draws the road onto a cleared, fully transparent
+            // target, so a half-covered texel holds half the road's colour, not the road's colour
+            // at half alpha. Mixed as straight alpha it came out half black - a dark fringe down
+            // every line on the deck, and a dark band wherever the bake had nothing.
+            surfaceColor = vec4(surfaceColor.rgb * (1.0 - draped.a * vSpanRoof) + draped.rgb * vSpanRoof, surfaceColor.a);
         #endif
         #ifdef LIGHTING_FSH
             // The shadow goes INTO the lighting, where it dims the sun alone. Multiplied over the

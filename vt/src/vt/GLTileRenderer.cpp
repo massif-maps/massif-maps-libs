@@ -4958,18 +4958,27 @@ namespace massif::vt {
             cglib::mat3x3<double> invTargetMatrix = cglib::inverse(calculateTileMatrix2D(renderTile.targetTileId, 1.0f));
             cglib::vec4<float> bounds(1.0f, 1.0f, 0.0f, 0.0f);
             bool anySpan = false;
+            bool anyDraped = false;
             for (auto it = renderTile.renderLayers.begin(); it != renderTile.renderLayers.end(); it++) {
                 const RenderTileLayer& renderLayer = it->second;
-                if (!hasSpanContent(renderLayer)) {
+                if (!renderLayer.layer || !renderLayer.layer->hasSpanGeometry()) {
                     continue;
                 }
-                std::size_t& fingerprint = spanTiles[renderTile.targetTileId];
+                // The bake holds the DRAPED spans (the road), but the bounds must hold the DECK that
+                // samples it, which is an extrusion and never draped. Bounded by the road alone, a
+                // deck wider than the road's margin sampled the texture's clamped edge over its
+                // outer lanes - the edge texels smeared down the deck as dark streaks and a line.
+                bool draped = hasSpanContent(renderLayer);
+                anyDraped = anyDraped || draped;
                 cglib::mat3x3<double> sourceMatrix = calculateTileMatrix2D(renderLayer.sourceTileId, 1.0f);
                 for (const std::shared_ptr<TileGeometry>& geometry : renderLayer.layer->getGeometries()) {
                     if (geometry->getSpanRecords().empty()) {
                         continue;
                     }
-                    fingerprint ^= reinterpret_cast<std::size_t>(geometry.get()) + 0x9e3779b9 + (fingerprint << 6) + (fingerprint >> 2);
+                    if (draped) {
+                        std::size_t& fingerprint = spanTiles[renderTile.targetTileId];
+                        fingerprint ^= reinterpret_cast<std::size_t>(geometry.get()) + 0x9e3779b9 + (fingerprint << 6) + (fingerprint >> 2);
+                    }
                     for (const TileGeometry::SpanRecord& record : geometry->getSpanRecords()) {
                         for (const cglib::vec2<float>& p : { record.p0, record.p1 }) {
                             // The record is in the SOURCE tile's vertex frame; the drape's uv is the
@@ -4983,7 +4992,7 @@ namespace massif::vt {
                     }
                 }
             }
-            if (anySpan) {
+            if (anySpan && anyDraped) {
                 double tileMeters = 40075017.0 / (1 << renderTile.targetTileId.zoom);
                 float margin = static_cast<float>(std::max(0.04, 25.0 / tileMeters));
                 _spanDrapeBounds[renderTile.targetTileId] = SpanGeometry::expandBounds(bounds, margin);
@@ -5238,6 +5247,14 @@ namespace massif::vt {
         cglib::mat4x4<double> cameraViewProj = _viewState.projectionMatrix * _viewState.cameraMatrix;
         _shadowCasterViewProj = &cameraViewProj;
         forEachVisibleExtrusion(nullptr, [this, &drawn](const RenderTileLayer& renderLayer, const std::shared_ptr<TileGeometry>& geometry) {
+            // A SPAN extrusion is the surface its own symbols stand on: a bridge deck carries the
+            // road's one-way arrows and its name, and those anchor on the chord a few centimetres
+            // above the deck's roof. Written here, the deck's depth meets theirs within the fade
+            // ramp and the bridge hides everything on it - they flicker in as the camera moves and
+            // go again. A building has no symbols on its roof, so only the deck needs the exception.
+            if (!geometry->getSpanRecords().empty()) {
+                return true;
+            }
             // The tile's own blend, as the shadow caster uses: an extrusion fades in by GROWING,
             // so a full-height occluder hides labels behind a building that is not there yet.
             renderTileGeometry(renderLayer.sourceTileId, renderLayer.targetTileId, renderLayer.blend, 1.0f, renderLayer.tileSize, geometry);
