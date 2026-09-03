@@ -3402,7 +3402,13 @@ namespace massif::vt {
             int layerOrdinal = _terrainLayerOrdinalBase + static_cast<int>(std::distance(_terrainStyleLayerIndices.begin(), _terrainStyleLayerIndices.find(it->first)));
             Pass3DState pass = begin3DPass(renderLayers, renderTiles, allowInline);
 
-            // Render tile layers for this layer
+            // Render tile layers for this layer. Translucent extrusions go through twice: first
+            // depth only, then colour with the depth pulled one unit towards the camera, so of all
+            // the fragments a pixel receives exactly one blends - the nearest, and the first drawn
+            // among equals. That is mapbox's depth prepass plus stencilModeFor3D (each pixel once),
+            // without the stencil, which the 2D pass owns here: two coincident party walls no
+            // longer fight, and a building no longer shows its inner walls through its front.
+            auto drawTileLayers = [&](bool depthOnly) {
             for (const RenderTileLayer* renderLayer : renderLayers) {
                 // Only under the shared ground, which is where the ordinal model applies at all;
                 // the other paths take their clearance from pushing the surface back instead.
@@ -3410,6 +3416,9 @@ namespace massif::vt {
                     _terrainDrawLayerOffset = proxyDepth(renderLayer) - layerOrdinal;
                 }
                 for (const std::shared_ptr<TileGeometry>& geometry : renderLayer->layer->getGeometries()) {
+                    if (depthOnly && geometry->getType() != TileGeometry::Type::POLYGON3D) {
+                        continue;
+                    }
                     if (geometry->getType() == TileGeometry::Type::POLYGON3D) {
                         // Always drawn: an extrusion whose ground has not resolved yet keeps the
                         // sentinel and the shader falls back to the ground under each vertex.
@@ -3433,6 +3442,19 @@ namespace massif::vt {
                 }
                 _terrainDrawLayerOffset = 0.0f;
             }
+            };
+            if (pass.translucentExtrusions) {
+                glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+                drawTileLayers(true);
+                glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+                glEnable(GL_POLYGON_OFFSET_FILL);
+                glPolygonOffset(0.0f, -1.0f);
+                drawTileLayers(false);
+                glDisable(GL_POLYGON_OFFSET_FILL);
+                glPolygonOffset(0.0f, 0.0f);
+            } else {
+                drawTileLayers(false);
+            }
 
             end3DPass(pass);
         }
@@ -3455,6 +3477,28 @@ namespace massif::vt {
         // Inline only when the extrusions are the frame's last tile content (buildingOrder 1) -
         // they write depth and would otherwise occlude the 2D content drawn after them.
         state.useOverlay = !allowInline || static_cast<bool>(layer->getCompOp()) || state.geometryOpacity < 1.0f - 1.0f / 255.0f;
+        // A LAYER opacity below 1 takes the overlay above: opaque in its own buffer, composited
+        // once. A translucent fill colour does not - it is per feature, evaluated into the colour
+        // table - and blended straight into the scene it showed every wall through every other
+        // wall, and two coincident party walls fought for the pixel. Mark it, so the draw below
+        // can resolve the nearest surface first.
+        if (!state.useOverlay) {
+            for (const RenderTileLayer* renderLayer : renderLayers) {
+                for (const std::shared_ptr<TileGeometry>& geometry : renderLayer->layer->getGeometries()) {
+                    if (geometry->getType() != TileGeometry::Type::POLYGON3D) {
+                        continue;
+                    }
+                    const TileGeometry::StyleParameters& styleParams = geometry->getStyleParameters();
+                    for (int i = 0; i < styleParams.parameterCount && !state.translucentExtrusions; i++) {
+                        float alpha = evaluateColorFunc(styleParams.colorFuncs[i]).rgba()[3];
+                        state.translucentExtrusions = alpha > 1.0f / 256.0f && alpha < 1.0f - 1.0f / 256.0f;
+                    }
+                }
+                if (_buildingFadeOnAppear && renderLayer->blend < 1.0f) {
+                    state.translucentExtrusions = true;
+                }
+            }
+        }
 
         // Prepare the overlay buffer.
         if (state.useOverlay) {

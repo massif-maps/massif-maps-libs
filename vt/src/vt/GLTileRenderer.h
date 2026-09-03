@@ -735,6 +735,9 @@ namespace massif::vt {
             float layerOpacity = 1.0f;
             float geometryOpacity = 1.0f;
             CompOp layerCompOp = CompOp::SRC_OVER;
+            // An extrusion whose own colour is translucent (fill opacity below 1) is drawn in two
+            // passes, so only its nearest surface blends - see renderGeometry3D.
+            bool translucentExtrusions = false;
         };
         // Opens the 3D pass for one style layer: the overlay framebuffer when the layer needs one,
         // the terrain occluder pre-pass, and the depth/blend state the draws run under. Anything
