@@ -94,11 +94,11 @@ namespace massif::vt {
             cglib::vec2<float> p0, p1;                 // in packed vertex space
             bool portal0 = false, portal1 = false;     // an end the tile did NOT cut
             std::size_t vertexOffset = 0, vertexCount = 0;
-            // Where the piece sits relative to its chord, in internal z units. A deck HANGS under
-            // the road it carries, and a negative vertex height cannot express that: the extrusion
-            // shader only takes the resolved base where the height is positive, so a negative one
-            // left every vertex on the terrain. The offset moves the BASE instead and the heights
-            // stay positive.
+            // Where the piece sits relative to its chord, in METRES (resolveSpanBases converts it
+            // to internal z units, where the chord is). A deck HANGS under the road it carries,
+            // and a negative vertex height cannot express that: the extrusion shader only takes
+            // the resolved base where the height is positive, so a negative one left every vertex
+            // on the terrain. The offset moves the BASE instead and the heights stay positive.
             float baseOffset = 0.0f;
         };
 

@@ -2464,6 +2464,10 @@ namespace massif::vt {
         // exists when the lighting runs per fragment - the shadow needs it either way.
         varying mediump vec3 vShadowNormal;
         #endif
+        #ifdef SPAN_DRAPE
+        // 1 on the deck's roof, 0 on its walls: only the roof wears the road (see polygon3DFsh).
+        varying lowp float vSpanRoof;
+        #endif
 
         void main(void) {
             int styleIndex = int(aVertexAttribs[0]);
@@ -2531,6 +2535,9 @@ namespace massif::vt {
             vWallT = wallT;
             vSideVertex = sideVertex;
         #endif
+        #ifdef SPAN_DRAPE
+            vSpanRoof = 1.0 - sideVertex;
+        #endif
             gl_Position = applyDepthBias(uMVPMatrix * vec4(pos, 1.0));
         }
     )GLSL";
@@ -2543,6 +2550,7 @@ namespace massif::vt {
         // tile position into it, the same sub-rect an ancestor drape tile needs elsewhere.
         uniform sampler2D uSpanDrapeTexture;
         uniform mediump vec4 uSpanDrapeTransform;
+        varying lowp float vSpanRoof;
         #endif
         #ifdef TERRAIN_SHADOW
         varying mediump vec3 vShadowNormal;
@@ -2584,15 +2592,37 @@ namespace massif::vt {
             shadow = shadowFactorSlopeParts(max(0.0, dot(normalize(vShadowNormal), uSunDir)), skyShadow);
         #endif
             lowp vec4 surfaceColor = vColor;
-        #ifdef SPAN_DRAPE
-            // The deck's ROOF wears the road; its walls keep the structure's own colour. vTilePos
-            // is this geometry's tile position, which is also where the span drape baked the road,
-            // so the two line up without any projection of their own.
-            // vTilePos carries the extrusion's own 1-y flip (see polygon3DVsh); the drape was
-            // baked in the surface's unflipped tile parametrization, so flip back to meet it.
+        #if defined(SPAN) || defined(SPAN_DRAPE)
+            // vTilePos is this geometry's tile position, which is also where the span drape baked
+            // the road, so the two line up without any projection of their own. It carries the
+            // extrusion's own 1-y flip (see polygon3DVsh); the drape was baked in the surface's
+            // unflipped tile parametrization, so flip back to meet it.
             highp_opt vec2 spanUV = vec2(vTilePos.x, 1.0 - vTilePos.y);
-            lowp vec4 draped = texture2D(uSpanDrapeTexture, spanUV * uSpanDrapeTransform.zw + uSpanDrapeTransform.xy);
-            surfaceColor = vec4(mix(surfaceColor.rgb, draped.rgb, draped.a), surfaceColor.a);
+            // This tile's share of the deck alone, drape or no drape. A roof triangle is emitted
+            // whole into every target tile it touches (TileLayerBuilder::appendPolygon3D), so
+            // past the tile edge a neighbour's copy of the same deck can win the depth test -
+            // with a drape that stops at ITS tile, a plain strip of roof along every cut; with
+            // no drape yet, a whole uncut roof whose walls exist only near its own tile, so the
+            // deck's side goes missing wherever that copy wins. mapbox tiles its extrusions
+            // exactly the same way, by cutting at the tile.
+            if (spanUV.x < 0.0 || spanUV.x > 1.0 || spanUV.y < 0.0 || spanUV.y > 1.0) {
+                discard;
+            }
+        #endif
+        #ifdef SPAN_DRAPE
+            // The deck's ROOF wears the road; its walls keep the structure's own colour - by
+            // vSpanRoof, since a wall's tile position runs along the deck's edge and would
+            // otherwise smear whatever the road's edge holds down the whole face.
+            highp_opt vec2 drapeUV = spanUV * uSpanDrapeTransform.zw + uSpanDrapeTransform.xy;
+            lowp vec4 draped = texture2D(uSpanDrapeTexture, drapeUV);
+            // Past the baked bounds there is no road: nothing, not the clamped edge texel.
+            draped *= step(0.0, drapeUV.x) * step(drapeUV.x, 1.0) * step(0.0, drapeUV.y) * step(drapeUV.y, 1.0);
+            // PREMULTIPLIED, like every other bake this renderer samples (see the pattern composite
+            // in the surface shader): the bake draws the road onto a cleared, fully transparent
+            // target, so a half-covered texel holds half the road's colour, not the road's colour
+            // at half alpha. Mixed as straight alpha it came out half black - a dark fringe down
+            // every line on the deck, and a dark band wherever the bake had nothing.
+            surfaceColor = vec4(surfaceColor.rgb * (1.0 - draped.a * vSpanRoof) + draped.rgb * vSpanRoof, surfaceColor.a);
         #endif
         #ifdef LIGHTING_FSH
             // The shadow goes INTO the lighting, where it dims the sun alone. Multiplied over the

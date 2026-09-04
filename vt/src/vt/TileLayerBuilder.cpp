@@ -583,9 +583,13 @@ namespace massif::vt {
             // vertex height cannot be drawn: polygon3DVsh takes the resolved base only where the
             // height is positive, so a negative one leaves the vertex on the terrain. Move the whole
             // prism by shifting its BASE instead, and hand the tesselator a positive thickness.
+            // In METRES: the base it shifts is resolved in internal z units by resolveSpanBases,
+            // which converts there. Handing it tile units (calculateHeight) made the -7 m offset a
+            // rounding error against a chord in internal units, so the prism stood ON the chord and
+            // its thickness rose above the road instead of hanging under it.
             float spanBaseOffset = 0.0f;
             if (span) {
-                spanBaseOffset = _transformer->calculateHeight(verticesList.front().front(), minHeight);
+                spanBaseOffset = minHeight;
                 maxHeight -= minHeight;
                 minHeight = 0.0f;
             }
@@ -1936,7 +1940,10 @@ namespace massif::vt {
         // Only for a footprint that is actually EXTRUDED and STANDS ON THE GROUND: a flat one was
         // casting a full ring onto open ground with nothing above it, and a building:part starting
         // at 20 m - a bridge deck, a tunnel roof - does not touch the ground it was shadowing.
-        if (minHeight <= 0.0f && maxHeight > minHeight) {
+        // ...and only for an extrusion that stands on the GROUND at all. A SPAN one hangs from its
+        // own chord - a bridge deck, metres above the valley - so a contact shadow under it is a
+        // halo on ground it never touches, sliding about as the camera moves.
+        if (style.elevationMode == LineElevationMode::DRAPE && minHeight <= 0.0f && maxHeight > minHeight) {
             for (std::size_t ring = 0; ring < pointsList.size(); ring++) {
                 appendGroundSkirt(pointsList[ring], 0.0f, ring > 0, styleIndex);
             }
