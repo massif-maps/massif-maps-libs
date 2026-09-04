@@ -482,7 +482,7 @@ namespace massif::vt {
         // The ground under an extrusion, in internal z units. Unlike the label provider this one
         // REPORTS whether there was data: a base is baked into the vertices, so guessing 0 where
         // the ground is 215 m puts the whole prism under the terrain.
-        void setExtrusionElevationProvider(std::function<bool(const cglib::vec3<double>&, int, double&)> provider);
+        void setExtrusionElevationProvider(std::function<bool(const cglib::vec3<double>&, int, bool, double&)> provider);
         void setLabelOcclusionTest(std::function<bool(const cglib::vec3<double>&)> occlusionTest);
         void setLayerBlendingSpeed(float speed);
         void setLabelBlendingSpeed(float speed);
@@ -1083,7 +1083,7 @@ namespace massif::vt {
         std::vector<std::pair<TileId, GLint>> _debugOrderedTileMasks;
         TerrainTextureProvider _terrainTextureProvider;
         std::function<double(const cglib::vec3<double>&)> _labelElevationProvider;
-        std::function<bool(const cglib::vec3<double>&, int, double&)> _extrusionElevationProvider;
+        std::function<bool(const cglib::vec3<double>&, int, bool, double&)> _extrusionElevationProvider;
         std::atomic<unsigned int> _extrusionBaseVersion { 1 }; // bumped by invalidateExtrusionBases
         std::vector<TileId> _pendingLabelElevationTiles; // elevation tiles whose labels must be re-anchored
         double _labelPositionScale = 1.0; // label anchors are in internal coordinates, not vt's

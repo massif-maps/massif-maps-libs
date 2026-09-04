@@ -976,6 +976,7 @@ namespace massif::vt {
         _heights.clear();
         _attribs.clear();
         _spanInfos.clear();
+        _polygon3DAnchorExtent = 0.0f;
         _indices.clear();
         _ids.clear();
         _geoPosIndexes.clear();
@@ -1114,6 +1115,15 @@ namespace massif::vt {
         float binormalScale = calculateScale(binormals, _indices);
         // For an extrusion the texcoord slot carries the footprint centroid, and the vertex stage
         // hands it straight to applyTerrain - which expects raw coord units. Same scale, then.
+        if (_builderParameters.type == TileGeometry::Type::POLYGON3D && _polygon3DAnchorExtent > 0.0f) {
+            // The anchor shares the coord scale (the shader converts either with one uniform), but
+            // it can lie far outside the coords the scale was fitted to: under deep overzoom the
+            // centroid of a palace is several tiles away from the piece this tile draws, and at
+            // the coords' scale it overflowed the int16 and wrapped - a base read at a garbage
+            // position, different in every tile, which is what broke buildings apart when zooming
+            // in close. Fit the scale to the anchors as well; a coord loses nothing it can show.
+            coordScale = std::min(coordScale, std::pow(2.0f, std::floor(std::log(32767.0f / (_polygon3DAnchorExtent + 1.0f)) / std::log(2.0f))));
+        }
         float texCoordScale = (_builderParameters.type == TileGeometry::Type::POLYGON3D ? coordScale : calculateScale(texCoords, _indices));
         float heightScale = calculateScale(heights, _indices);
         for (std::size_t offset = 0; offset < _indices.size(); ) {
@@ -1866,6 +1876,7 @@ namespace massif::vt {
             // ground. Stored unflipped it asks at a mirrored position - a different hill entirely.
             cglib::vec3<float> anchor = _transformer->calculatePoint(centroid);
             _polygon3DCentroid = cglib::vec2<float>(anchor(0), anchor(1));
+            _polygon3DAnchorExtent = std::max(_polygon3DAnchorExtent, std::max(std::abs(anchor(0)), std::abs(anchor(1))));
         }
         // Edge radius: the wall stops short of the roof and a bevel band bridges the two, with the
         // roof ring inset by the same amount. What makes it read as ROUNDED is that the band's
